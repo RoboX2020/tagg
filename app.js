@@ -1,0 +1,558 @@
+/* Tagg — people memory with a personal agent. Client-side MVP. */
+(function () {
+  "use strict";
+
+  /* ================= storage ================= */
+  var LS_CARD = "tagg.card.v1";
+  var LS_PEOPLE = "tagg.people.v1";
+
+  function loadCard() {
+    try { return JSON.parse(localStorage.getItem(LS_CARD) || "null"); } catch (e) { return null; }
+  }
+  function saveCard(c) { localStorage.setItem(LS_CARD, JSON.stringify(c)); }
+  function loadPeople() {
+    try { return JSON.parse(localStorage.getItem(LS_PEOPLE) || "[]"); } catch (e) { return []; }
+  }
+  function savePeople(p) { localStorage.setItem(LS_PEOPLE, JSON.stringify(p)); }
+  function uid() { return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+  /* voice notes in IndexedDB */
+  var dbp = null;
+  function db() {
+    if (dbp) return dbp;
+    dbp = new Promise(function (res, rej) {
+      var r = indexedDB.open("tagg", 1);
+      r.onupgradeneeded = function () { r.result.createObjectStore("audio"); };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+    return dbp;
+  }
+  function putAudio(id, blob) {
+    return db().then(function (d) {
+      return new Promise(function (res, rej) {
+        var tx = d.transaction("audio", "readwrite");
+        tx.objectStore("audio").put(blob, id);
+        tx.oncomplete = res; tx.onerror = function () { rej(tx.error); };
+      });
+    });
+  }
+  function getAudio(id) {
+    return db().then(function (d) {
+      return new Promise(function (res, rej) {
+        var rq = d.transaction("audio", "readonly").objectStore("audio").get(id);
+        rq.onsuccess = function () { res(rq.result || null); };
+        rq.onerror = function () { rej(rq.error); };
+      });
+    });
+  }
+
+  /* ================= card payload (QR) ================= */
+  function cardUrl(c) {
+    var payload = { v: 1, n: c.name, h: c.headline || "" };
+    if (c.email) payload.e = c.email;
+    if (c.phone) payload.p = c.phone;
+    var l = {};
+    ["linkedin", "github", "x", "instagram", "website"].forEach(function (k) {
+      if (c.links && c.links[k]) l[k] = c.links[k];
+    });
+    if (Object.keys(l).length) payload.l = l;
+    var json = JSON.stringify(payload);
+    var b64 = btoa(unescape(encodeURIComponent(json)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    return location.origin + location.pathname + "#/c/" + b64;
+  }
+  function decodePayload(b64) {
+    try {
+      var s = b64.replace(/-/g, "+").replace(/_/g, "/");
+      while (s.length % 4) s += "=";
+      var obj = JSON.parse(decodeURIComponent(escape(atob(s))));
+      if (!obj || !obj.n) return null;
+      return {
+        name: obj.n, headline: obj.h || "", email: obj.e || "", phone: obj.p || "",
+        links: obj.l || {}
+      };
+    } catch (e) { return null; }
+  }
+
+  /* ================= helpers ================= */
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (m) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m];
+    });
+  }
+  function initial(name) { return (name || "?").trim().charAt(0).toUpperCase(); }
+  function fmtDate(iso) {
+    var d = new Date(iso);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  }
+  function fmtTime(iso) {
+    var d = new Date(iso);
+    return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+  function toast(msg) {
+    var t = document.createElement("div");
+    t.className = "toast"; t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function () { t.remove(); }, 2200);
+  }
+  var LINK_DEFS = [
+    ["linkedin", "LinkedIn"], ["github", "GitHub"], ["x", "X"],
+    ["instagram", "Instagram"], ["website", "Website"]
+  ];
+  function normUrl(k, v) {
+    v = (v || "").trim();
+    if (!v) return "";
+    if (/^https?:\/\//i.test(v)) return v;
+    v = v.replace(/^@/, "");
+    var hosts = { linkedin: "linkedin.com/in/", github: "github.com/", x: "x.com/", instagram: "instagram.com/" };
+    if (k === "website") return "https://" + v.replace(/^https?:\/\//, "");
+    return "https://" + (hosts[k] || "") + v;
+  }
+  function chipsHtml(c) {
+    var out = "";
+    LINK_DEFS.forEach(function (kd) {
+      var u = c.links && c.links[kd[0]];
+      if (u) out += '<a class="chip" href="' + esc(u) + '" target="_blank" rel="noopener">' + esc(kd[1]) + '</a>';
+    });
+    if (c.email) out += '<a class="chip" href="mailto:' + esc(c.email) + '">Email</a>';
+    if (c.phone) out += '<a class="chip" href="tel:' + esc(c.phone) + '">Call</a>';
+    return out;
+  }
+  function cardHtml(c) {
+    return '<div class="taggcard">' +
+      '<div class="tc-mark">Tagg</div>' +
+      '<div class="tc-name">' + esc(c.name) + '</div>' +
+      (c.headline ? '<div class="tc-head">' + esc(c.headline) + '</div>' : '') +
+      '<div class="tc-links">' + chipsHtml(c) + '</div>' +
+      '</div>';
+  }
+
+  /* "why you two might be worth talking to" — keyword overlap heuristic */
+  var BUCKETS = [
+    [/robot|ros|sim|isaac|mechanic|hardware|embedded|drone|actuator/i, "robotics"],
+    [/\bai\b|ml|machine learning|llm|model|vision|neural|agent/i, "AI"],
+    [/design|ui|ux|product/i, "product and design"],
+    [/founder|startup|venture|cto|ceo/i, "startups"],
+    [/web|frontend|backend|full.?stack|software|swe|code|engineer/i, "software"],
+    [/research|phd|paper|lab/i, "research"],
+    [/student|asu|university|college/i, "student life"]
+  ];
+  function topicsOf(text) {
+    var t = [];
+    BUCKETS.forEach(function (b) { if (b[0].test(text || "")) t.push(b[1]); });
+    return t;
+  }
+  function whyTalk(me, them, eventName) {
+    var mine = topicsOf((me && me.headline) || "");
+    var theirs = topicsOf((them.headline || "") + " " + (them.name || ""));
+    var overlap = theirs.filter(function (t) { return mine.indexOf(t) >= 0; });
+    if (overlap.length) {
+      return "You both work on " + overlap.join(" and ") + ". Worth a follow-up while " +
+        (eventName ? eventName + " is still fresh." : "the conversation is still fresh.");
+    }
+    if (theirs.length) {
+      return "Their world is " + theirs.join(" and ") + (eventName ? " — a good contact from " + eventName + "." : ".");
+    }
+    return eventName ? "A good contact from " + eventName + " — add a note about what you discussed." : "Add a note about what you discussed.";
+  }
+
+  /* ================= icons (inline SVG) ================= */
+  var IC = {
+    card: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="11" r="2.2"/><path d="M5.5 16.5c.7-1.6 2-2.4 3.5-2.4s2.8.8 3.5 2.4"/><path d="M15 10h4M15 13.5h4"/></svg>',
+    people: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 2.9-4.6 5.5-4.6s4.7 1.6 5.5 4.6"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.6c2.4.2 4 1.6 4.6 4"/></svg>',
+    ask: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a8 8 0 0 0-8 8c0 2.1.8 4 2.2 5.4L5 21l4.8-1.3c.7.2 1.4.3 2.2.3a8 8 0 0 0 0-16Z"/><path d="M9.6 10.2c.2-1.2 1.2-2 2.4-2 1.3 0 2.3.9 2.3 2 0 1.4-1.4 1.8-2.2 2.7-.1.2-.1.5-.1 1"/><circle cx="12" cy="15.6" r="0.4" fill="currentColor"/></svg>',
+    qr: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg>',
+    mic: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
+    chev: '<svg class="chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'
+  };
+
+  /* ================= routing ================= */
+  var app = document.getElementById("app");
+  function route() {
+    var h = location.hash || "#/";
+    window.scrollTo(0, 0);
+    if (h.indexOf("#/c/") === 0) return renderScanned(h.slice(4));
+    if (h.indexOf("#/p/") === 0) return renderPerson(h.slice(4));
+    if (h === "#/edit") return renderEdit();
+    if (h === "#/people") return renderPeople();
+    if (h === "#/ask") return renderAsk();
+    return renderHome();
+  }
+  window.addEventListener("hashchange", route);
+
+  function shell(active, inner) {
+    var card = loadCard();
+    app.innerHTML =
+      '<div class="topbar"><div class="wordmark"><span class="mark">T</span>Tagg</div>' +
+      '<div class="sub">Meet once. Tagg remembers.</div></div>' +
+      '<div class="content">' + inner + '</div>' +
+      (card ? tabbarHtml(active) : "");
+  }
+  function tabbarHtml(active) {
+    function tab(id, href, icon, label) {
+      return '<a class="tab' + (active === id ? " active" : "") + '" href="' + href + '">' + icon + '<span>' + label + '</span></a>';
+    }
+    return '<nav class="tabbar">' +
+      tab("card", "#/", IC.card, "My Card") +
+      tab("people", "#/people", IC.people, "People") +
+      tab("ask", "#/ask", IC.ask, "Ask") +
+      '</nav>';
+  }
+
+  /* ================= home / my card ================= */
+  function renderHome() {
+    var card = loadCard();
+    if (!card) return renderOnboarding();
+    var people = loadPeople();
+    var url = cardUrl(card);
+    var qr = qrcode(0, "M");
+    qr.addData(url);
+    qr.make();
+    var img = qr.createDataURL(6, 6);
+
+    shell("card",
+      '<h1 class="largetitle">Your Tagg</h1>' +
+      '<p class="lead">Show the QR when you meet someone. They scan it — no app to install — and you both walk away remembered.</p>' +
+      cardHtml(card) +
+      '<div style="height:16px"></div>' +
+      '<div class="qrwrap"><img alt="Your Tagg QR code" src="' + img + '"></div>' +
+      '<p class="qrcaption"><b>' + esc(card.name.split(" ")[0]) + " - your Tagg code</b><br>Point any phone camera at it.</p>" +
+      '<div style="height:18px"></div>' +
+      '<div class="btnrow">' +
+      '<button class="btn btn-tinted" id="copylink">Copy link</button>' +
+      '<a class="btn btn-gray" href="#/edit">Edit card</a>' +
+      '</div>' +
+      '<h2 class="section">Recently met</h2>' +
+      (people.length ? recentHtml(people) :
+        '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you — or you scan theirs — they show up here.</div></div></div></div>') +
+      '<p class="footer-note">Your card and the people you meet stay on this device.<br>Tagg is live at ' + esc(location.host) + '.</p>'
+    );
+    document.getElementById("copylink").addEventListener("click", function () {
+      (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
+        .then(function () { toast("Link copied"); }, function () { toast("Copy failed — long-press the QR page URL"); });
+    });
+  }
+  function recentHtml(people) {
+    var rows = people.slice(0, 3).map(function (p) {
+      return '<a class="row" href="#/p/' + p.id + '">' +
+        '<div class="avatar">' + esc(initial(p.card.name)) + '</div>' +
+        '<div class="grow"><div class="title">' + esc(p.card.name) + '</div>' +
+        '<div class="detail">' + esc(p.event || "Somewhere") + " · " + fmtDate(p.metAt) + '</div></div>' +
+        IC.chev + '</a>';
+    }).join("");
+    return '<div class="group">' + rows + '</div>' +
+      (people.length > 3 ? '<div style="height:10px"></div><a class="btn btn-plain" href="#/people">See all ' + people.length + ' people</a>' : "");
+  }
+
+  /* ================= onboarding / edit ================= */
+  function renderOnboarding() {
+    shell(null,
+      '<h1 class="largetitle">The people you meet,<br>remembered.</h1>' +
+      '<p class="lead">Tagg is a people memory with a personal agent. Make your card once — then anyone you meet scans your code, gets your links, and saves the moment. No app for them to install.</p>' +
+      '<div class="group">' +
+      feat("Show your code", "They scan it and get your card — name, socials, links.") +
+      feat("The moment, saved", "When you met, where, and at which event. Add a quick voice note.") +
+      feat("Just ask", '"Who did I meet at Cal Hacks who works on robotics?" Tagg answers.') +
+      feat("Follow up", 'Tell Tagg "set up a call" — your agent works it out with theirs.') +
+      '</div>' +
+      '<div style="height:22px"></div>' +
+      '<a class="btn btn-accent" href="#/edit">Create your card</a>' +
+      '<p class="footer-note">Everything stays on your device in this early version.</p>'
+    );
+    function feat(t, d) {
+      return '<div class="row"><div class="grow"><div class="title">' + t + '</div><div class="detail" style="white-space:normal">' + d + '</div></div></div>';
+    }
+  }
+
+  function renderEdit() {
+    var c = loadCard() || { name: "", headline: "", email: "", phone: "", links: {} };
+    shell(null,
+      '<h1 class="largetitle">' + (loadCard() ? "Edit card" : "Your card") + '</h1>' +
+      '<p class="lead">This is what people see when they scan your code.</p>' +
+      '<div class="field"><label>Name</label><input class="input" id="f-name" placeholder="Prajval Arora" value="' + esc(c.name) + '"></div>' +
+      '<div class="field"><label>Headline</label><input class="input" id="f-head" placeholder="Robotics engineering at ASU" value="' + esc(c.headline) + '"></div>' +
+      '<div class="field"><label>LinkedIn</label><input class="input" id="f-linkedin" placeholder="username or URL" value="' + esc(c.links.linkedin || "") + '"></div>' +
+      '<div class="field"><label>GitHub</label><input class="input" id="f-github" placeholder="username or URL" value="' + esc(c.links.github || "") + '"></div>' +
+      '<div class="field"><label>X</label><input class="input" id="f-x" placeholder="handle" value="' + esc(c.links.x || "") + '"></div>' +
+      '<div class="field"><label>Instagram</label><input class="input" id="f-instagram" placeholder="handle" value="' + esc(c.links.instagram || "") + '"></div>' +
+      '<div class="field"><label>Website</label><input class="input" id="f-website" placeholder="prajvalarora.com" value="' + esc(c.links.website || "") + '"></div>' +
+      '<div class="field"><label>Email</label><input class="input" id="f-email" type="email" placeholder="you@example.com" value="' + esc(c.email) + '"></div>' +
+      '<div class="field"><label>Phone</label><input class="input" id="f-phone" type="tel" placeholder="+1 ..." value="' + esc(c.phone) + '"></div>' +
+      '<h2 class="section">Preview</h2>' +
+      '<div id="preview"></div>' +
+      '<div style="height:18px"></div>' +
+      '<button class="btn btn-accent" id="save">Save card</button>'
+    );
+    function collect() {
+      return {
+        name: v("f-name"), headline: v("f-head"),
+        email: v("f-email"), phone: v("f-phone"),
+        links: {
+          linkedin: normUrl("linkedin", v("f-linkedin")),
+          github: normUrl("github", v("f-github")),
+          x: normUrl("x", v("f-x")),
+          instagram: normUrl("instagram", v("f-instagram")),
+          website: normUrl("website", v("f-website"))
+        }
+      };
+    }
+    function v(id) { return document.getElementById(id).value.trim(); }
+    function refresh() {
+      var c = collect();
+      document.getElementById("preview").innerHTML = cardHtml(c.name ? c : { name: "Your Name", headline: "Your headline", links: {} });
+    }
+    Array.prototype.forEach.call(document.querySelectorAll(".input"), function (i) {
+      i.addEventListener("input", refresh);
+    });
+    refresh();
+    document.getElementById("save").addEventListener("click", function () {
+      var c = collect();
+      if (!c.name) { toast("Add your name first"); return; }
+      Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
+      saveCard(c);
+      toast("Card saved");
+      location.hash = "#/";
+    });
+  }
+
+  /* ================= scanned card ================= */
+  function renderScanned(b64) {
+    var c = decodePayload(b64);
+    if (!c) {
+      shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
+      return;
+    }
+    var mine = loadCard();
+    shell(null,
+      '<span class="pill">You just met</span>' +
+      '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
+      '<p class="lead">Tap the accounts that are theirs, then save — Tagg remembers when and where you met.</p>' +
+      cardHtml(c) +
+      '<div style="height:18px"></div>' +
+      '<div class="field"><label>Where did you meet? (event or place)</label>' +
+      '<input class="input" id="f-event" placeholder="Cal Hacks, Berkeley"></div>' +
+      '<button class="btn btn-accent" id="savemeet">Save to Tagg</button>' +
+      '<button class="btn btn-tinted" id="shareback">Share your card back</button>' +
+      '<a class="btn btn-plain" href="#/">Make your own Tagg card</a>' +
+      '<p class="footer-note">Self-shared card. Sign-in verified accounts are coming to Tagg.</p>'
+    );
+    document.getElementById("savemeet").addEventListener("click", function () {
+      var person = {
+        id: uid(), card: c, metAt: new Date().toISOString(),
+        event: document.getElementById("f-event").value.trim(),
+        place: null, note: "", hasAudio: false
+      };
+      function finish() {
+        var people = loadPeople();
+        people.unshift(person);
+        savePeople(people);
+        toast("Saved to Tagg");
+        location.hash = "#/p/" + person.id;
+      }
+      if (navigator.geolocation) {
+        var done = false;
+        var t = setTimeout(function () { if (!done) { done = true; finish(); } }, 3500);
+        navigator.geolocation.getCurrentPosition(function (pos) {
+          if (done) return; done = true; clearTimeout(t);
+          person.place = { lat: +pos.coords.latitude.toFixed(5), lng: +pos.coords.longitude.toFixed(5) };
+          finish();
+        }, function () { if (!done) { done = true; clearTimeout(t); finish(); } }, { timeout: 3000, maximumAge: 300000 });
+      } else { finish(); }
+    });
+    document.getElementById("shareback").addEventListener("click", function () {
+      if (loadCard()) return showBackQr(loadCard());
+      location.hash = "#/edit";
+    });
+    function showBackQr(myc) {
+      var u = cardUrl(myc);
+      var qr = qrcode(0, "M"); qr.addData(u); qr.make();
+      var img = qr.createDataURL(6, 6);
+      var bg = document.createElement("div");
+      bg.className = "sheet-bg";
+      bg.innerHTML = '<div class="sheet"><div class="grab"></div>' +
+        '<h3>Let them scan you</h3><p class="hint">They point their camera at this and get your card too.</p>' +
+        '<div class="qrwrap"><img alt="Your Tagg QR code" src="' + img + '"></div>' +
+        '<div style="height:16px"></div><button class="btn btn-gray" id="closesheet">Done</button></div>';
+      document.body.appendChild(bg);
+      bg.addEventListener("click", function (e) { if (e.target === bg) bg.remove(); });
+      bg.querySelector("#closesheet").addEventListener("click", function () { bg.remove(); });
+    }
+  }
+
+  /* ================= person detail ================= */
+  function renderPerson(id) {
+    var people = loadPeople();
+    var p = null;
+    for (var i = 0; i < people.length; i++) if (people[i].id === id) p = people[i];
+    if (!p) { location.hash = "#/people"; return; }
+    var me = loadCard();
+    var mapLink = p.place ? "https://www.google.com/maps?q=" + p.place.lat + "," + p.place.lng : null;
+    shell("people",
+      '<div style="display:flex;align-items:center;gap:16px;margin:6px 0 14px">' +
+      '<div class="avatar" style="width:60px;height:60px;font-size:24px">' + esc(initial(p.card.name)) + '</div>' +
+      '<div><h1 class="largetitle" style="font-size:26px;margin:0">' + esc(p.card.name) + '</h1>' +
+      (p.card.headline ? '<div style="color:var(--text-2);font-size:14px;margin-top:2px">' + esc(p.card.headline) + '</div>' : '') +
+      '</div></div>' +
+      '<div class="metagrid">' +
+      meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
+      meta("At", p.event || "—") +
+      (mapLink ? meta("Where", '<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open map</a></span>') : "") +
+      '</div>' +
+      '<h2 class="section">Links</h2>' +
+      '<div class="taggcard"><div class="tc-links" style="margin-top:0">' + (chipsHtml(p.card) || '<span style="color:var(--text-2);font-size:14px">No links shared</span>') + '</div></div>' +
+      '<h2 class="section">Why keep in touch</h2>' +
+      '<div class="answer">' + esc(whyTalk(me, p.card, p.event)) + '</div>' +
+      '<h2 class="section">Your note <span class="soon">private to you</span></h2>' +
+      '<textarea class="input" id="note" placeholder="What did you two talk about?">' + esc(p.note || "") + '</textarea>' +
+      '<div style="height:10px"></div>' +
+      '<div id="audiozone"></div>' +
+      '<div style="height:10px"></div>' +
+      '<button class="btn btn-gray" id="savenote">Save note</button>' +
+      '<h2 class="section">Follow up</h2>' +
+      '<button class="btn btn-tinted" id="followup">Ask Tagg to set up a call</button>' +
+      '<div style="height:14px"></div>' +
+      '<button class="btn btn-plain" id="del" style="color:#ff6961">Remove from Tagg</button>'
+    );
+    document.getElementById("savenote").addEventListener("click", function () {
+      p.note = document.getElementById("note").value;
+      var ps = loadPeople();
+      for (var i = 0; i < ps.length; i++) if (ps[i].id === p.id) ps[i] = p;
+      savePeople(ps);
+      toast("Note saved");
+    });
+    document.getElementById("del").addEventListener("click", function () {
+      if (!confirm("Remove " + p.card.name + " from Tagg?")) return;
+      savePeople(loadPeople().filter(function (x) { return x.id !== p.id; }));
+      location.hash = "#/people";
+    });
+    document.getElementById("followup").addEventListener("click", function () {
+      var bg = document.createElement("div");
+      bg.className = "sheet-bg";
+      var mail = p.card.email ? '<a class="btn btn-accent" href="mailto:' + esc(p.card.email) + "?subject=" + encodeURIComponent("Following up — " + (p.event || "great meeting you")) + '">Email ' + esc(p.card.name.split(" ")[0]) + '</a>' : "";
+      var tel = p.card.phone ? '<a class="btn btn-gray" href="tel:' + esc(p.card.phone) + '">Call</a>' : "";
+      bg.innerHTML = '<div class="sheet"><div class="grab"></div>' +
+        '<h3>Set up a call</h3>' +
+        '<p class="hint">Soon, your Tagg agent will talk to ' + esc(p.card.name.split(" ")[0]) + '\'s agent, compare calendars and suggest a time — you both just tap to confirm. Agent-to-agent scheduling is still being built. For now, reach out directly:</p>' +
+        (mail || tel ? mail + tel : '<p class="hint">They did not share an email or phone number.</p>') +
+        '<button class="btn btn-plain" id="closesheet">Close</button></div>';
+      document.body.appendChild(bg);
+      bg.addEventListener("click", function (e) { if (e.target === bg) bg.remove(); });
+      bg.querySelector("#closesheet").addEventListener("click", function () { bg.remove(); });
+    });
+    setupAudio(p);
+  }
+  function meta(k, v) {
+    return '<div class="metacard"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
+  }
+
+  /* voice notes */
+  function setupAudio(p) {
+    var zone = document.getElementById("audiozone");
+    function render() {
+      getAudio(p.id).then(function (blob) {
+        if (blob) {
+          zone.innerHTML = '<audio controls style="width:100%" src="' + URL.createObjectURL(blob) + '"></audio>' +
+            '<div style="height:8px"></div><button class="btn btn-plain small" id="rec-again">Record again</button>';
+          document.getElementById("rec-again").addEventListener("click", startRec);
+        } else {
+          zone.innerHTML = '<button class="btn btn-gray" id="rec">' + IC.mic + ' Add a voice note</button>';
+          document.getElementById("rec").addEventListener("click", startRec);
+        }
+      });
+    }
+    function startRec() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        toast("Voice notes need a browser with microphone access");
+        return;
+      }
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+        var rec = new MediaRecorder(stream);
+        var chunks = [];
+        rec.ondataavailable = function (e) { chunks.push(e.data); };
+        rec.onstop = function () {
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          var blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+          putAudio(p.id, blob).then(function () { toast("Voice note saved"); render(); });
+        };
+        zone.innerHTML = '<div class="recbar"><span class="recdot"></span><span style="flex:1;font-size:15px">Recording…</span><button class="btn btn-accent small" id="stop">Done</button></div>';
+        document.getElementById("stop").addEventListener("click", function () { rec.stop(); });
+        rec.start();
+      }, function () { toast("Microphone permission denied"); });
+    }
+    render();
+  }
+
+  /* ================= people list ================= */
+  function renderPeople() {
+    var people = loadPeople();
+    shell("people",
+      '<h1 class="largetitle">People</h1>' +
+      '<p class="lead">Everyone you have met through Tagg, newest first.</p>' +
+      (people.length ? '<div class="group">' + people.map(function (p) {
+        return '<a class="row" href="#/p/' + p.id + '">' +
+          '<div class="avatar">' + esc(initial(p.card.name)) + '</div>' +
+          '<div class="grow"><div class="title">' + esc(p.card.name) + '</div>' +
+          '<div class="detail">' + esc(p.event || "Somewhere") + " · " + fmtDate(p.metAt) + '</div></div>' +
+          IC.chev + '</a>';
+      }).join("") + '</div>' :
+      '<div class="empty"><div class="glyph">' + IC.people + '</div><div class="t">No one here yet</div><div class="d">Show your Tagg code next time you meet someone — they will appear here with when and where.</div></div>') +
+      (people.length ? '<div style="height:14px"></div><a class="btn btn-tinted" href="#/ask">Ask about the people you met</a>' : '<div style="height:14px"></div><a class="btn btn-accent" href="#/">Show my Tagg code</a>')
+    );
+  }
+
+  /* ================= ask ================= */
+  var STOP = ("who did i meet at the a an and or of with in on from to that this those these what when where which " +
+    "was were is are do does works work working worked about tell me show person people guy girl someone anyone").split(" ");
+  function renderAsk() {
+    shell("ask",
+      '<h1 class="largetitle">Ask Tagg</h1>' +
+      '<p class="lead">Ask about the people you have met — who they are, where and when you met, and why you might talk again.</p>' +
+      '<div class="field"><input class="input" id="q" placeholder="Who did I meet at Cal Hacks who works on robotics?" style="border-radius:14px"></div>' +
+      '<div style="height:12px"></div>' +
+      '<button class="btn btn-accent" id="go">Ask</button>' +
+      '<div id="ans" style="margin-top:18px"></div>' +
+      '<p class="footer-note">Answers come only from the cards and notes saved on this device.<br>Calendar-coordinating Tagg agents are coming soon.</p>'
+    );
+    function go() {
+      var q = document.getElementById("q").value;
+      document.getElementById("ans").innerHTML = answerHtml(q);
+    }
+    document.getElementById("go").addEventListener("click", go);
+    document.getElementById("q").addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+  }
+  function answerHtml(q) {
+    var people = loadPeople();
+    if (!people.length) {
+      return '<div class="empty"><div class="glyph">' + IC.ask + '</div><div class="t">Nothing to search yet</div><div class="d">Once you meet people through Tagg, ask things like "Who did I meet at Cal Hacks?"</div></div>';
+    }
+    var terms = q.toLowerCase().replace(/[?.,!'"]/g, " ").split(/\s+/).filter(function (t) {
+      return t && STOP.indexOf(t) < 0;
+    });
+    var me = loadCard();
+    var scored = people.map(function (p) {
+      var hay = [p.card.name, p.card.headline, p.event, p.note,
+        p.place ? p.place.lat + "," + p.place.lng : ""].join(" ").toLowerCase();
+      var hits = terms.filter(function (t) { return hay.indexOf(t) >= 0; });
+      return { p: p, score: hits.length, hits: hits };
+    }).filter(function (s) { return terms.length === 0 || s.score > 0; });
+    scored.sort(function (a, b) { return b.score - a.score; });
+    if (!scored.length) {
+      return '<div class="answer">I do not have anyone saved who matches that yet. Try a name, an event, or a topic like "robotics".</div>';
+    }
+    return scored.slice(0, 4).map(function (s) {
+      var p = s.p;
+      return '<div class="answer" style="margin-bottom:12px">' +
+        'You met <b>' + esc(p.card.name) + '</b>' +
+        (p.event ? ' at <b>' + esc(p.event) + '</b>' : '') +
+        ' on ' + fmtDate(p.metAt) + ' at ' + fmtTime(p.metAt) + '.' +
+        (p.card.headline ? ' ' + esc(p.card.headline) + '.' : '') +
+        '<br><span style="color:var(--text-2)">' + esc(whyTalk(me, p.card, p.event)) + '</span>' +
+        (p.note ? '<br><span style="color:var(--text-2)">Your note: ' + esc(p.note) + '</span>' : '') +
+        '<div style="margin-top:10px"><a class="btn btn-gray small" href="#/p/' + p.id + '">Open card</a></div>' +
+        '</div>';
+    }).join("");
+  }
+
+  route();
+})();
