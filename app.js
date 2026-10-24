@@ -64,14 +64,26 @@
         setOwnerToken(d.ownerToken);
         setProfile(d.profile);
         lastSync = 0;
-        return syncPeople().then(function () {
+        var restore = Promise.resolve();
+        if (!loadCard()) {
+          restore = api("/api/me").then(function (me) {
+            if (me && me.slug) return api("/api/c/" + me.slug).then(function (cd) {
+              if (cd && cd.card) { saveCard(cd.card); setCardSlug(me.slug); }
+            });
+          }).catch(function () {});
+        }
+        return restore.then(function () { return syncPeople(); }).then(function () {
           toast("Signed in as " + (d.profile.email || "you") + " - your Tagg is backed up");
           route();
         });
       }).catch(function () { toast("Sign-in failed - your data is still safe on this device"); });
   }
-  function mountGoogleButton(el) {
-    if (!window.google || !google.accounts || !google.accounts.id) { el.innerHTML = '<p class="hint">Google sign-in is still loading - pull to retry.</p>'; return; }
+  function mountGoogleButton(el, tries) {
+    if (!window.google || !google.accounts || !google.accounts.id) {
+      tries = tries || 0;
+      if (tries < 25) { setTimeout(function () { mountGoogleButton(el, tries + 1); }, 400); return; }
+      el.innerHTML = '<p class="hint">Google sign-in could not load - check your connection.</p>'; return;
+    }
     google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { googleSignIn(resp.credential); } });
     google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
   }
@@ -404,8 +416,14 @@
       '</div>' +
       '<div style="height:22px"></div>' +
       '<a class="btn btn-accent" href="#/edit">Create your card</a>' +
+      '<div style="height:18px"></div>' +
+      '<h2 class="section">Already have Tagg?</h2>' +
+      '<div id="gsign"></div>' +
+      '<p class="hint" style="margin-top:8px">Sign in to pull your card and your people onto this device.</p>' +
       '<p class="footer-note">Everything stays on your device in this early version.</p>'
     );
+    var gsign = document.getElementById("gsign");
+    if (gsign) mountGoogleButton(gsign);
     function feat(t, d) {
       return '<div class="row"><div class="grow"><div class="title">' + t + '</div><div class="detail" style="white-space:normal">' + d + '</div></div></div>';
     }
