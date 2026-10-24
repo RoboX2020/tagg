@@ -421,10 +421,19 @@
       savePeople(ps);
       toast("Note saved");
     });
-    document.getElementById("del").addEventListener("click", function () {
-      if (!confirm("Remove " + p.card.name + " from Tagg?")) return;
-      savePeople(loadPeople().filter(function (x) { return x.id !== p.id; }));
-      location.hash = "#/people";
+    var delBtn = document.getElementById("del");
+    delBtn.addEventListener("click", function () {
+      if (delBtn.dataset.armed) {
+        savePeople(loadPeople().filter(function (x) { return x.id !== p.id; }));
+        location.hash = "#/people";
+      } else {
+        delBtn.dataset.armed = "1";
+        delBtn.textContent = "Tap again to remove";
+        setTimeout(function () {
+          delBtn.dataset.armed = "";
+          delBtn.textContent = "Remove from Tagg";
+        }, 3000);
+      }
     });
     document.getElementById("followup").addEventListener("click", function () {
       var bg = document.createElement("div");
