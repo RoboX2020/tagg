@@ -12,13 +12,15 @@ Tagg is a people memory with a personal agent. Meet someone once and Tagg rememb
 
 ## Status
 
-Early live version. Real today: cards, QR exchange, saving the moment, voice and text notes, natural-language ask. Coming: sign-in verified accounts and agent-to-agent follow-up scheduling.
-
-Everything is stored locally on each device. No accounts, no tracking.
+Live v2. Real today: cards, QR exchange, mutual saving (both people get each other instantly), structured when/where/event capture, voice and text notes, natural-language ask, Save to Contacts (vCard), and automatic public-profile enrichment. Coming: sign-in verified accounts, agent-to-agent follow-up scheduling, and a visual connection graph.
 
 ## Tech
 
-Static single-page app - no build step, no backend. HTML, CSS and vanilla JavaScript; QR codes generated client-side; voice notes in IndexedDB; cards in localStorage. Designed to Apple's Human Interface Guidelines with an orange, black and white palette, built for phone browsers first.
+- Front end: static single-page app, no build step. HTML, CSS and vanilla JavaScript, designed to Apple's Human Interface Guidelines with an orange, black and white palette, built for phone browsers first.
+- Database: Cloudflare Worker + Workers KV (`tagg-api.prajval-2029.workers.dev`). Cards, owner identities, and people records live server-side behind per-device owner tokens; graph-shaped schema (people as nodes, "met" moments as edges) with a `/api/graph` export. The browser keeps a local cache so the app still opens offline.
+- QR codes encode short card slugs, so they stay sparse and scan instantly.
+- Enrichment: public GitHub profiles via the GitHub API; LinkedIn via an Apify actor (enabled when an `APIFY_TOKEN` secret is set on the worker). Only links a person shares on their own card are enriched - nothing else is scraped.
+- Voice notes in IndexedDB (device-local).
 
 ## Run
 
