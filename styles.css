@@ -245,3 +245,16 @@ textarea.input { resize: vertical; min-height: 90px; line-height:1.45; }
 .linklist a { color: var(--accent-2); text-decoration: none; }
 .divider { height:0.5px; background: var(--sep); margin: 20px 0; }
 .soon { color: var(--text-3); font-size: 12.5px; }
+
+/* ---------- connections map ---------- */
+.graphwrap { background: var(--bg-elev); border-radius: var(--radius); padding: 10px; }
+.graphwrap canvas { display:block; margin: 0 auto; }
+
+/* ---------- tab badge ---------- */
+.tab { position: relative; }
+.tabbadge {
+  position: absolute; top: 6px; left: calc(50% + 2px);
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2.5px rgba(28,28,30,0.95);
+}
