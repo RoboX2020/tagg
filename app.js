@@ -1,4 +1,4 @@
-/* Tagg — people memory with a personal agent. Client-side MVP. */
+/* Tagg - people memory with a personal agent. Client-side MVP. */
 (function () {
   "use strict";
 
@@ -128,7 +128,7 @@
       '</div>';
   }
 
-  /* "why you two might be worth talking to" — keyword overlap heuristic */
+  /* "why you two might be worth talking to" - keyword overlap heuristic */
   var BUCKETS = [
     [/robot|ros|sim|isaac|mechanic|hardware|embedded|drone|actuator/i, "robotics"],
     [/\bai\b|ml|machine learning|llm|model|vision|neural|agent/i, "AI"],
@@ -152,9 +152,9 @@
         (eventName ? eventName + " is still fresh." : "the conversation is still fresh.");
     }
     if (theirs.length) {
-      return "Their world is " + theirs.join(" and ") + (eventName ? " — a good contact from " + eventName + "." : ".");
+      return "Their world is " + theirs.join(" and ") + (eventName ? " - a good contact from " + eventName + "." : ".");
     }
-    return eventName ? "A good contact from " + eventName + " — add a note about what you discussed." : "Add a note about what you discussed.";
+    return eventName ? "A good contact from " + eventName + " - add a note about what you discussed." : "Add a note about what you discussed.";
   }
 
   /* ================= icons (inline SVG) ================= */
@@ -213,7 +213,7 @@
 
     shell("card",
       '<h1 class="largetitle">Your Tagg</h1>' +
-      '<p class="lead">Show the QR when you meet someone. They scan it — no app to install — and you both walk away remembered.</p>' +
+      '<p class="lead">Show the QR when you meet someone. They scan it - no app to install - and you both walk away remembered.</p>' +
       cardHtml(card) +
       '<div style="height:16px"></div>' +
       '<div class="qrwrap"><img alt="Your Tagg QR code" src="' + img + '"></div>' +
@@ -225,12 +225,12 @@
       '</div>' +
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
-        '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you — or you scan theirs — they show up here.</div></div></div></div>') +
+        '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
       '<p class="footer-note">Your card and the people you meet stay on this device.<br>Tagg is live at ' + esc(location.host) + '.</p>'
     );
     document.getElementById("copylink").addEventListener("click", function () {
       (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
-        .then(function () { toast("Link copied"); }, function () { toast("Copy failed — long-press the QR page URL"); });
+        .then(function () { toast("Link copied"); }, function () { toast("Copy failed - long-press the QR page URL"); });
     });
   }
   function recentHtml(people) {
@@ -249,12 +249,12 @@
   function renderOnboarding() {
     shell(null,
       '<h1 class="largetitle">The people you meet,<br>remembered.</h1>' +
-      '<p class="lead">Tagg is a people memory with a personal agent. Make your card once — then anyone you meet scans your code, gets your links, and saves the moment. No app for them to install.</p>' +
+      '<p class="lead">Tagg is a people memory with a personal agent. Make your card once - then anyone you meet scans your code, gets your links, and saves the moment. No app for them to install.</p>' +
       '<div class="group">' +
-      feat("Show your code", "They scan it and get your card — name, socials, links.") +
+      feat("Show your code", "They scan it and get your card - name, socials, links.") +
       feat("The moment, saved", "When you met, where, and at which event. Add a quick voice note.") +
       feat("Just ask", '"Who did I meet at Cal Hacks who works on robotics?" Tagg answers.') +
-      feat("Follow up", 'Tell Tagg "set up a call" — your agent works it out with theirs.') +
+      feat("Follow up", 'Tell Tagg "set up a call" - your agent works it out with theirs.') +
       '</div>' +
       '<div style="height:22px"></div>' +
       '<a class="btn btn-accent" href="#/edit">Create your card</a>' +
@@ -327,7 +327,7 @@
     shell(null,
       '<span class="pill">You just met</span>' +
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
-      '<p class="lead">Tap the accounts that are theirs, then save — Tagg remembers when and where you met.</p>' +
+      '<p class="lead">Tap the accounts that are theirs, then save - Tagg remembers when and where you met.</p>' +
       cardHtml(c) +
       '<div style="height:18px"></div>' +
       '<div class="field"><label>Where did you meet? (event or place)</label>' +
@@ -396,7 +396,7 @@
       '</div></div>' +
       '<div class="metagrid">' +
       meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
-      meta("At", p.event || "—") +
+      meta("At", p.event || "-") +
       (mapLink ? meta("Where", '<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open map</a></span>') : "") +
       '</div>' +
       '<h2 class="section">Links</h2>' +
@@ -429,11 +429,11 @@
     document.getElementById("followup").addEventListener("click", function () {
       var bg = document.createElement("div");
       bg.className = "sheet-bg";
-      var mail = p.card.email ? '<a class="btn btn-accent" href="mailto:' + esc(p.card.email) + "?subject=" + encodeURIComponent("Following up — " + (p.event || "great meeting you")) + '">Email ' + esc(p.card.name.split(" ")[0]) + '</a>' : "";
+      var mail = p.card.email ? '<a class="btn btn-accent" href="mailto:' + esc(p.card.email) + "?subject=" + encodeURIComponent("Following up - " + (p.event || "great meeting you")) + '">Email ' + esc(p.card.name.split(" ")[0]) + '</a>' : "";
       var tel = p.card.phone ? '<a class="btn btn-gray" href="tel:' + esc(p.card.phone) + '">Call</a>' : "";
       bg.innerHTML = '<div class="sheet"><div class="grab"></div>' +
         '<h3>Set up a call</h3>' +
-        '<p class="hint">Soon, your Tagg agent will talk to ' + esc(p.card.name.split(" ")[0]) + '\'s agent, compare calendars and suggest a time — you both just tap to confirm. Agent-to-agent scheduling is still being built. For now, reach out directly:</p>' +
+        '<p class="hint">Soon, your Tagg agent will talk to ' + esc(p.card.name.split(" ")[0]) + '\'s agent, compare calendars and suggest a time - you both just tap to confirm. Agent-to-agent scheduling is still being built. For now, reach out directly:</p>' +
         (mail || tel ? mail + tel : '<p class="hint">They did not share an email or phone number.</p>') +
         '<button class="btn btn-plain" id="closesheet">Close</button></div>';
       document.body.appendChild(bg);
@@ -496,7 +496,7 @@
           '<div class="detail">' + esc(p.event || "Somewhere") + " · " + fmtDate(p.metAt) + '</div></div>' +
           IC.chev + '</a>';
       }).join("") + '</div>' :
-      '<div class="empty"><div class="glyph">' + IC.people + '</div><div class="t">No one here yet</div><div class="d">Show your Tagg code next time you meet someone — they will appear here with when and where.</div></div>') +
+      '<div class="empty"><div class="glyph">' + IC.people + '</div><div class="t">No one here yet</div><div class="d">Show your Tagg code next time you meet someone - they will appear here with when and where.</div></div>') +
       (people.length ? '<div style="height:14px"></div><a class="btn btn-tinted" href="#/ask">Ask about the people you met</a>' : '<div style="height:14px"></div><a class="btn btn-accent" href="#/">Show my Tagg code</a>')
     );
   }
@@ -507,7 +507,7 @@
   function renderAsk() {
     shell("ask",
       '<h1 class="largetitle">Ask Tagg</h1>' +
-      '<p class="lead">Ask about the people you have met — who they are, where and when you met, and why you might talk again.</p>' +
+      '<p class="lead">Ask about the people you have met - who they are, where and when you met, and why you might talk again.</p>' +
       '<div class="field"><input class="input" id="q" placeholder="Who did I meet at Cal Hacks who works on robotics?" style="border-radius:14px"></div>' +
       '<div style="height:12px"></div>' +
       '<button class="btn btn-accent" id="go">Ask</button>' +
