@@ -16,6 +16,68 @@
   function savePeople(p) { localStorage.setItem(LS_PEOPLE, JSON.stringify(p)); }
   function uid() { return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
+  /* ================= tagg cloud database ================= */
+  var API = "https://tagg-api.prajval-2029.workers.dev";
+  function ownerToken() { return localStorage.getItem("tagg.owner.v1") || null; }
+  function setOwnerToken(t) { if (t) localStorage.setItem("tagg.owner.v1", t); }
+  function cardSlug() { return localStorage.getItem("tagg.slug.v1") || null; }
+  function setCardSlug(v) { if (v) localStorage.setItem("tagg.slug.v1", v); }
+  function api(path, opts) {
+    opts = opts || {};
+    var h = { "Content-Type": "application/json" };
+    var t = ownerToken();
+    if (t) h.Authorization = "Bearer " + t;
+    return fetch(API + path, { method: opts.method || "GET", headers: h, body: opts.body ? JSON.stringify(opts.body) : undefined })
+      .then(function (r) { return r.json().then(function (d) { if (!r.ok) throw (d || {}); return d; }); });
+  }
+  function ensureOwner() {
+    if (ownerToken()) return Promise.resolve(ownerToken());
+    return api("/api/owner", { method: "POST", body: {} }).then(function (d) { setOwnerToken(d.ownerToken); return d.ownerToken; });
+  }
+  function syncCard() {
+    var c = loadCard(); if (!c) return Promise.resolve(null);
+    return ensureOwner().then(function () {
+      return api("/api/card", { method: "POST", body: { ownerToken: ownerToken(), card: c } });
+    }).then(function (d) { setCardSlug(d.slug); return d; }).catch(function () { return null; });
+  }
+  function migrateOnce() {
+    if (localStorage.getItem("tagg.migrated.v1")) return Promise.resolve();
+    var locals = loadPeople();
+    localStorage.setItem("tagg.migrated.v1", "1");
+    if (!locals.length || !ownerToken()) return Promise.resolve();
+    return api("/api/migrate", { method: "POST", body: { ownerToken: ownerToken(), people: locals } }).catch(function () {});
+  }
+  function syncPeople() {
+    if (!ownerToken()) return Promise.resolve(loadPeople());
+    return api("/api/people").then(function (d) {
+      var list = d.people || [];
+      savePeople(list);
+      return list;
+    }).catch(function () { return loadPeople(); });
+  }
+  var lastSync = 0, syncing = false;
+  function refreshSoon() {
+    if (syncing || Date.now() - lastSync < 10000) return;
+    syncing = true; lastSync = Date.now();
+    syncPeople().then(function () { syncing = false; route(); }, function () { syncing = false; });
+  }
+  /* location with a human-readable place label */
+  function withLocation(cb) {
+    function done(v) { clearTimeout(timer); cb(v); }
+    var timer = setTimeout(function () { cb(null); }, 4500);
+    if (!navigator.geolocation) { clearTimeout(timer); return cb(null); }
+    navigator.geolocation.getCurrentPosition(function (pos) {
+      var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "" };
+      fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&lat=" + loc.lat + "&lon=" + loc.lon)
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          var a = d.address || {};
+          loc.label = [a.city || a.town || a.village || a.suburb || a.county || "", a.state || ""].filter(Boolean).join(", ") || (d.display_name || "").split(",").slice(0, 2).join(",");
+          done(loc);
+        }).catch(function () { done(loc); });
+    }, function () { done(null); }, { timeout: 2500, maximumAge: 300000 });
+  }
+
   /* voice notes in IndexedDB */
   var dbp = null;
   function db() {
@@ -49,6 +111,8 @@
 
   /* ================= card payload (QR) ================= */
   function cardUrl(c) {
+    var slug = cardSlug();
+    if (slug) return location.origin + location.pathname + "#/c/" + slug;
     var payload = { v: 1, n: c.name, h: c.headline || "" };
     if (c.email) payload.e = c.email;
     if (c.phone) payload.p = c.phone;
@@ -206,11 +270,12 @@
   function route() {
     var h = location.hash || "#/";
     window.scrollTo(0, 0);
-    if (h.indexOf("#/c/") === 0) return renderScanned(h.slice(4));
+    if (h.indexOf("#/c/") === 0) return renderScannedRoute(h.slice(4));
     if (h.indexOf("#/p/") === 0) return renderPerson(h.slice(4));
     if (h === "#/edit") return renderEdit();
-    if (h === "#/people") return renderPeople();
-    if (h === "#/ask") return renderAsk();
+    if (h === "#/people") { refreshSoon(); return renderPeople(); }
+    if (h === "#/ask") { refreshSoon(); return renderAsk(); }
+    refreshSoon();
     return renderHome();
   }
   window.addEventListener("hashchange", route);
@@ -260,7 +325,7 @@
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
         '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
-      '<p class="footer-note">Your card and the people you meet stay on this device.<br>Tagg is live at ' + esc(location.host) + '.</p>'
+      '<p class="footer-note">Your card and the people you meet live in your own Tagg database - synced, backed up, and always recallable.<br>Tagg is live at ' + esc(location.host) + '.</p>'
     );
     document.getElementById("copylink").addEventListener("click", function () {
       (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
@@ -345,14 +410,27 @@
       if (!c.name) { toast("Add your name first"); return; }
       Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
       saveCard(c);
+      lastSync = 0;
+      syncCard().then(function (d) {
+        if (d) { toast("Card saved to your Tagg database"); lastSync = 0; route(); }
+      });
       toast("Card saved");
       location.hash = "#/";
     });
   }
 
   /* ================= scanned card ================= */
-  function renderScanned(b64) {
-    var c = decodePayload(b64);
+  function renderScannedRoute(id) {
+    if (/^[a-z0-9]{6,10}$/.test(id)) {
+      shell(null, '<div class="empty"><div class="t">Pulling up their card...</div><div class="d">One second.</div></div>');
+      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched); }).catch(function () {
+        shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
+      });
+      return;
+    }
+    renderScanned(decodePayload(id), null, null);
+  }
+  function renderScanned(c, slug, enriched) {
     if (!c) {
       shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       return;
@@ -372,27 +450,30 @@
       '<p class="footer-note">Self-shared card. Sign-in verified accounts are coming to Tagg.</p>'
     );
     document.getElementById("savemeet").addEventListener("click", function () {
-      var person = {
-        id: uid(), card: c, metAt: new Date().toISOString(),
-        event: document.getElementById("f-event").value.trim(),
-        place: null, note: "", hasAudio: false
-      };
-      function finish() {
-        var people = loadPeople();
-        people.unshift(person);
-        savePeople(people);
-        toast("Saved to Tagg");
-        location.hash = "#/p/" + person.id;
-      }
-      if (navigator.geolocation) {
-        var done = false;
-        var t = setTimeout(function () { if (!done) { done = true; finish(); } }, 3500);
-        navigator.geolocation.getCurrentPosition(function (pos) {
-          if (done) return; done = true; clearTimeout(t);
-          person.place = { lat: +pos.coords.latitude.toFixed(5), lng: +pos.coords.longitude.toFixed(5) };
-          finish();
-        }, function () { if (!done) { done = true; clearTimeout(t); finish(); } }, { timeout: 3000, maximumAge: 300000 });
-      } else { finish(); }
+      var btn = this;
+      btn.disabled = true; btn.textContent = "Saving to your Tagg database...";
+      var eventName = document.getElementById("f-event").value.trim();
+      withLocation(function (loc) {
+        if (!slug) {  /* legacy base64 scan: local save */
+          var person = { id: uid(), card: c, metAt: new Date().toISOString(), event: eventName,
+            location: loc, note: "", hasAudio: false };
+          var people = loadPeople(); people.unshift(person); savePeople(people);
+          toast("Saved to Tagg"); location.hash = "#/p/" + person.id; return;
+        }
+        ensureOwner().then(function () {
+          return api("/api/meet", { method: "POST", body: { slug: slug, scannerToken: ownerToken(), event: eventName, location: loc } });
+        }).then(function (d) {
+          setOwnerToken(d.scannerToken);
+          lastSync = 0;
+          syncPeople().then(function () {
+            toast(d.mutualSaved ? "Saved - and they got your card too" : "Saved to Tagg");
+            location.hash = "#/p/" + d.personId;
+          });
+        }).catch(function () {
+          btn.disabled = false; btn.textContent = "Save to Tagg";
+          toast("Could not reach the database - check your connection");
+        });
+      });
     });
     document.getElementById("shareback").addEventListener("click", function () {
       if (loadCard()) return showBackQr(loadCard());
@@ -415,13 +496,27 @@
   }
 
   /* ================= person detail ================= */
+  function enrichHtml(p) {
+    var g = p.enriched && p.enriched.github;
+    if (!g) return "";
+    return '<h2 class="section">From their public GitHub</h2>' +
+      '<div class="taggcard"><div style="display:flex;gap:14px;align-items:center">' +
+      (g.avatar ? '<img src="' + esc(g.avatar) + '" alt="" style="width:52px;height:52px;border-radius:50%">' : "") +
+      '<div><div style="font-weight:600">' + esc(g.name || g.login) + '</div>' +
+      (g.bio ? '<div style="color:var(--text-2);font-size:14px;margin-top:2px">' + esc(g.bio) + '</div>' : "") +
+      '<div style="color:var(--text-2);font-size:13px;margin-top:4px">' +
+      (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? " · " + g.repos + " public repos" : "") +
+      (g.location ? " · " + esc(g.location) : "") + '</div>' +
+      '</div></div></div>';
+  }
   function renderPerson(id) {
     var people = loadPeople();
     var p = null;
     for (var i = 0; i < people.length; i++) if (people[i].id === id) p = people[i];
     if (!p) { location.hash = "#/people"; return; }
     var me = loadCard();
-    var mapLink = p.place ? "https://www.google.com/maps?q=" + p.place.lat + "," + p.place.lng : null;
+    var loc = p.location || (p.place ? { lat: p.place.lat, lon: p.place.lng, label: "" } : null);
+    var mapLink = loc && loc.lat != null ? "https://www.google.com/maps?q=" + loc.lat + "," + loc.lon : null;
     shell("people",
       '<div style="display:flex;align-items:center;gap:16px;margin:6px 0 14px">' +
       '<div class="avatar" style="width:60px;height:60px;font-size:24px">' + esc(initial(p.card.name)) + '</div>' +
@@ -431,10 +526,11 @@
       '<div class="metagrid">' +
       meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
       meta("At", p.event || "-") +
-      (mapLink ? meta("Where", '<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open map</a></span>') : "") +
+      (loc && loc.label ? meta("Where", esc(loc.label) + (mapLink ? ' · <span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">map</a></span>' : "")) : (mapLink ? meta("Where", '<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open map</a></span>') : "")) +
       '</div>' +
       '<h2 class="section">Links</h2>' +
       '<div class="taggcard"><div class="tc-links" style="margin-top:0">' + (chipsHtml(p.card) || '<span style="color:var(--text-2);font-size:14px">No links shared</span>') + '</div></div>' +
+      enrichHtml(p) +
       '<div style="height:12px"></div>' +
       '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>' +
       '<h2 class="section">Why keep in touch</h2>' +
@@ -456,12 +552,17 @@
       var ps = loadPeople();
       for (var i = 0; i < ps.length; i++) if (ps[i].id === p.id) ps[i] = p;
       savePeople(ps);
-      toast("Note saved");
+      if (ownerToken()) {
+        api("/api/people/" + p.id, { method: "PUT", body: { note: p.note } })
+          .then(function () { toast("Note saved to your database"); })
+          .catch(function () { toast("Note saved on this device only - database unreachable"); });
+      } else toast("Note saved");
     });
     var delBtn = document.getElementById("del");
     delBtn.addEventListener("click", function () {
       if (delBtn.dataset.armed) {
         savePeople(loadPeople().filter(function (x) { return x.id !== p.id; }));
+        if (ownerToken()) api("/api/people/" + p.id, { method: "DELETE" }).catch(function () {});
         location.hash = "#/people";
       } else {
         delBtn.dataset.armed = "1";
@@ -578,7 +679,7 @@
     var me = loadCard();
     var scored = people.map(function (p) {
       var hay = [p.card.name, p.card.headline, p.event, p.note,
-        p.place ? p.place.lat + "," + p.place.lng : ""].join(" ").toLowerCase();
+        p.location && p.location.label ? p.location.label : "", p.note].join(" ").toLowerCase();
       var hits = terms.filter(function (t) { return hay.indexOf(t) >= 0; });
       return { p: p, score: hits.length, hits: hits };
     }).filter(function (s) { return terms.length === 0 || s.score > 0; });
@@ -601,4 +702,10 @@
   }
 
   route();
+  if (loadCard() || loadPeople().length || ownerToken()) {
+    ensureOwner()
+      .then(function () { return syncCard(); })
+      .then(function () { return migrateOnce(); })
+      .then(function () { lastSync = 0; refreshSoon(); });
+  }
 })();
