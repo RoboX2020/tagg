@@ -497,9 +497,19 @@
 
   /* ================= person detail ================= */
   function enrichHtml(p) {
+    var li = p.enriched && p.enriched.linkedin;
+    var liHtml = li ?
+      '<h2 class="section">From their public LinkedIn</h2>' +
+      '<div class="taggcard"><div style="display:flex;gap:14px;align-items:center">' +
+      (li.avatar ? '<img src="' + esc(li.avatar) + '" alt="" style="width:52px;height:52px;border-radius:50%">' : "") +
+      '<div>' + (li.headline ? '<div style="font-weight:600">' + esc(li.headline) + '</div>' : "") +
+      '<div style="color:var(--text-2);font-size:13px;margin-top:4px">' +
+      [li.company, li.school, li.location].filter(Boolean).map(esc).join(" · ") + '</div>' +
+      (li.summary ? '<div style="color:var(--text-2);font-size:13px;margin-top:6px">' + esc(li.summary.slice(0, 220)) + (li.summary.length > 220 ? "..." : "") + '</div>' : "") +
+      '</div></div></div>' : "";
     var g = p.enriched && p.enriched.github;
-    if (!g) return "";
-    return '<h2 class="section">From their public GitHub</h2>' +
+    var gHtml = g ?
+      '<h2 class="section">From their public GitHub</h2>' +
       '<div class="taggcard"><div style="display:flex;gap:14px;align-items:center">' +
       (g.avatar ? '<img src="' + esc(g.avatar) + '" alt="" style="width:52px;height:52px;border-radius:50%">' : "") +
       '<div><div style="font-weight:600">' + esc(g.name || g.login) + '</div>' +
@@ -507,7 +517,8 @@
       '<div style="color:var(--text-2);font-size:13px;margin-top:4px">' +
       (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? " · " + g.repos + " public repos" : "") +
       (g.location ? " · " + esc(g.location) : "") + '</div>' +
-      '</div></div></div>';
+      '</div></div></div>' : "";
+    return liHtml + gHtml;
   }
   function renderPerson(id) {
     var people = loadPeople();
