@@ -1,10 +1,10 @@
 /* Tagg service worker - offline app shell, stale-while-revalidate */
-var CACHE = "tagg-v4";
+var CACHE = "tagg-v5";
 var SHELL = ["./", "index.html", "styles.css", "app.js", "qrcode.min.js",
   "icon.svg", "icon-180.png", "icon-192.png", "icon-512.png", "manifest.webmanifest"];
 self.addEventListener("install", function (e) {
   e.waitUntil(
-    caches.open(CACHE).then(function (c) { return c.addAll(SHELL); })
+    caches.open(CACHE).then(function (c) { return c.addAll(SHELL.map(function (u) { return new Request(u, { cache: "no-cache" }); })); })
       .then(function () { return self.skipWaiting(); })
   );
 });
