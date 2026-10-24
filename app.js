@@ -55,6 +55,26 @@
       return list;
     }).catch(function () { return loadPeople(); });
   }
+  var GOOGLE_CLIENT_ID = "234788686355-ah0fsgjc8cr8n2h1f9oi0ielbket64jf.apps.googleusercontent.com";
+  function profile() { try { return JSON.parse(localStorage.getItem("tagg.profile.v1") || "null"); } catch (e) { return null; } }
+  function setProfile(p) { if (p) localStorage.setItem("tagg.profile.v1", JSON.stringify(p)); else localStorage.removeItem("tagg.profile.v1"); }
+  function googleSignIn(credential) {
+    return api("/api/auth/google", { method: "POST", body: { credential: credential, deviceToken: ownerToken() } })
+      .then(function (d) {
+        setOwnerToken(d.ownerToken);
+        setProfile(d.profile);
+        lastSync = 0;
+        return syncPeople().then(function () {
+          toast("Signed in as " + (d.profile.email || "you") + " - your Tagg is backed up");
+          route();
+        });
+      }).catch(function () { toast("Sign-in failed - your data is still safe on this device"); });
+  }
+  function mountGoogleButton(el) {
+    if (!window.google || !google.accounts || !google.accounts.id) { el.innerHTML = '<p class="hint">Google sign-in is still loading - pull to retry.</p>'; return; }
+    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { googleSignIn(resp.credential); } });
+    google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
+  }
   var lastSync = 0, syncing = false;
   function refreshSoon() {
     if (syncing || Date.now() - lastSync < 10000) return;
@@ -334,6 +354,11 @@
       '<button class="btn btn-tinted" id="copylink">Copy link</button>' +
       '<a class="btn btn-gray" href="#/edit">Edit card</a>' +
       '</div>' +
+      '<button class="btn btn-gray" id="wallet">Add to Apple Wallet</button>' +
+      '<div style="height:16px"></div>' +
+      (profile()
+        ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Signed in as <b>' + esc(profile().email) + '</b> - your card and people are backed up to your Tagg account.</div></div></div></div>'
+        : '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>') +
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
         '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
@@ -343,6 +368,18 @@
       (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
         .then(function () { toast("Link copied"); }, function () { toast("Copy failed - long-press the QR page URL"); });
     });
+    document.getElementById("wallet").addEventListener("click", function () {
+      var btn = this; btn.disabled = true; btn.textContent = "Making your Wallet pass...";
+      api("/api/pass", { method: "POST", body: {} }).then(function (d) {
+        btn.disabled = false; btn.textContent = "Add to Apple Wallet";
+        window.location.href = d.download_url;
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = "Add to Apple Wallet";
+        toast((e && e.error) || "Wallet pass unavailable - your QR does the same job");
+      });
+    });
+    var gsign = document.getElementById("gsign");
+    if (gsign) mountGoogleButton(gsign);
   }
   function recentHtml(people) {
     var rows = people.slice(0, 3).map(function (p) {
