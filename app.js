@@ -128,6 +128,40 @@
       '</div>';
   }
 
+  /* vCard export - "Save to Contacts" */
+  function vcfText(p) {
+    var c = p.card;
+    function escV(v) { return String(v).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n"); }
+    var parts = c.name.trim().split(/\s+/);
+    var last = parts.length > 1 ? parts[parts.length - 1] : "";
+    var first = (parts.length > 1 ? parts.slice(0, -1).join(" ") : c.name.trim());
+    var lines = ["BEGIN:VCARD", "VERSION:3.0", "PRODID:-//Tagg//EN"];
+    lines.push("N:" + escV(last) + ";" + escV(first) + ";;;");
+    lines.push("FN:" + escV(c.name.trim()));
+    if (c.headline) lines.push("TITLE:" + escV(c.headline));
+    if (c.email) lines.push("EMAIL;TYPE=INTERNET:" + escV(c.email));
+    if (c.phone) lines.push("TEL;TYPE=CELL:" + escV(c.phone));
+    LINK_DEFS.forEach(function (kd) {
+      var u = c.links && c.links[kd[0]];
+      if (u) lines.push("URL;TYPE=" + kd[1] + ":" + u);
+    });
+    var note = "Met " + fmtDate(p.metAt) + " at " + fmtTime(p.metAt) +
+      (p.event ? " - " + p.event : "") + " via Tagg." + (p.note ? " " + p.note : "");
+    lines.push("NOTE:" + escV(note));
+    lines.push("END:VCARD");
+    return lines.join("\r\n");
+  }
+  function downloadVcf(p) {
+    var blob = new Blob([vcfText(p)], { type: "text/vcard;charset=utf-8" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = p.card.name.trim().replace(/\s+/g, "-") + ".vcf";
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { a.remove(); }, 500);
+    toast("Contact card downloaded - open it to add " + p.card.name.split(" ")[0]);
+  }
+
   /* "why you two might be worth talking to" - keyword overlap heuristic */
   var BUCKETS = [
     [/robot|ros|sim|isaac|mechanic|hardware|embedded|drone|actuator/i, "robotics"],
@@ -401,6 +435,8 @@
       '</div>' +
       '<h2 class="section">Links</h2>' +
       '<div class="taggcard"><div class="tc-links" style="margin-top:0">' + (chipsHtml(p.card) || '<span style="color:var(--text-2);font-size:14px">No links shared</span>') + '</div></div>' +
+      '<div style="height:12px"></div>' +
+      '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>' +
       '<h2 class="section">Why keep in touch</h2>' +
       '<div class="answer">' + esc(whyTalk(me, p.card, p.event)) + '</div>' +
       '<h2 class="section">Your note <span class="soon">private to you</span></h2>' +
@@ -414,6 +450,7 @@
       '<div style="height:14px"></div>' +
       '<button class="btn btn-plain" id="del" style="color:#ff6961">Remove from Tagg</button>'
     );
+    document.getElementById("vcf").addEventListener("click", function () { downloadVcf(p); });
     document.getElementById("savenote").addEventListener("click", function () {
       p.note = document.getElementById("note").value;
       var ps = loadPeople();
