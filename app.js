@@ -272,6 +272,18 @@
     window.scrollTo(0, 0);
     if (h.indexOf("#/c/") === 0) return renderScannedRoute(h.slice(4));
     if (h.indexOf("#/p/") === 0) return renderPerson(h.slice(4));
+    if (h === "#/privacy") {
+      shell(null, '<h1 class="largetitle">Privacy</h1>' +
+        '<p class="lead">Tagg is a people memory. Here is exactly what it does with data.</p>' +
+        '<div class="group">' +
+        '<div class="row"><div class="grow"><div class="title">What is stored</div><div class="detail" style="white-space:normal">The card you create (name, headline, links, contact details you choose to share) and the people you save, with when, where, and at what event you met them, plus your private notes.</div></div></div>' +
+        '<div class="row"><div class="grow"><div class="title">Where it lives</div><div class="detail" style="white-space:normal">In your own Tagg database (Cloudflare KV) tied to your identity, plus a cache on your device. Voice notes stay on your device only.</div></div></div>' +
+        '<div class="row"><div class="grow"><div class="title">Google sign-in</div><div class="detail" style="white-space:normal">If you sign in with Google, Tagg stores your Google account ID and email to link your database to you. Nothing is posted to Google and no other Google data is read.</div></div></div>' +
+        '<div class="row"><div class="grow"><div class="title">Sharing</div><div class="detail" style="white-space:normal">Your card is public to anyone you show your QR code or link to - that is the point of the app. Your people list, notes, and location history are never shared.</div></div></div>' +
+        '</div>' +
+        '<p class="footer-note">Contact: prajval.2029@gmail.com</p>');
+      return;
+    }
     if (h === "#/edit") return renderEdit();
     if (h === "#/people") { refreshSoon(); return renderPeople(); }
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
