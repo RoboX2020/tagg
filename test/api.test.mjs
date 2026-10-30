@@ -248,5 +248,42 @@ if (env) {
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;
 }
+
+// Migrate must not duplicate people the server already has.
+{
+  const before = (await call("GET", "/api/people", null, bTok)).body.people;
+  await call("POST", "/api/migrate", { ownerToken: bTok, people: before }, bTok);
+  const after = (await call("GET", "/api/people", null, bTok)).body.people;
+  ok("migrate does not duplicate people already on the server", after.length === before.length);
+}
+// Agent access (MCP): per-user, read-only, revocable tokens. Notes are excluded unless the owner opts in.
+async function rpc(tok, method, params, id = 1) {
+  const r = await fetch(url + "/api/mcp", { method: "POST", headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) });
+  return { status: r.status, body: r.status === 202 ? null : await r.json() };
+}
+ok("MCP rejects a call with no token", (await rpc(null, "tools/list")).status === 401);
+ok("MCP rejects an owner token (only tgm_ tokens)", (await rpc(bTok, "tools/list")).status === 401);
+ok("creating an agent token needs sign-in", (await call("POST", "/api/tokens", { name: "x", scope: "people" })).status === 401);
+ok("token scope must be one of the offered scopes", (await call("POST", "/api/tokens", { name: "x", scope: "everything" }, bTok)).status === 400);
+const t1 = await call("POST", "/api/tokens", { name: "Test agent", scope: "people" }, bTok);
+ok("token is returned once with the tgm_ prefix", t1.status === 200 && t1.body.token.startsWith("tgm_") && t1.body.scope === "people");
+const tl = await call("GET", "/api/tokens", null, bTok);
+ok("token list never contains the secret", tl.body.tokens.length === 1 && !JSON.stringify(tl.body).includes(t1.body.token));
+const init = await rpc(t1.body.token, "initialize", { protocolVersion: "2025-03-26" });
+ok("MCP initialize works", init.body.result.serverInfo.name === "tagg" && init.body.result.capabilities.tools);
+ok("MCP lists three read-only tools", (await rpc(t1.body.token, "tools/list")).body.result.tools.map(x => x.name).join() === "search_people,get_person,list_events");
+const sp = await rpc(t1.body.token, "tools/call", { name: "search_people", arguments: { query: "Alice" } });
+const spo = JSON.parse(sp.body.result.content[0].text);
+ok("MCP search finds the saved person without private notes", spo.people.length === 1 && spo.people[0].name === "Alice Ng" && !JSON.stringify(spo).includes("Bob only") && !("privateNote" in spo.people[0]));
+ok("MCP marks identity as not verified by Tagg", /not verified/.test(spo.people[0].cardIdentity));
+ok("MCP does not see other users' people", JSON.parse((await rpc(t1.body.token, "tools/call", { name: "search_people", arguments: { query: "Tom" } })).body.result.content[0].text).people.length === 0);
+ok("MCP exposes no write tools", (await rpc(t1.body.token, "tools/call", { name: "delete_person", arguments: { id: "x" } })).body.error.code === -32602);
+const t2 = await call("POST", "/api/tokens", { name: "Notes agent", scope: "people+notes" }, bTok);
+const spn = JSON.parse((await rpc(t2.body.token, "tools/call", { name: "search_people", arguments: { query: "Alice" } })).body.result.content[0].text);
+ok("notes appear only on a token the owner opted in for notes", spn.people[0].privateNote && spn.people[0].privateNote.includes("Bob only"));
+ok("another user cannot revoke Bob's token", (await call("DELETE", "/api/tokens/" + t1.body.id, null, aTok)).status === 404);
+ok("owner can revoke a token", (await call("DELETE", "/api/tokens/" + t1.body.id, null, bTok)).body.revoked === true);
+ok("a revoked token stops working immediately", (await rpc(t1.body.token, "tools/list")).status === 401);
+ok("MCP notifications get 202", (await (async () => { const r = await fetch(url + "/api/mcp", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + t2.body.token }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) }); return r.status; })()) === 202);
 srv.close();
 console.log("\n" + passed + " checks passed");

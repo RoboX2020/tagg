@@ -612,6 +612,7 @@
       (INBOX_COUNT ? '<h2 class="section">Requests</h2><a class="group" style="display:block;text-decoration:none;color:inherit" href="#/people"><div class="row"><div class="avatar" style="background:var(--card-2);color:var(--accent-2)">' + IC.people + '</div><div class="grow"><div class="title">' + INBOX_COUNT + ' connection request' + (INBOX_COUNT > 1 ? "s" : "") + '</div><div class="detail">Tap to connect back and save the moment</div></div>' + IC.chev + '</div></a>' : "") +
       '<h2 class="section">What people see</h2>' +
       '<div class="panel" id="sharedprofile"><div class="fineprint" style="margin:0">Loading your shared profile...</div></div>' +
+      (profile() ? '<h2 class="section">Connect your own agent</h2><div class="panel" id="agentpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' : "") +
       '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
@@ -638,6 +639,39 @@
       }
       show(null);
       if (cardSlug()) api("/api/c/" + cardSlug()).then(function (d) { show(d.enriched || null); }).catch(function () {});
+    })();
+    (function () {
+      var el = document.getElementById("agentpanel"); if (!el) return;
+      var shown = null;
+      function fmt(ts) { return ts ? new Date(ts).toLocaleDateString() : "never"; }
+      function draw(list) {
+        if (!document.body.contains(el)) return;
+        el.innerHTML = '<div class="fineprint" style="margin:0 0 10px">Let an AI agent you choose search the people you have met. Read-only. Each connection has its own key that you can remove at any time, and it stops working immediately.</div>' +
+          (shown ? '<div class="tokenbox"><b>Copy this key now. It is shown once.</b><code id="tokval">' + esc(shown.token) + '</code><div class="fineprint" style="margin:6px 0">Server address: <code>' + esc(API + "/api/mcp") + '</code><br>Send the key as a Bearer token. Anyone holding it can read what you allowed below.</div><button class="btn btn-tinted" id="tokcopy">Copy key</button> <button class="btn btn-gray" id="tokdone" style="margin-top:8px">I saved it</button></div>' : "") +
+          (list.length ? list.map(function (t) {
+            return '<div class="row" style="padding:8px 0"><div class="grow"><div class="title">' + esc(t.name) + '</div><div class="detail">' + (t.scope === "people+notes" ? "People and your private notes" : "People only, no notes") + ' - last used ' + fmt(t.lastUsed) + ' - expires ' + fmt(t.expires) + '</div></div><button class="btn btn-gray" data-rev="' + esc(t.id) + '" style="width:auto;padding:0 14px">Remove</button></div>';
+          }).join("") : '<div class="fineprint" style="margin:0 0 10px">No agents connected.</div>') +
+          '<div style="height:8px"></div><input class="input" id="agname" placeholder="Name this connection" maxlength="60" aria-label="Connection name">' +
+          '<div style="height:8px"></div><select class="input" id="agscope" aria-label="What the agent may read"><option value="people">People only (no private notes)</option><option value="people+notes">People and my private notes</option></select>' +
+          '<p class="fineprint" style="margin:8px 0">If you include notes, the agent provider you connect will see them. Tagg does not choose or verify that provider. Details from LinkedIn are shown as not verified by Tagg.</p>' +
+          '<button class="btn btn-accent" id="agadd">Create connection key</button>';
+        [].forEach.call(el.querySelectorAll("[data-rev]"), function (b) {
+          b.addEventListener("click", function () { api("/api/tokens/" + b.getAttribute("data-rev"), { method: "DELETE" }).then(load).catch(function () { toast("Could not remove it"); }); });
+        });
+        var add = el.querySelector("#agadd");
+        add.addEventListener("click", function () {
+          var name = el.querySelector("#agname").value.trim(), scope = el.querySelector("#agscope").value;
+          if (!name) { toast("Name this connection first"); return; }
+          add.disabled = true;
+          api("/api/tokens", { method: "POST", body: { name: name, scope: scope } }).then(function (d) { shown = d; load(); })
+            .catch(function (e) { add.disabled = false; toast((e && e.error) || "Could not create it"); });
+        });
+        var tc = el.querySelector("#tokcopy");
+        if (tc) tc.addEventListener("click", function () { (navigator.clipboard ? navigator.clipboard.writeText(shown.token) : Promise.reject()).then(function () { toast("Key copied"); }, function () { toast("Copy failed - select and copy the key"); }); });
+        var td = el.querySelector("#tokdone"); if (td) td.addEventListener("click", function () { shown = null; load(); });
+      }
+      function load() { api("/api/tokens").then(function (d) { draw(d.tokens || []); }).catch(function () { el.innerHTML = '<div class="fineprint" style="margin:0">Could not load. Check your connection.</div>'; }); }
+      load();
     })();
     var da = document.getElementById("delete-account"); if (da) da.addEventListener("click", showDeleteAccount);
     var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
@@ -1237,33 +1271,77 @@
   /* ================= ask ================= */
   var STOP = ("who did i meet at the a an and or of with in on from to that this those these what when where which " +
     "was were is are do does works work working worked about tell me show person people guy girl someone anyone").split(" ");
+  var CHAT = [];
+  try { CHAT = JSON.parse(sessionStorage.getItem("tagg.chat") || "[]"); } catch (e) { CHAT = []; }
+  function saveChat() { try { sessionStorage.setItem("tagg.chat", JSON.stringify(CHAT.slice(-30))); } catch (e) {} }
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var CAN_SPEAK = !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
+  var MIC_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+  function speak(text) {
+    if (!CAN_SPEAK || localStorage.getItem("tagg.speak") !== "1") return;
+    try { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
+  }
   function renderAsk() {
     shell("ask",
       '<h1 class="largetitle">Ask Tagg</h1>' +
-      '<p class="lead">Ask about the people you have met - who they are, where and when you met, and why you might talk again.</p>' +
-      '<div class="field"><input class="input" id="q" placeholder="Who did I meet at Cal Hacks who works on robotics?" style="border-radius:14px"></div>' +
-      '<div style="height:12px"></div>' +
-      '<button class="btn btn-accent" id="go">Ask</button>' +
-      '<div id="ans" style="margin-top:18px"></div>' +
-      '<p class="footer-note">To answer, Tagg sends the people you saved (names, headlines, where and when you met, enrichment snippets and your private notes) to Cloudflare Workers AI, which also hosts Tagg. Nobody else sees them.</p>'
+      '<p class="lead">Ask about the people you have met - who they are, where and when you met, and who worked or studied somewhere.</p>' +
+      '<div class="thread" id="thread" aria-live="polite"></div>' +
+      '<div class="composer"><input class="input" id="q" placeholder="Who did I meet at Cal Hacks who works on robotics?" aria-label="Your question">' +
+      (SR ? '<button class="btn btn-gray micbtn" id="mic" aria-label="Speak your question" aria-pressed="false">' + MIC_SVG + '</button>' : '') +
+      '<button class="btn btn-accent sendbtn" id="go">Ask</button></div>' +
+      '<div class="chatopts">' +
+      (CAN_SPEAK ? '<label class="chk"><input type="checkbox" id="speak"' + (localStorage.getItem("tagg.speak") === "1" ? " checked" : "") + '> Read answers aloud</label>' : "") +
+      (CHAT.length ? '<button class="linkbtn" id="clearchat">Clear conversation</button>' : "") + '</div>' +
+      '<p class="footer-note">To answer, Tagg sends the people you saved (names, headlines, where and when you met, enrichment snippets and your private notes) to Cloudflare Workers AI, which also hosts Tagg. Nobody else sees them.' +
+      (SR ? ' Voice input uses your browser\'s speech recognition, which may send audio to your browser vendor.' : "") + '</p>'
     );
+    var thread = document.getElementById("thread");
+    function paint() {
+      thread.innerHTML = CHAT.map(function (m) {
+        return '<div class="bubble ' + (m.r === "me" ? "me" : "tagg") + '">' + esc(m.t) + (m.links || "") + '</div>';
+      }).join("");
+      window.scrollTo(0, document.body.scrollHeight);
+    }
+    paint();
     function go() { if (!document.getElementById("q").value.trim()) return; consentThen("ask", "Ask with Cloudflare AI?",
       "To answer, Tagg sends the people you saved to Cloudflare Workers AI (which also hosts Tagg), including names, headlines, where and when you met, public profile snippets and your private notes. Other Tagg users never see your notes.",
       "Send and ask", go2); }
     function go2() {
-      var q = document.getElementById("q").value.trim();
+      var qi = document.getElementById("q"), q = qi.value.trim();
       if (!q) return;
-      var ans = document.getElementById("ans");
-      if (!ownerToken()) { ans.innerHTML = answerHtml(q); return; }
-      ans.innerHTML = '<div class="answer">Thinking...</div>';
-      api("/api/ask", { method: "POST", body: { q: q } }).then(function (d) {
-        ans.innerHTML = '<div class="answer">' + esc(d.answer) + '</div>' + quickLinks(q);
-      }).catch(function () {
-        ans.innerHTML = answerHtml(q);
-      });
+      qi.value = "";
+      CHAT.push({ r: "me", t: q });
+      var pending = { r: "tagg", t: "Thinking..." }; CHAT.push(pending); paint();
+      function done(text, links) { pending.t = text; pending.links = links || ""; saveChat(); paint(); speak(text); }
+      if (!ownerToken()) { var tmp = document.createElement("div"); tmp.innerHTML = answerHtml(q); return done(tmp.textContent, quickLinks(q)); }
+      api("/api/ask", { method: "POST", body: { q: q } }).then(function (d) { done(d.answer, quickLinks(q)); })
+        .catch(function (e) {
+          if (e && e.error === "ask_failed") return done("Ask is unavailable right now. The free AI allowance may be used up for today. Try again later.", quickLinks(q));
+          var tmp2 = document.createElement("div"); tmp2.innerHTML = answerHtml(q); done(tmp2.textContent, quickLinks(q));
+        });
     }
     document.getElementById("go").addEventListener("click", go);
     document.getElementById("q").addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
+    var sp = document.getElementById("speak");
+    if (sp) sp.addEventListener("change", function () { localStorage.setItem("tagg.speak", sp.checked ? "1" : "0"); if (!sp.checked) try { window.speechSynthesis.cancel(); } catch (e) {} });
+    var cc = document.getElementById("clearchat");
+    if (cc) cc.addEventListener("click", function () { CHAT = []; saveChat(); renderAsk(); });
+    var mic = document.getElementById("mic");
+    if (mic && SR) {
+      var rec = null;
+      mic.addEventListener("click", function () {
+        if (rec) { try { rec.stop(); } catch (e) {} return; }
+        rec = new SR(); rec.lang = navigator.language || "en-US"; rec.interimResults = true; rec.continuous = false;
+        mic.setAttribute("aria-pressed", "true"); mic.classList.add("live");
+        rec.onresult = function (ev) {
+          var t = ""; for (var i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+          document.getElementById("q").value = t;
+        };
+        rec.onerror = function () { toast("Could not hear that. Check microphone permission."); };
+        rec.onend = function () { rec = null; mic.setAttribute("aria-pressed", "false"); mic.classList.remove("live"); };
+        try { rec.start(); } catch (e) { rec = null; mic.classList.remove("live"); }
+      });
+    }
   }
   function scorePeople(q) {
     var people = loadPeople();

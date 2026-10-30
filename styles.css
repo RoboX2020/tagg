@@ -308,3 +308,19 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .panel{background:var(--bg-elev);border:1px solid var(--sep);border-radius:var(--radius);padding:16px;margin:8px 0 12px}
 .panel .input{background:var(--card)}
 .graphctl{position:absolute;right:16px;top:16px;display:flex;flex-direction:column;gap:6px}.graphctl button{min-width:36px;height:36px;border-radius:10px;border:1px solid var(--sep);background:var(--bg-elev);color:var(--text);font:600 15px var(--font);cursor:pointer;padding:0 8px}.graphctl button:active{background:var(--card)}
+
+/* chat */
+.thread{display:flex;flex-direction:column;gap:8px;margin:10px 0 12px}
+.bubble{max-width:86%;padding:10px 14px;border-radius:18px;font-size:15.5px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere}
+.bubble.me{align-self:flex-end;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:var(--on-accent);border-bottom-right-radius:6px}
+.bubble.tagg{align-self:flex-start;background:var(--bg-elev);border:1px solid var(--sep);border-bottom-left-radius:6px}
+.composer{display:flex;gap:8px;align-items:center}
+.composer .input{flex:1;min-width:0;border-radius:14px}
+.composer .btn{width:auto;margin:0;padding:0 16px;min-height:44px}
+.micbtn{padding:0 12px !important}
+.micbtn.live{background:var(--accent-soft);color:var(--accent-2)}
+.chatopts{display:flex;justify-content:space-between;align-items:center;margin:10px 2px 0;font-size:13.5px;color:var(--text-2)}
+.chk{display:flex;gap:8px;align-items:center}
+.linkbtn{background:none;border:0;color:var(--accent-2);font:inherit;cursor:pointer;padding:6px}
+.tokenbox{background:var(--accent-soft);border-radius:12px;padding:12px;margin:0 0 12px}
+.tokenbox code{display:block;word-break:break-all;font-size:12.5px;margin:8px 0;user-select:all}

@@ -105,6 +105,41 @@ async function extractProfile(env, text) {
   const out = { headline: one(raw.headline, 300), titles: keep(raw.titles, 5), companies: keep(raw.companies, 6), schools: keep(raw.schools, 6), location: one(raw.location, 120) };
   return (out.headline || out.titles.length || out.companies.length || out.schools.length || out.location) ? out : null;
 }
+
+// ---- Agent access (MCP). Per-user, read-only, revocable tokens. A token is shown once and only its SHA-256 is stored.
+async function sha256hex(s) { return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))), b => b.toString(16).padStart(2, "0")).join(""); }
+const MCP_SCOPES = ["people", "people+notes"];
+const MCP_TTL_MS = 90 * 86400000;
+function mcpPerson(x, withNotes) {
+  const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : null;
+  const o = { id: x.id, name: x.card && x.card.name, headline: (x.card && x.card.headline) || null, event: x.event || null, metAt: x.metAt || null, where: (x.location && x.location.label) || null };
+  if (li) o.importedFromLinkedin = { roles: li.titles || [], companies: li.companies || [], schools: li.schools || [], location: li.location || null, note: "Entered or reviewed by the card owner. Tagg has not verified it." };
+  if (!x.verified && x.card) o.cardIdentity = "as entered by the person; Tagg has not verified it";
+  if (withNotes && x.note) o.privateNote = x.note;
+  return o;
+}
+function mcpMatch(x, terms, withNotes) {
+  const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : {};
+  const hay = [x.card && x.card.name, x.card && x.card.headline, x.event, x.location && x.location.label, li.headline, (li.titles || []).join(" "), (li.companies || []).join(" "), (li.schools || []).join(" "), li.location, withNotes ? x.note : ""].join(" ").toLowerCase();
+  return terms.filter(t => hay.includes(t)).length;
+}
+const MCP_TOOLS = [
+  { name: "search_people", description: "Search the people this Tagg user has met by name, headline, event, place, or imported work and school details. Read-only.", inputSchema: { type: "object", properties: { query: { type: "string", description: "Words to look for, e.g. a company, school, event or name" } }, required: ["query"] } },
+  { name: "get_person", description: "Get one saved person by id (from search_people or list_events).", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "list_events", description: "List the events where this user met people, with counts.", inputSchema: { type: "object", properties: {} } },
+];
+async function mcpCall(env, owner, scope, name, args) {
+  const withNotes = scope === "people+notes";
+  const people = await getPeople(env, owner);
+  if (name === "search_people") {
+    const terms = String((args && args.query) || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(t => t.length > 1).slice(0, 12);
+    if (!terms.length) return { people: [] };
+    return { people: people.map(x => ({ x, s: mcpMatch(x, terms, withNotes) })).filter(r => r.s > 0).sort((a, b) => b.s - a.s).slice(0, 10).map(r => mcpPerson(r.x, withNotes)) };
+  }
+  if (name === "get_person") { const x = people.find(q => q.id === (args && args.id)); return x ? mcpPerson(x, withNotes) : { error: "not found" }; }
+  if (name === "list_events") { const m = {}; for (const x of people) { const e = x.event || "(no event)"; m[e] = (m[e] || 0) + 1; } return { events: Object.keys(m).map(e => ({ event: e, people: m[e] })) }; }
+  return null;
+}
 async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + owner)) || []; }
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
@@ -440,9 +475,67 @@ export default {
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
       for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
       if (slug) keys.push("card/" + slug, "enrich/" + slug);
-      keys.push("ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner);
+      for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) keys.push("mcp/" + t.h);
+      keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner);
       for (const k of keys) await env.KV.delete(k);
       return j({ deleted: true });
+    }
+
+
+    // ---- Agent access tokens (owner-managed) and the read-only MCP endpoint (token-only).
+    if (p === "/api/tokens" && (req.method === "GET" || req.method === "POST")) {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const list = (await getJSON(env.KV, "mcpl/" + owner)) || [];
+      const live = list.filter(t => t.exp > Date.now());
+      if (req.method === "GET") return j({ tokens: live.map(t => ({ id: t.id, name: t.name, scope: t.scope, created: t.created, expires: t.exp, lastUsed: t.lastUsed || null })) });
+      const body = await req.json().catch(() => null);
+      const name = body && typeof body.name === "string" ? body.name.trim().slice(0, 60) : "";
+      const scope = body && body.scope;
+      if (!name) return j({ error: "Name the agent this is for" }, 400);
+      if (!MCP_SCOPES.includes(scope)) return j({ error: "Pick what the agent may read" }, 400);
+      if (live.length >= 5) return j({ error: "You can have 5 agent connections. Remove one first." }, 400);
+      if (await overLimit(env, "mcptok/" + owner, 10, 3600)) return j({ error: "Too many new connections - try again later" }, 429);
+      const tok = "tgm_" + token() + token();
+      const h = await sha256hex(tok);
+      const id = rand(10), now = Date.now();
+      await env.KV.put("mcp/" + h, JSON.stringify({ owner, id, scope, exp: now + MCP_TTL_MS }), { expirationTtl: Math.floor(MCP_TTL_MS / 1000) + 3600 });
+      live.push({ id, name, scope, created: now, exp: now + MCP_TTL_MS, h });
+      await env.KV.put("mcpl/" + owner, JSON.stringify(live));
+      return j({ token: tok, id, name, scope, expires: now + MCP_TTL_MS });
+    }
+    const tm = p.match(/^\/api\/tokens\/([a-z0-9]+)$/);
+    if (tm && req.method === "DELETE") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const list = (await getJSON(env.KV, "mcpl/" + owner)) || [];
+      const t = list.find(q => q.id === tm[1]);
+      if (!t) return j({ error: "not found" }, 404);
+      await env.KV.delete("mcp/" + t.h);
+      await env.KV.put("mcpl/" + owner, JSON.stringify(list.filter(q => q.id !== tm[1])));
+      return j({ revoked: true });
+    }
+    if (p === "/api/mcp") {
+      if (req.method !== "POST") return j({ error: "POST JSON-RPC only" }, 405);
+      const h = req.headers.get("Authorization") || "";
+      const tok = h.startsWith("Bearer tgm_") ? h.slice(7) : "";
+      const rec = tok && tok.length < 200 ? await getJSON(env.KV, "mcp/" + (await sha256hex(tok))) : null;
+      if (!rec || rec.exp < Date.now() || (await env.KV.get("own/" + rec.owner)) === null) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer", ...CORS } });
+      if (await overLimit(env, "mcp/" + rec.id, 120, 3600)) return j({ error: "rate limited" }, 429);
+      const m = await req.json().catch(() => null);
+      if (!m || m.jsonrpc !== "2.0" || typeof m.method !== "string") return j({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } }, 400);
+      const reply = (result) => j({ jsonrpc: "2.0", id: m.id, result });
+      const fail = (code, message) => j({ jsonrpc: "2.0", id: m.id, error: { code, message } });
+      if (m.id === undefined) return new Response(null, { status: 202, headers: CORS });
+      if (m.method === "initialize") return reply({ protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "tagg", version: "1" }, instructions: "Read-only access to the people this Tagg user has met. Identity and imported details are as entered by people and are not verified by Tagg." });
+      if (m.method === "ping") return reply({});
+      if (m.method === "tools/list") return reply({ tools: MCP_TOOLS });
+      if (m.method === "tools/call") {
+        const out = await mcpCall(env, rec.owner, rec.scope, m.params && m.params.name, (m.params && m.params.arguments) || {});
+        if (out === null) return fail(-32602, "Unknown tool");
+        return reply({ content: [{ type: "text", text: JSON.stringify(out) }] });
+      }
+      return fail(-32601, "Method not found");
     }
 
     // Anonymous scan ping: someone opened this card's link. Tells the owner "someone scanned" with NO identity (no name,
@@ -784,6 +877,9 @@ export default {
       const list = await getPeople(env, body.ownerToken);
       for (const x of incoming.slice(0, 200)) {
         const card = cleanCard(x.card); if (!card) continue;
+        // Skip people the server already has (a device that synced them from here must not upload them again).
+        const metAtIn = typeof x.metAt === "string" ? x.metAt : "";
+        if (list.some(q => (typeof x.id === "string" && q.id === x.id) || (q.card.name === card.name && metAtIn && q.metAt === metAtIn))) continue;
         let loc = null;
         if (x.location && typeof x.location === "object") loc = { lat: x.location.lat ?? null, lon: x.location.lon ?? null, label: (x.location.label || "").slice(0, 200) };
         else if (x.place && typeof x.place === "object") loc = { lat: x.place.lat ?? null, lon: x.place.lng ?? null, label: "" };
