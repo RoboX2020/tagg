@@ -104,6 +104,30 @@
   }
   // Shown once after sign-up or a password reset. Tagg cannot email you, so this code is the only
   // way back in if the password is forgotten. We store only a hash of it.
+
+  // Email verification: ask the server to email a 6-digit code, then confirm it. Disabled server-side until a sender is set up.
+  function showVerifyEmail() {
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Verify your email</h3>' +
+      '<p class="hint" id="ve-msg">We will email a 6-digit code to ' + esc((profile() || {}).email || "you") + '. It expires in 15 minutes.</p>' +
+      '<input class="field" id="ve-code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="display:none">' +
+      '<div style="height:12px"></div><button class="btn btn-accent" id="ve-go">Send code</button>' +
+      '<button class="btn btn-gray" id="ve-close">Close</button></div>';
+    document.body.appendChild(bg);
+    var msg = bg.querySelector("#ve-msg"), code = bg.querySelector("#ve-code"), go = bg.querySelector("#ve-go"), sent = false;
+    bg.querySelector("#ve-close").addEventListener("click", function () { bg.remove(); });
+    go.addEventListener("click", function () {
+      go.disabled = true;
+      var req = sent ? api("/api/auth/email/confirm", { method: "POST", body: { code: code.value.trim() } })
+                     : api("/api/auth/email/request", { method: "POST", body: {} });
+      req.then(function (d) {
+        go.disabled = false;
+        if (d.verified) { var p = profile() || {}; p.emailVerified = true; setProfile(p); bg.remove(); toast("Email verified"); route(); return; }
+        sent = true; code.style.display = ""; code.focus(); go.textContent = "Confirm"; msg.textContent = "Code sent. Enter it below.";
+      }).catch(function (e) { go.disabled = false; msg.textContent = (e && e.error) || "Something went wrong"; });
+    });
+  }
   function showRecoveryCode(code, done) {
     var bg = document.createElement("div");
     bg.className = "sheet-bg";
@@ -484,7 +508,8 @@
       '<button class="btn btn-gray" id="install" style="display:none">Install Tagg on your phone</button>' +
       '<div style="height:16px"></div>' +
       (profile()
-        ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Signed in as <b>' + esc(profile().email) + '</b> - your card and people are backed up to your Tagg account.</div></div></div></div>'
+        ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Signed in as <b>' + esc(profile().email) + '</b> - your card and people are backed up to your Tagg account.</div></div></div>' +
+          (profile().kind === "email" ? (profile().emailVerified ? '<div class="row"><div class="grow"><div class="detail">Email verified</div></div></div>' : '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Email not verified yet. Other people see your card as unverified.</div></div><button class="btn btn-tinted" id="verify-email" style="width:auto;padding:0 14px">Verify email</button></div>') : '') + '</div>'
         : '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>') +
       (INBOX_COUNT ? '<h2 class="section">Requests</h2><a class="group" style="display:block;text-decoration:none;color:inherit" href="#/people"><div class="row"><div class="avatar" style="background:var(--card-2);color:var(--accent-2)">' + IC.people + '</div><div class="grow"><div class="title">' + INBOX_COUNT + ' connection request' + (INBOX_COUNT > 1 ? "s" : "") + '</div><div class="detail">Tap to connect back and save the moment</div></div>' + IC.chev + '</div></a>' : "") +
       '<h2 class="section">Recently met</h2>' +
@@ -492,6 +517,7 @@
         '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
       '<p class="footer-note">Your card and the people you meet live in your own Tagg database - synced, backed up, and always recallable.<br>Tagg is live at ' + esc(location.host) + '.</p>'
     );
+    var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
     document.getElementById("copylink").addEventListener("click", function () {
       (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
         .then(function () { toast("Link copied"); }, function () { toast("Copy failed - long-press the QR page URL"); });

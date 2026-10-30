@@ -119,7 +119,24 @@ function newRecoveryCode() { return [rand(5), rand(5), rand(5), rand(5)].join("-
 // An identity counts as verified only when Google vouched for the email. Email/password accounts are unverified.
 async function isVerified(env, owner) {
   const prof = owner ? await getJSON(env.KV, "prof/" + owner) : null;
-  return !!(prof && prof.sub && !String(prof.sub).startsWith("email:"));
+  if (!prof || !prof.sub) return false;
+  if (String(prof.sub).startsWith("email:")) return prof.emailVerified === true; // set only by /api/auth/email/confirm
+  return true;
+}
+
+// ---- email verification (sender is optional; with no key configured the routes answer 503 and send nothing) ----
+// Provider: Resend over plain HTTPS. Set secrets RESEND_API_KEY and MAIL_FROM (e.g. "Tagg <noreply@mail.example.com>").
+// For tests, env.MAIL_SINK(to, subject, text) replaces the network call.
+function mailEnabled(env) { return !!(env.MAIL_SINK || (env.RESEND_API_KEY && env.MAIL_FROM)); }
+async function sendMail(env, to, subject, text) {
+  if (env.MAIL_SINK) return env.MAIL_SINK(to, subject, text);
+  const r = await fetch("https://api.resend.com/emails", { method: "POST",
+    headers: { Authorization: "Bearer " + env.RESEND_API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, text }) });
+  if (!r.ok) throw new Error("mail provider " + r.status);
+}
+async function codeHash(owner, code) {
+  return b64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(owner + ":" + code)));
 }
 function normEmail(e) { return typeof e === "string" ? e.trim().toLowerCase().slice(0, 200) : ""; }
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -293,7 +310,7 @@ export default {
       if (!EMAIL_RE.test(email)) return j({ error: "Enter a valid email address" }, 400);
       if (pw.length < 8 || pw.length > 200) return j({ error: "Password must be at least 8 characters" }, 400);
       const ip = req.headers.get("CF-Connecting-IP") || "x";
-      if (await overLimit(env, "signup/" + ip, 10, 3600)) return j({ error: "Too many sign-ups from here - try again later" }, 429);
+      if (await overLimit(env, "signup/" + ip, Number(env.SIGNUP_PER_HOUR) || 10, 3600)) return j({ error: "Too many sign-ups from here - try again later" }, 429);
       if ((await env.KV.get("auth/e/" + email)) !== null) return j({ error: "That email already has an account - sign in instead" }, 409);
       const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
       const hash = await hashPassword(pw, salt, PBKDF2_ITER);
@@ -308,7 +325,7 @@ export default {
       await env.KV.delete("auth/e/" + email + "#link");
       const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : "";
       await env.KV.put("prof/" + owner, JSON.stringify({ email, name, picture: "", sub: "email:" + email }));
-      return j({ ownerToken: owner, profile: { email, name, picture: "" }, recoveryCode });
+      return j({ ownerToken: owner, profile: { email, name, picture: "", kind: "email", emailVerified: false }, recoveryCode });
     }
     // Password reset with the recovery code shown at sign-up. Rotates the code on success.
     if (p === "/api/auth/reset" && req.method === "POST") {
@@ -327,7 +344,7 @@ export default {
       rec.rsalt = b64(crypto.getRandomValues(new Uint8Array(16))); rec.rhash = await hashPassword(recoveryCode, rec.rsalt, PBKDF2_ITER);
       await env.KV.put("auth/e/" + email, JSON.stringify(rec));
       const prof = await getJSON(env.KV, "prof/" + rec.owner);
-      return j({ ownerToken: rec.owner, profile: { email, name: (prof && prof.name) || "", picture: "" }, recoveryCode });
+      return j({ ownerToken: rec.owner, profile: { email, name: (prof && prof.name) || "", picture: "", kind: "email", emailVerified: !!(prof && prof.emailVerified) }, recoveryCode });
     }
     if (p === "/api/auth/login" && req.method === "POST") {
       const body = await req.json().catch(() => null);
@@ -348,7 +365,37 @@ export default {
         await env.KV.delete("auth/e/" + email + "#link");
       }
       const prof = await getJSON(env.KV, "prof/" + owner);
-      return j({ ownerToken: owner, profile: { email, name: (prof && prof.name) || "", picture: "" } });
+      return j({ ownerToken: owner, profile: { email, name: (prof && prof.name) || "", picture: "", kind: "email", emailVerified: !!(prof && prof.emailVerified) } });
+    }
+
+    // Email verification: request a 6-digit code (valid 15 min), then confirm it. Only for email/password accounts.
+    if (p === "/api/auth/email/request" && req.method === "POST") {
+      const owner = authOwner(req);
+      const prof = owner ? await getJSON(env.KV, "prof/" + owner) : null;
+      if (!prof) return j({ error: "Sign in first" }, 401);
+      if (!String(prof.sub || "").startsWith("email:")) return j({ error: "This account is already verified by Google" }, 400);
+      if (prof.emailVerified === true) return j({ verified: true });
+      if (!mailEnabled(env)) return j({ error: "Email verification is not switched on yet" }, 503);
+      if (await overLimit(env, "vreq/" + owner, 3, 3600)) return j({ error: "Too many codes requested - try again in an hour" }, 429);
+      const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
+      await env.KV.put("vcode/" + owner, JSON.stringify({ h: await codeHash(owner, code), email: prof.email }), { expirationTtl: 900 });
+      try { await sendMail(env, prof.email, "Confirm your Tagg email", "Your Tagg code is " + code + ". It expires in 15 minutes.\nIf you did not create a Tagg account, ignore this email."); }
+      catch (e) { await env.KV.delete("vcode/" + owner); return j({ error: "Could not send the email - try again later" }, 502); }
+      return j({ sent: true });
+    }
+    if (p === "/api/auth/email/confirm" && req.method === "POST") {
+      const owner = authOwner(req);
+      const prof = owner ? await getJSON(env.KV, "prof/" + owner) : null;
+      if (!prof) return j({ error: "Sign in first" }, 401);
+      const body = await req.json().catch(() => null);
+      const code = body && typeof body.code === "string" ? body.code.trim() : "";
+      if (await overLimit(env, "vconf/" + owner, 5, 900)) return j({ error: "Too many wrong codes - request a new one in 15 minutes" }, 429);
+      const rec = await getJSON(env.KV, "vcode/" + owner);
+      if (!rec || rec.email !== prof.email || !/^\d{6}$/.test(code) || !safeEqual(await codeHash(owner, code), rec.h)) return j({ error: "That code is wrong or has expired" }, 400);
+      prof.emailVerified = true;
+      await env.KV.put("prof/" + owner, JSON.stringify(prof));
+      await env.KV.delete("vcode/" + owner);
+      return j({ verified: true });
     }
 
     // Google OAuth sign-in: verify id_token, link identity to an owner token, merge device data.

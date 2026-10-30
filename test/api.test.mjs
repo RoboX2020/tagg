@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { start } from "./serve.mjs";
 // Set TAGG_API to run the same checks against a deployed worker (use a staging worker: it creates accounts).
-const { srv, url } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
+const { srv, url, env } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
 let passed = 0;
 async function call(method, path, body, tok) {
   const r = await fetch(url + path, { method, headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -84,5 +84,28 @@ const burst = await Promise.all(Array.from({ length: 30 }, (_, i) => call("POST"
 const through = burst.filter(r => r.status === 401).length;
 console.log("parallel burst: " + through + " of 30 reached the password check (limit 8)");
 ok("parallel guessing is capped at the limit", process.env.NO_DO ? through >= 8 : through === 8);
+
+// Email verification. Sender disabled first (no key): must answer 503 and send nothing.
+const vtok = (await call("POST", "/api/auth/signup", { email: "vera@example.com", password: "verify me 123" })).body.ownerToken;
+ok("verification disabled without a sender", (await call("POST", "/api/auth/email/request", {}, vtok)).status === 503);
+ok("verification requires sign-in", (await call("POST", "/api/auth/email/request", {})).status === 401);
+if (env) {
+  const sent = []; env.MAIL_SINK = async (to, subject, text) => { sent.push({ to, subject, text }); };
+  ok("request sends one email to the account address", (await call("POST", "/api/auth/email/request", {}, vtok)).status === 200 && sent.length === 1 && sent[0].to === "vera@example.com");
+  const code = (sent[0].text.match(/\b(\d{6})\b/) || [])[1];
+  ok("email has a 6-digit code and no profile data", !!code && !/vera|card/i.test(sent[0].text));
+  ok("wrong code rejected", (await call("POST", "/api/auth/email/confirm", { code: code === "000000" ? "111111" : "000000" }, vtok)).status === 400);
+  ok("another account cannot use the code", (await call("POST", "/api/auth/email/confirm", { code }, aTok)).status === 400);
+  const vcard = await call("POST", "/api/card", { ownerToken: vtok, card: { name: "Vera", headline: "Test", links: {} } });
+  ok("card was created", !!vcard.body.slug);
+  ok("still unverified before confirming", (await call("GET", "/api/c/" + vcard.body.slug)).body.verified === false);
+  ok("right code verifies", (await call("POST", "/api/auth/email/confirm", { code }, vtok)).body.verified === true);
+  ok("card now shows verified", (await call("GET", "/api/c/" + vcard.body.slug)).body.verified === true);
+  ok("code is single use", (await call("POST", "/api/auth/email/confirm", { code }, vtok)).status === 400);
+  const burstTok = (await call("POST", "/api/auth/signup", { email: "vbrute@example.com", password: "verify me 123" })).body.ownerToken;
+  await call("POST", "/api/auth/email/request", {}, burstTok);
+  const g = []; for (let i = 0; i < 7; i++) g.push((await call("POST", "/api/auth/email/confirm", { code: "00000" + (i % 10) }, burstTok)).status);
+  ok("code guessing is locked after 5 tries", g.slice(5).every(x => x === 429));
+}
 srv.close();
 console.log("\n" + passed + " checks passed");
