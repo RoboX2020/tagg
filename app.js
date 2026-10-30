@@ -740,34 +740,45 @@
     }
     function ask() {
       box.innerHTML = '<div class="panel"><div style="font-weight:600">Import from LinkedIn</div>' +
-        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">LinkedIn does not allow apps to read profiles from a link, so Tagg works from your own copy. Open your profile in LinkedIn, select all, copy, and paste it here. Or use More, then Save to PDF, and paste the text.</p>' +
-        '<textarea class="input" id="li-text" rows="6" placeholder="Paste your profile text"></textarea>' +
-        '<button class="btn btn-accent" id="li-read" style="margin-top:8px">Read my profile</button>' +
+        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">Uses the LinkedIn link above. Tagg reads the public parts of your profile (school, jobs, place), then you review it before anything is saved.</p>' +
+        '<label class="row" style="gap:12px;cursor:pointer"><input type="checkbox" id="li-own" style="width:18px;height:18px;accent-color:var(--accent)"><span class="grow detail" style="white-space:normal">This is my own LinkedIn profile.</span></label>' +
+        '<button class="btn btn-accent" id="li-link" style="margin-top:8px">Import from my link</button>' +
+        '<p class="hint" style="margin:12px 0 6px;line-height:1.45">No link, or it did not work? Paste your profile text instead.</p>' +
+        '<textarea class="input" id="li-text" rows="4" placeholder="Paste your profile text"></textarea>' +
+        '<button class="btn btn-gray" id="li-read" style="margin-top:8px">Read pasted text</button>' +
         '<button class="btn btn-plain" id="li-cancel">Cancel</button><div class="fineprint" id="li-err" style="color:var(--danger,#c0392b)"></div></div>';
       document.getElementById("li-cancel").addEventListener("click", function () { load(); });
-      document.getElementById("li-read").addEventListener("click", function () {
-        var text = document.getElementById("li-text").value, err = document.getElementById("li-err"), btn = this;
-        if (text.trim().length < 40) { err.textContent = "Paste the text of your profile first."; return; }
-        var c = collect(); if (!c.name) { err.textContent = "Add your name above first."; return; }
-        consentThen("liimport", "Read your profile text with Cloudflare AI?",
-          "Tagg sends the text you paste to Cloudflare Workers AI, which also hosts Tagg, to pick out your job, employer and school. Tagg never contacts LinkedIn. Nothing is saved until you review it.",
-          "Continue", function () {
-            btn.disabled = true; btn.textContent = "Reading..."; err.textContent = "";
-            Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
-            saveCard(c);
-            syncCard().then(function () {
-              return api("/api/import/linkedin", { method: "POST", body: { url: c.links.linkedin || "", text: text } });
-            }).then(review).catch(function (e) {
-              btn.disabled = false; btn.textContent = "Read my profile"; err.textContent = (e && e.error) || "Could not read that. Try again.";
-            });
+      function run(btn, label, payload, consentKey, consentTitle, consentBody) {
+        var err = document.getElementById("li-err"), c = collect(); err.textContent = "";
+        if (!c.name) { err.textContent = "Add your name above first."; return; }
+        consentThen(consentKey, consentTitle, consentBody, "Continue", function () {
+          btn.disabled = true; btn.textContent = "Reading...";
+          Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
+          saveCard(c);
+          syncCard().then(function () { return api("/api/import/linkedin", { method: "POST", body: payload(c) }); }).then(review).catch(function (e) {
+            btn.disabled = false; btn.textContent = label; err.textContent = (e && e.error) || "Could not read that. Try again.";
           });
+        });
+      }
+      document.getElementById("li-link").addEventListener("click", function () {
+        var err = document.getElementById("li-err");
+        if (!collect().links.linkedin) { err.textContent = "Add your LinkedIn link above first."; return; }
+        if (!document.getElementById("li-own").checked) { err.textContent = "Tick the box to confirm it is your own profile."; return; }
+        run(this, "Import from my link", function (c) { return { url: c.links.linkedin, ownProfile: true }; }, "lilink", "Read your public LinkedIn profile?",
+          "Tagg asks a data service (Apify) to read the public parts of your LinkedIn profile from your link. Nothing is saved until you review it. Only import your own profile.");
+      });
+      document.getElementById("li-read").addEventListener("click", function () {
+        var text = document.getElementById("li-text").value;
+        if (text.trim().length < 40) { document.getElementById("li-err").textContent = "Paste the text of your profile first."; return; }
+        run(this, "Read pasted text", function (c) { return { url: c.links.linkedin || "", text: text }; }, "liimport", "Read your profile text with Cloudflare AI?",
+          "Tagg sends the text you paste to Cloudflare Workers AI, which also hosts Tagg, to pick out your job, employer and school. Tagg never contacts LinkedIn. Nothing is saved until you review it.");
       });
     }
     function review(d) {
       var f = d.fields;
       function fld(id, label, val) { return '<div class="field"><label>' + label + '</label><input class="input" id="' + id + '" value="' + esc(val || "") + '"></div>'; }
       box.innerHTML = '<div class="panel"><div style="font-weight:600">Check what Tagg found</div>' +
-        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">Only text from what you pasted. Fix anything, clear what you do not want. Nothing is saved until you add it.</p>' +
+        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">Only what the profile shows. Fix anything, clear what you do not want. Nothing is saved until you add it.</p>' +
         fld("li-headline", "Headline", f.headline) + fld("li-titles", "Roles, separated by commas", list(f.titles)) +
         fld("li-companies", "Employers", list(f.companies)) + fld("li-schools", "Schools", list(f.schools)) + fld("li-location", "Location", f.location) +
         '<div class="fineprint">Shown to people who scan your code.</div>' +
@@ -1236,8 +1247,8 @@
       '<div id="ans" style="margin-top:18px"></div>' +
       '<p class="footer-note">To answer, Tagg sends the people you saved (names, headlines, where and when you met, enrichment snippets and your private notes) to Google Gemini. Nobody else sees them.</p>'
     );
-    function go() { if (!document.getElementById("q").value.trim()) return; consentThen("ask", "Ask with Google Gemini?",
-      "To answer, Tagg sends the people you saved to Google Gemini, including names, headlines, where and when you met, public profile snippets and your private notes. Other Tagg users never see your notes.",
+    function go() { if (!document.getElementById("q").value.trim()) return; consentThen("ask", "Ask with Cloudflare AI?",
+      "To answer, Tagg sends the people you saved to Cloudflare Workers AI (which also hosts Tagg), including names, headlines, where and when you met, public profile snippets and your private notes. Other Tagg users never see your notes.",
       "Send and ask", go2); }
     function go2() {
       var q = document.getElementById("q").value.trim();

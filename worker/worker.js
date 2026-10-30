@@ -65,13 +65,32 @@ function asNames(x, max) {
   for (const it of arr) { const n = clip(typeof it === "string" ? it : it && it.name, 120); if (n && !out.includes(n)) out.push(n); if (out.length >= max) break; }
   return out;
 }
+// URL-only import through Apify (the user's hackathon promo credits, free plan, hard monthly cap, no card). Used only when the
+// signed-in owner types their own LinkedIn URL and confirms it is their own profile. Hard per-run charge cap; per-owner and global daily caps.
+async function importViaApify(env, url) {
+  const r = await fetch("https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items?maxTotalChargeUsd=0.01&timeout=60", {
+    method: "POST", headers: { "Authorization": "Bearer " + env.APIFY_TOKEN, "Content-Type": "application/json" },
+    body: JSON.stringify({ profileScraperMode: "Profile details no email ($4 per 1k)", queries: [url] }), signal: AbortSignal.timeout(70000) });
+  if (!r.ok) return { unavailable: "apify " + r.status };
+  const items = await r.json().catch(() => null);
+  const x = Array.isArray(items) ? items[0] : null;
+  if (!x || x.error || (!x.experience && !x.education && !x.headline)) return null;
+  const uniq = (arr, n) => asNames(arr.filter(Boolean), n);
+  return {
+    headline: clip(x.headline, 300),
+    titles: uniq((x.experience || []).map(e => e && e.position), 5),
+    companies: uniq((x.experience || []).map(e => e && e.companyName), 6),
+    schools: uniq((x.education || []).map(e => e && e.schoolName), 6),
+    location: clip(x.location && (x.location.linkedinText || (x.location.parsed && x.location.parsed.text)), 120)
+  };
+}
+const AI_MODELS = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct-fast", "@cf/meta/llama-3.2-3b-instruct", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/google/gemma-3-12b-it", "@cf/qwen/qwen3-30b-a3b-fp8"];
 const norm = (x) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 async function extractProfile(env, text) {
   const prompt = "Extract facts from this pasted LinkedIn profile text. Copy values EXACTLY as written in the text. Never guess, infer or add anything that is not in the text. Leave a list empty if the text does not say. headline = the profile headline if present. titles = job titles held (current first). companies = employers (current first). schools = schools or universities attended. location = the place shown on the profile.\n\nTEXT:\n" + text;
   const schema = { type: "object", properties: { headline: { type: "string" }, titles: { type: "array", items: { type: "string" } }, companies: { type: "array", items: { type: "string" } }, schools: { type: "array", items: { type: "string" } }, location: { type: "string" } }, required: ["headline", "titles", "companies", "schools", "location"] };
   let raw = null, why = "";
-  const models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct-fast", "@cf/meta/llama-3.2-3b-instruct", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/google/gemma-3-12b-it", "@cf/qwen/qwen3-30b-a3b-fp8"];
-  for (const m of models) {
+  for (const m of AI_MODELS) {
     try {
       const r = await env.AI.run(m, { messages: [{ role: "system", content: "You extract facts from text and answer only with JSON." }, { role: "user", content: prompt }],
         response_format: { type: "json_schema", json_schema: schema }, max_tokens: 700, temperature: 0 });
@@ -673,16 +692,29 @@ export default {
       const url = urlIn ? parseLinkedinUrl(urlIn) : null;
       if (urlIn && !url) return j({ error: "Paste a link like linkedin.com/in/yourname" }, 400);
       const text = body && typeof body.text === "string" ? body.text.trim().slice(0, 12000) : "";
-      if (text.length < 40) return j({ error: "Paste the text of your LinkedIn profile first" }, 400);
-      if (!env.AI) return j({ error: "Import is unavailable right now" }, 503);
-      if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
-      const data = await extractProfile(env, text);
-      if (data && data.unavailable !== undefined) return j({ error: "Import is busy right now - try again in a minute", reason: data.unavailable }, 503);
-      if (!data) return j({ error: "Could not find a role, employer or school in that text. Paste the Experience and Education sections, or type them on your card." }, 422);
+      let data = null, source = "linkedin-pasted-text";
+      if (!text && url) {
+        if (body.ownProfile !== true) return j({ error: "Confirm that this is your own profile" }, 400);
+        if (!env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead." }, 503);
+        if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+        if (await overLimit(env, "liapify/owner/" + owner, 3, 86400)) return j({ error: "You have used today's link imports. Paste your profile text instead." }, 429);
+        if (await overLimit(env, "liapify/day/" + new Date().toISOString().slice(0, 10), Number(env.APIFY_DAILY_CAP) || 40, 86400)) return j({ error: "Link import is busy today. Paste your profile text instead." }, 429);
+        let res = null; try { res = await importViaApify(env, url); } catch (e) { res = { unavailable: "network" }; }
+        if (res && res.unavailable !== undefined) return j({ error: "Could not read that profile right now. Paste your profile text instead.", reason: res.unavailable }, 503);
+        if (!res) return j({ error: "Could not read that profile. Is it public? You can paste your profile text instead." }, 422);
+        data = res; source = "linkedin-link-import";
+      } else {
+        if (text.length < 40) return j({ error: "Paste the text of your LinkedIn profile first" }, 400);
+        if (!env.AI) return j({ error: "Import is unavailable right now" }, 503);
+        if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+        data = await extractProfile(env, text);
+        if (data && data.unavailable !== undefined) return j({ error: "Import is busy right now - try again in a minute", reason: data.unavailable }, 503);
+        if (!data) return j({ error: "Could not find a role, employer or school in that text. Paste the Experience and Education sections, or type them on your card." }, 422);
+      }
       const res = { data };
       const previewId = rand(16);
-      await env.KV.put("liprev/" + previewId, JSON.stringify({ owner, url: url || "", data: res.data, at: new Date().toISOString() }), { expirationTtl: 900 });
-      return j({ previewId, url, fields: res.data, source: "Text you pasted from LinkedIn" });
+      await env.KV.put("liprev/" + previewId, JSON.stringify({ owner, url: url || "", data: res.data, source, at: new Date().toISOString() }), { expirationTtl: 900 });
+      return j({ previewId, url, fields: res.data, source: source === "linkedin-link-import" ? "Your public LinkedIn profile" : "Text you pasted from LinkedIn" });
     }
     // Step 2: the owner reviews/edits the fields, then confirms. Only then is anything stored, with its provenance.
     if (p === "/api/import/linkedin/confirm" && req.method === "POST") {
@@ -696,7 +728,7 @@ export default {
       const list = (x, n) => asNames(Array.isArray(x) ? x.filter(v => typeof v === "string") : [], n);
       const fields = { headline: clip(f.headline, 300), titles: list(f.titles, 5), companies: list(f.companies, 6), schools: list(f.schools, 6), location: clip(f.location, 120) };
       const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
-      existing.linkedin = Object.assign(fields, { source: "linkedin-pasted-text", url: prev.url, importedAt: prev.at, confirmedAt: new Date().toISOString(),
+      existing.linkedin = Object.assign(fields, { source: prev.source || "linkedin-pasted-text", url: prev.url, importedAt: prev.at, confirmedAt: new Date().toISOString(),
         company: fields.companies[0] || null, title: fields.titles[0] || null, school: fields.schools[0] || null });
       await env.KV.put("enrich/" + slug, JSON.stringify(existing));
       await env.KV.delete("liprev/" + body.previewId);
@@ -716,7 +748,7 @@ export default {
     if (p === "/api/ask" && req.method === "POST") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      if (!env.GEMINI_API_KEY) return j({ error: "ask unavailable" }, 503);
+      if (!env.AI && !env.GEMINI_API_KEY) return j({ error: "ask unavailable" }, 503);
       const body = await req.json().catch(() => null);
       const q = ((body && body.q) || "").slice(0, 500).trim();
       if (!q) return j({ error: "question required" }, 400);
@@ -728,8 +760,18 @@ export default {
           : x.enriched && x.enriched.github ? [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ") : null
       }));
       const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + "\n\nQUESTION: " + q;
-      const models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"];
       let answer = null, lastStatus = 0;
+      if (await overLimit(env, "ask/" + owner, 60, 3600)) return j({ error: "Too many questions - try again in a while" }, 429);
+      if (env.AI) {
+        for (const m of AI_MODELS) {
+          try {
+            const r = await env.AI.run(m, { messages: [{ role: "user", content: prompt }], max_tokens: 700, temperature: 0.2 });
+            const txt = typeof r.response === "string" ? r.response : "";
+            if (txt.trim()) { answer = txt.trim(); break; }
+          } catch (e) { lastStatus = 1; }
+        }
+      }
+      const models = answer || !env.GEMINI_API_KEY ? [] : ["gemini-2.5-flash", "gemini-2.0-flash"];
       for (const m of models) {
         try {
           const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent", {
