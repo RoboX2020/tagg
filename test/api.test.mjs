@@ -144,5 +144,40 @@ ok("deleted owner token no longer works", (await call("GET", "/api/me", null, dT
 ok("deleted login no longer works", (await call("POST", "/api/auth/login", { email: "del@example.com", password: "delete me 123" })).status === 401);
 ok("email can sign up again fresh", (await call("POST", "/api/auth/signup", { email: "del@example.com", password: "delete me 123" })).status === 200);
 ok("another account and its card are untouched", (await call("GET", "/api/c/" + keepCard.body.slug)).status === 200 && (await call("GET", "/api/me", null, keepTok)).status === 200);
+
+// Reciprocal preservation: deleting one person must not erase the other person's own meeting record.
+const eTok = (await call("POST", "/api/auth/signup", { email: "erin@example.com", password: "erin pass 123" })).body.ownerToken;
+const fTok = (await call("POST", "/api/auth/signup", { email: "finn@example.com", password: "finn pass 123" })).body.ownerToken;
+const eCard = await call("POST", "/api/card", { ownerToken: eTok, card: { name: "Erin Ro", headline: "Gone soon", links: {} } });
+const fCard = await call("POST", "/api/card", { ownerToken: fTok, card: { name: "Finn Do", headline: "Stays", links: {} } });
+const fc = await call("POST", "/api/connect", { slug: eCard.body.slug, requesterToken: fTok, event: "Demo Day", note: "Finn only note", location: { lat: 33.4, lon: -111.9, label: "Tempe, AZ", place: "Hayden Library" } });
+const ei = await call("GET", "/api/inbox", null, eTok);
+await call("POST", "/api/inbox/respond", { id: ei.body.requests[0].id, accept: true }, eTok);
+const finnBefore = (await call("GET", "/api/people", null, fTok)).body.people.find(x => x.card.name === "Erin Ro");
+ok("Finn has Erin saved before deletion", !!finnBefore && finnBefore.event === "Demo Day");
+ok("Erin deletes her account", (await call("DELETE", "/api/account", { confirm: "DELETE", password: "erin pass 123" }, eTok)).body.deleted === true);
+const finnAfter = (await call("GET", "/api/people", null, fTok)).body.people.find(x => x.card.name === "Erin Ro");
+ok("Finn's own record of Erin survives with time, place and his note", !!finnAfter && finnAfter.metAt === finnBefore.metAt && finnAfter.location.place === "Hayden Library" && finnAfter.note.includes("Finn only"));
+ok("Finn's own card and login are unaffected", (await call("GET", "/api/c/" + fCard.body.slug)).status === 200 && (await call("GET", "/api/me", null, fTok)).status === 200);
+
+// Google account deletion needs a fresh Google sign-in for the same account. Google is stubbed here (no network).
+if (env) {
+  const realFetch = globalThis.fetch; const GCLIENT = "test-client";
+  globalThis.fetch = async (u, init) => String(u).startsWith("https://oauth2.googleapis.com/tokeninfo")
+    ? (() => { const c = new URL(u).searchParams.get("id_token"); const [sub, aud] = c.split("|"); return c === "bad" ? new Response("{}", { status: 400 }) : new Response(JSON.stringify({ sub, aud: aud || GCLIENT, email: sub + "@gmail.test", email_verified: "true", name: "G " + sub, picture: "" })); })()
+    : realFetch(u, init);
+  const g = await call("POST", "/api/auth/google", { credential: "gsub1|" });
+  ok("google sign-in works with a valid token", g.status === 200 && !!g.body.ownerToken);
+  const gTok = g.body.ownerToken;
+  const gdel = c => call("DELETE", "/api/account", { confirm: "DELETE", credential: c }, gTok);
+  ok("google delete without fresh sign-in refused", (await gdel(undefined)).status === 401);
+  ok("google delete with a rejected token refused", (await gdel("bad")).status === 401);
+  ok("google delete with another google account refused", (await gdel("gsub2|")).status === 401);
+  ok("google delete with wrong audience refused", (await gdel("gsub1|other-app")).status === 401);
+  ok("account still exists after refusals", (await call("GET", "/api/me", null, gTok)).status === 200);
+  ok("google delete with fresh sign-in of the same account works", (await gdel("gsub1|")).body.deleted === true);
+  ok("google token no longer works", (await call("GET", "/api/me", null, gTok)).status === 401);
+  globalThis.fetch = realFetch;
+}
 srv.close();
 console.log("\n" + passed + " checks passed");

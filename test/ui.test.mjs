@@ -100,6 +100,21 @@ try {
   assert.ok((await B.$eval("#note", e => e.value)).includes("sim2real"));
   await B.$eval("#note", e => e.scrollIntoView({ block: "center" })); await sleep(300); await B.screenshot({ path: "/tmp/work/shot-bob-person.png" });
   ok("Bob's saved Alice with his private note");
+
+  // Alice deletes her account from the UI. Bob's own record of her must survive.
+  await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
+  await A.waitForSelector("#delete-account", { timeout: 15000 });
+  await A.$eval("#delete-account", e => e.click()); await sleep(400);
+  await A.type("#da-word", "DELETE"); await A.type("#da-pass", "wrong-pass-1");
+  await A.$eval("#da-go", e => e.click()); await sleep(2500);
+  assert.ok((await A.evaluate(() => document.getElementById("da-err").textContent)).includes("Password is wrong")); ok("Delete sheet refuses a wrong password");
+  await A.screenshot({ path: "/tmp/work/shot-delete-sheet.png" });
+  await A.$eval("#da-pass", e => { e.value = ""; }); await A.type("#da-pass", "alice-secret-1");
+  await A.$eval("#da-go", e => e.click()); await sleep(3500);
+  assert.ok(await A.evaluate(() => !localStorage.getItem("tagg.owner.v1") && !localStorage.getItem("tagg.profile.v1"))); ok("Delete clears Alice's sign-in from the device");
+  const gone = await fetch(API_URL + "/api/c/" + slug); assert.equal(gone.status, 404); ok("Alice's card is gone on the server");
+  await B.goto(base + "#/people"); await B.reload({ waitUntil: "networkidle0" }); await sleep(2500);
+  await B.goto(base + "#/people"); await waitText(B, "Alice Ng", 15000); ok("Bob still has his own record of Alice after she deleted");
   console.log("\nUI checks passed:", n);
 } catch (e) { console.log("FAIL", e.message); process.exitCode = 1; }
 await browser.close(); api.srv.close(); web.close();

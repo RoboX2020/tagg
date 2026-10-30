@@ -111,7 +111,7 @@
     bg.className = "sheet-bg";
     bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Verify your email</h3>' +
       '<p class="hint" id="ve-msg">We will email a 6-digit code to ' + esc((profile() || {}).email || "you") + '. It expires in 15 minutes.</p>' +
-      '<input class="field" id="ve-code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="display:none">' +
+      '<input class="input" id="ve-code" inputmode="numeric" maxlength="6" placeholder="6-digit code" style="display:none">' +
       '<div style="height:12px"></div><button class="btn btn-accent" id="ve-go">Send code</button>' +
       '<button class="btn btn-gray" id="ve-close">Close</button></div>';
     document.body.appendChild(bg);
@@ -136,20 +136,23 @@
     bg.className = "sheet-bg";
     bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Delete your account</h3>' +
       '<p class="hint" id="da-msg">This permanently deletes your card, your saved people, your notes, photos and locations, and your sign-in. It does not remove the copy of your card that other people already saved, and it cannot be undone.</p>' +
-      (isEmail ? '<input class="field" id="da-pass" type="password" placeholder="Password" autocomplete="current-password">' : '') +
-      '<input class="field" id="da-word" placeholder="Type DELETE to confirm" autocapitalize="characters">' +
+      (isEmail ? '<input class="input" id="da-pass" style="margin-bottom:10px" type="password" placeholder="Password" autocomplete="current-password">'
+        : '<p class="hint" id="da-gmsg">Confirm it is you: sign in with Google again.</p><div id="da-g"></div>') +
+      '<input class="input" id="da-word" placeholder="Type DELETE to confirm" autocapitalize="characters">' +
+      '<p class="hint" id="da-err" style="color:var(--accent)"></p>' +
       '<div style="height:12px"></div><button class="btn btn-accent" id="da-go">Delete everything</button>' +
       '<button class="btn btn-gray" id="da-close">Cancel</button></div>';
     document.body.appendChild(bg);
-    var msg = bg.querySelector("#da-msg");
+    var msg = bg.querySelector("#da-msg"), gcred = null;
+    if (!isEmail) mountGoogleButton(bg.querySelector("#da-g"), 0, null, function (c) { gcred = c; bg.querySelector("#da-gmsg").textContent = "Google confirmed. Type DELETE below to finish."; });
     bg.querySelector("#da-close").addEventListener("click", function () { bg.remove(); });
     bg.querySelector("#da-go").addEventListener("click", function () {
       var pw = bg.querySelector("#da-pass");
-      api("/api/account", { method: "DELETE", body: { confirm: bg.querySelector("#da-word").value.trim(), password: pw ? pw.value : undefined } })
+      api("/api/account", { method: "DELETE", body: { confirm: bg.querySelector("#da-word").value.trim(), password: pw ? pw.value : undefined, credential: gcred || undefined } })
         .then(function () {
           Object.keys(localStorage).filter(function (k) { return k.indexOf("tagg.") === 0 && k !== "tagg.api"; }).forEach(function (k) { localStorage.removeItem(k); });
           bg.remove(); toast("Account deleted"); location.hash = "#/"; route();
-        }).catch(function (e) { msg.textContent = (e && e.error) || "Something went wrong"; });
+        }).catch(function (e) { bg.querySelector("#da-err").textContent = (e && e.error) || "Something went wrong"; });
     });
   }
   function showRecoveryCode(code, done) {
@@ -221,13 +224,13 @@
     }
     draw();
   }
-  function mountGoogleButton(el, tries, onDone) {
+  function mountGoogleButton(el, tries, onDone, onCredential) {
     if (!window.google || !google.accounts || !google.accounts.id) {
       tries = tries || 0;
-      if (tries < 25) { setTimeout(function () { mountGoogleButton(el, tries + 1, onDone); }, 400); return; }
+      if (tries < 25) { setTimeout(function () { mountGoogleButton(el, tries + 1, onDone, onCredential); }, 400); return; }
       el.innerHTML = '<p class="hint">Google sign-in could not load - check your connection.</p>'; return;
     }
-    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { googleSignIn(resp.credential, onDone); } });
+    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { if (onCredential) onCredential(resp.credential); else googleSignIn(resp.credential, onDone); } });
     google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
   }
   var lastSync = 0, syncing = false, INBOX = [], INBOX_COUNT = 0;

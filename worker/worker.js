@@ -157,6 +157,16 @@ async function verifyWebhook(env, req, raw) {
 async function codeHash(owner, code) {
   return b64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(owner + ":" + code)));
 }
+// Verify a Google id_token (audience must be this app). Returns the token info or null.
+async function verifyGoogle(env, credential) {
+  if (typeof credential !== "string" || !credential) return null;
+  const vr = await fetch("https://oauth2.googleapis.com/tokeninfo?id_token=" + encodeURIComponent(credential));
+  if (!vr.ok) return null;
+  const idt = await vr.json();
+  if (idt.aud !== env.GOOGLE_CLIENT_ID) return null;
+  if (idt.email_verified !== "true" && idt.email_verified !== true) return null;
+  return idt;
+}
 function normEmail(e) { return typeof e === "string" ? e.trim().toLowerCase().slice(0, 200) : ""; }
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 // Fixed-window attempt counter in KV (free tier). Returns true when the caller is over the limit.
@@ -411,7 +421,13 @@ export default {
         const h = await hashPassword(pw, rec ? rec.salt : b64(new Uint8Array(16)), rec ? rec.iter : PBKDF2_ITER);
         if (!rec || rec.owner !== owner || !safeEqual(h, rec.hash)) return j({ error: "Password is wrong" }, 401);
         keys.push("auth/e/" + prof.email);
-      } else if (prof && prof.sub) keys.push("auth/g/" + prof.sub);
+      } else if (prof && prof.sub) {
+        // Google accounts must sign in with Google again right now, and it must be the same Google account.
+        const idt = await verifyGoogle(env, body.credential);
+        if (!idt) return j({ error: "Sign in with Google again to confirm" }, 401);
+        if (String(idt.sub) !== String(prof.sub)) return j({ error: "That is a different Google account" }, 401);
+        keys.push("auth/g/" + prof.sub);
+      }
       const slug = await env.KV.get("own/" + owner);
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
       for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
