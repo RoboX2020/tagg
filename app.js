@@ -1,4 +1,14 @@
-/* Tagg - people memory with a personal agent. Client-side MVP. */
+// ============================================================================
+// Tagg - people memory with a personal agent. Client-side MVP.
+//
+// What it does: you carry a digital card (name + links) as a QR code. Someone
+// scans it with any phone camera - no app install - and saves your card. Tagg
+// remembers WHEN and WHERE you met, keeps your private notes per person, and
+// later answers questions like "who did I meet at Cal Hacks who works on
+// robotics?" Everything is one static page: data lives in localStorage, the
+// card travels INSIDE the QR link itself (base64 in the URL), and an optional
+// Cloudflare Worker API syncs across devices when signed in.
+// ============================================================================
 (function () {
   "use strict";
 
@@ -99,12 +109,20 @@
     }).then(function () { syncing = false; route(); }, function () { syncing = false; });
   }
   /* location with a human-readable place label */
+  // Ask the browser for the user's location (to record WHERE a meeting
+  // happened), then look up the nearest city name. Fully optional: any failure
+  // or refusal quietly calls back with null and the app moves on - the total
+  // wait is capped at 4.5 s so a slow GPS fix never hangs the flow.
   function withLocation(cb) {
     function done(v) { clearTimeout(timer); cb(v); }
     var timer = setTimeout(function () { cb(null); }, 4500);
     if (!navigator.geolocation) { clearTimeout(timer); return cb(null); }
     navigator.geolocation.getCurrentPosition(function (pos) {
+      // Round coordinates to 5 decimals (~1 meter precision) - precise enough
+      // for "where we met", and it avoids storing needlessly exact GPS trails.
       var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "" };
+      // Reverse geocode: turn lat/lon into "City, State" via OpenStreetMap's
+      // free Nominatim service (zoom=14 = neighbourhood level).
       fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&lat=" + loc.lat + "&lon=" + loc.lon)
         .then(function (r) { return r.json(); })
         .then(function (d) {
@@ -116,9 +134,16 @@
   }
 
   /* ================= card payload (QR) ================= */
+  // THE core trick of Tagg: the whole card is packed INTO the link, so a
+  // stranger's phone can read it with zero servers and zero sign-in.
   function cardUrl(c) {
+    // Signed-in users get a short link (#/c/<slug>) served by the API instead -
+    // much shorter, which makes a less dense, easier-to-scan QR code.
     var slug = cardSlug();
     if (slug) return location.origin + location.pathname + "#/c/" + slug;
+    // Offline/self-contained mode: build a compact JSON payload with one-letter
+    // keys (n = name, h = headline, e = email, p = phone, l = links) to keep
+    // the URL - and therefore the QR pattern - as small as possible.
     var payload = { v: 1, n: c.name, h: c.headline || "" };
     if (c.email) payload.e = c.email;
     if (c.phone) payload.p = c.phone;
@@ -128,10 +153,17 @@
     });
     if (Object.keys(l).length) payload.l = l;
     var json = JSON.stringify(payload);
+    // Base64-encode the JSON (btoa), handling non-English characters safely via
+    // the encodeURIComponent/unescape dance (plain btoa chokes on Unicode).
+    // Then make it URL-safe: + and / are awkward in links, so swap to - and _,
+    // and drop the trailing = padding (decodePayload restores it).
     var b64 = btoa(unescape(encodeURIComponent(json)))
       .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     return location.origin + location.pathname + "#/c/" + b64;
   }
+  // The inverse of cardUrl's packing: undo the URL-safe alphabet, restore the
+  // = padding to a multiple of 4, decode, and map the one-letter keys back to
+  // real field names. Returns null on anything malformed.
   function decodePayload(b64) {
     try {
       var s = b64.replace(/-/g, "+").replace(/_/g, "/");
@@ -247,6 +279,9 @@
     BUCKETS.forEach(function (b) { if (b[0].test(text || "")) t.push(b[1]); });
     return t;
   }
+  // Compose one plain sentence explaining why this contact matters to YOU:
+  // shared topic if you overlap, their topic if not, or a gentle nudge to add
+  // a note when nothing is known yet.
   function whyTalk(me, them, eventName) {
     var mine = topicsOf((me && me.headline) || "");
     var theirs = topicsOf((them.headline || "") + " " + (them.name || ""));
