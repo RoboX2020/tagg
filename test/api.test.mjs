@@ -1,7 +1,8 @@
 // End-to-end API test: signup, login, scan-to-connect, consent, mutual saving, private notes, location. Run: node test/api.test.mjs
 import assert from "node:assert/strict";
 import { start } from "./serve.mjs";
-const { srv, url } = await start(8799);
+// Set TAGG_API to run the same checks against a deployed worker (use a staging worker: it creates accounts).
+const { srv, url } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
 let passed = 0;
 async function call(method, path, body, tok) {
   const r = await fetch(url + path, { method, headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: body ? JSON.stringify(body) : undefined });
