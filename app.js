@@ -27,7 +27,8 @@
   function uid() { return "p" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
   /* ================= tagg cloud database ================= */
-  var API = "https://tagg-api.prajval-2029.workers.dev";
+  // The API address can be overridden for local testing: localStorage.setItem("tagg.api", "http://localhost:8787")
+  var API = localStorage.getItem("tagg.api") || "https://tagg-api.prajval-2029.workers.dev";
   function ownerToken() { return localStorage.getItem("tagg.owner.v1") || null; }
   function setOwnerToken(t) { if (t) localStorage.setItem("tagg.owner.v1", t); }
   function cardSlug() { return localStorage.getItem("tagg.slug.v1") || null; }
@@ -68,33 +69,81 @@
   var GOOGLE_CLIENT_ID = "234788686355-ah0fsgjc8cr8n2h1f9oi0ielbket64jf.apps.googleusercontent.com";
   function profile() { try { return JSON.parse(localStorage.getItem("tagg.profile.v1") || "null"); } catch (e) { return null; } }
   function setProfile(p) { if (p) localStorage.setItem("tagg.profile.v1", JSON.stringify(p)); else localStorage.removeItem("tagg.profile.v1"); }
-  function googleSignIn(credential) {
-    return api("/api/auth/google", { method: "POST", body: { credential: credential, deviceToken: ownerToken() } })
-      .then(function (d) {
-        setOwnerToken(d.ownerToken);
-        setProfile(d.profile);
-        lastSync = 0;
-        var restore = Promise.resolve();
-        if (!loadCard()) {
-          restore = api("/api/me").then(function (me) {
-            if (me && me.slug) return api("/api/c/" + me.slug).then(function (cd) {
-              if (cd && cd.card) { saveCard(cd.card); setCardSlug(me.slug); }
-            });
-          }).catch(function () {});
-        }
-        return restore.then(function () { return syncPeople(); }).then(function () {
-          toast("Signed in as " + (d.profile.email || "you") + " - your Tagg is backed up");
-          route();
+  // Runs after ANY successful sign-in (Google or email): remember who you are,
+  // pull your card and people onto this device. "quiet" skips the screen refresh
+  // so the scan page keeps its form while the connection is being sent.
+  function afterAuth(d, quiet) {
+    setOwnerToken(d.ownerToken);
+    setProfile(d.profile);
+    lastSync = 0;
+    var restore = Promise.resolve();
+    if (!loadCard()) {
+      restore = api("/api/me").then(function (me) {
+        if (me && me.slug) return api("/api/c/" + me.slug).then(function (cd) {
+          if (cd && cd.card) { saveCard(cd.card); setCardSlug(me.slug); }
         });
-      }).catch(function () { toast("Sign-in failed - your data is still safe on this device"); });
+      }).catch(function () {});
+    }
+    return restore.then(function () { return syncPeople(); }).then(function () {
+      if (!quiet) { toast("Signed in as " + (d.profile.email || "you") + " - your Tagg is backed up"); route(); }
+    });
   }
-  function mountGoogleButton(el, tries) {
+  // Google sign-in: the browser hands us a signed token, the server verifies it.
+  function googleSignIn(credential, onDone) {
+    return api("/api/auth/google", { method: "POST", body: { credential: credential, deviceToken: ownerToken() } })
+      .then(function (d) { return afterAuth(d, !!onDone).then(function () { if (onDone) onDone(d); }); })
+      .catch(function () { toast("Sign-in failed - your data is still safe on this device"); });
+  }
+  // Email + password: mode is "signup" or "login". Rejects with a readable message.
+  function emailAuth(mode, name, email, password) {
+    var body = { email: email, password: password, deviceToken: ownerToken() };
+    if (mode === "signup") body.name = name;
+    return api("/api/auth/" + mode, { method: "POST", body: body }).then(function (d) {
+      return afterAuth(d, true).then(function () { return d; });
+    });
+  }
+  // The sign-up / sign-in block used on the home screen and on the scan page.
+  // opts.mode = "signup" | "login"; opts.cta = button label; opts.onDone(d) runs after success.
+  function mountAuthBlock(el, opts) {
+    var mode = opts.mode || "signup";
+    function draw() {
+      var su = mode === "signup";
+      el.innerHTML =
+        '<div id="gbtn" style="display:flex;justify-content:center;margin-bottom:6px"></div>' +
+        '<p class="hint" style="text-align:center;margin:8px 0">or use email</p>' +
+        (su ? '<div class="field"><label>Your name</label><input class="input" id="au-name" autocomplete="name" placeholder="Your name"></div>' : '') +
+        '<div class="field"><label>Email</label><input class="input" id="au-email" type="email" autocomplete="email" placeholder="you@example.com"></div>' +
+        '<div class="field"><label>Password' + (su ? ' <span style="text-transform:none;color:var(--text-3);font-weight:400">(8+ characters)</span>' : '') + '</label><input class="input" id="au-pass" type="password" autocomplete="' + (su ? 'new-password' : 'current-password') + '"></div>' +
+        '<div style="height:12px"></div>' +
+        '<button class="btn btn-accent" id="au-go">' + esc(su ? (opts.cta || "Create account") : "Sign in") + '</button>' +
+        '<button class="btn btn-plain" id="au-switch">' + (su ? 'I already have an account' : 'Create a new account') + '</button>';
+      mountGoogleButton(el.querySelector("#gbtn"), 0, function (d) { if (opts.onDone) opts.onDone(d); else route(); });
+      el.querySelector("#au-switch").addEventListener("click", function () { mode = su ? "login" : "signup"; draw(); });
+      el.querySelector("#au-go").addEventListener("click", function () {
+        var btn = this;
+        var name = su ? el.querySelector("#au-name").value.trim() : "";
+        var email = el.querySelector("#au-email").value.trim();
+        var pw = el.querySelector("#au-pass").value;
+        if (su && !name) { toast("Add your name first"); return; }
+        if (!email || !pw) { toast("Enter your email and password"); return; }
+        var label = btn.textContent; btn.disabled = true; btn.textContent = "One moment...";
+        emailAuth(mode, name, email, pw).then(function (d) {
+          if (opts.onDone) opts.onDone(d, name); else { toast("Signed in as " + email); route(); }
+        }).catch(function (e) {
+          btn.disabled = false; btn.textContent = label;
+          toast((e && e.error) || "Could not reach the server - try again");
+        });
+      });
+    }
+    draw();
+  }
+  function mountGoogleButton(el, tries, onDone) {
     if (!window.google || !google.accounts || !google.accounts.id) {
       tries = tries || 0;
-      if (tries < 25) { setTimeout(function () { mountGoogleButton(el, tries + 1); }, 400); return; }
+      if (tries < 25) { setTimeout(function () { mountGoogleButton(el, tries + 1, onDone); }, 400); return; }
       el.innerHTML = '<p class="hint">Google sign-in could not load - check your connection.</p>'; return;
     }
-    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { googleSignIn(resp.credential); } });
+    google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { googleSignIn(resp.credential, onDone); } });
     google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
   }
   var lastSync = 0, syncing = false, INBOX = [], INBOX_COUNT = 0;
@@ -120,13 +169,15 @@
     navigator.geolocation.getCurrentPosition(function (pos) {
       // Round coordinates to 5 decimals (~1 meter precision) - precise enough
       // for "where we met", and it avoids storing needlessly exact GPS trails.
-      var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "" };
+      var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "", place: "" };
       // Reverse geocode: turn lat/lon into "City, State" via OpenStreetMap's
-      // free Nominatim service (zoom=14 = neighbourhood level).
-      fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&lat=" + loc.lat + "&lon=" + loc.lon)
+      // free Nominatim service. zoom=18 is building level, so we also get the
+      // nearest named place (a venue, building or street) for "loc.place".
+      fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=" + loc.lat + "&lon=" + loc.lon)
         .then(function (r) { return r.json(); })
         .then(function (d) {
           var a = d.address || {};
+          loc.place = d.name || a.amenity || a.building || a.tourism || a.leisure || a.shop || a.road || "";
           loc.label = [a.city || a.town || a.village || a.suburb || a.county || "", a.state || ""].filter(Boolean).join(", ") || (d.display_name || "").split(",").slice(0, 2).join(",");
           done(loc);
         }).catch(function () { done(loc); });
@@ -455,10 +506,10 @@
       '<h2 class="section">Already have Tagg?</h2>' +
       '<div id="gsign"></div>' +
       '<p class="hint" style="margin-top:8px">Sign in to pull your card and your people onto this device.</p>' +
-      '<p class="footer-note">Everything stays on your device in this early version.</p>'
+      '<p class="footer-note">Your card and people are stored in your Tagg account.</p>'
     );
     var gsign = document.getElementById("gsign");
-    if (gsign) mountGoogleButton(gsign);
+    if (gsign) mountAuthBlock(gsign, { mode: "login" });
     function feat(t, d) {
       return '<div class="row"><div class="grow"><div class="title">' + t + '</div><div class="detail" style="white-space:normal">' + d + '</div></div></div>';
     }
@@ -557,42 +608,89 @@
       });
       return;
     }
+    // Signed in = we know who you are (a card or a profile exists on this device).
+    var signedIn = !!(mine || profile());
+    var guest = false;
+    // Optional context shared by both paths: note (with voice-to-text), event, and a location toggle.
+    var contextHtml =
+      '<div class="field"><label>Where are you two? <span style="text-transform:none;color:var(--text-3);font-weight:400">(optional)</span></label><input class="input" id="f-event" placeholder="Cal Hacks, Berkeley"></div>' +
+      '<div class="field"><label>Context <span style="text-transform:none;color:var(--text-3);font-weight:400">(optional - private to you)</span></label>' +
+      '<textarea class="input" id="f-note" placeholder="What are you two talking about?"></textarea></div>' +
+      '<div style="height:8px"></div><button class="btn btn-gray" id="f-dictate">' + IC.mic + ' Dictate</button>' +
+      '<label class="row" style="margin-top:12px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:22px;height:22px;accent-color:var(--accent)">' +
+      '<span class="grow"><span class="title" style="display:block">Add where we met</span><span class="detail" style="white-space:normal">Uses your location once, and shares the spot with ' + first + '. Off by default.</span></span></label>';
     shell(null,
       '<span class="pill">You just met</span>' +
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
-      '<p class="lead">Share your contact - ' + first + ' gets a notification, and once they connect back you both save the moment.</p>' +
+      '<p class="lead">' + (signedIn ? 'Share your card - ' + first + ' gets a request, and once they accept you both save the moment.' : 'Create your Tagg to connect. ' + first + ' gets your card and you both keep each other.') + '</p>' +
       cardHtml(c) +
       '<div style="height:18px"></div>' +
       '<div id="connectzone">' +
-      (mine ? '' :
-        '<div class="field"><label>Your name</label><input class="input" id="f-name" placeholder="Your name"></div>' +
-        '<div class="field"><label>How to reach you <span style="text-transform:none;color:var(--text-3);font-weight:400">(email, phone, or a handle)</span></label><input class="input" id="f-contact" placeholder="you@example.com"></div>') +
-      '<div class="field"><label>Where are you two? (event or place)</label><input class="input" id="f-event" placeholder="Cal Hacks, Berkeley"></div>' +
-      '<button class="btn btn-accent" id="connect">Share my contact with ' + first + '</button>' +
-      '<p class="hint" style="margin-top:10px;text-align:center">' + (mine ? 'Your Tagg card goes with it automatically.' : 'No account needed - you choose exactly what to share.') + '</p>' +
+      (signedIn
+        ? contextHtml + '<div style="height:14px"></div><button class="btn btn-accent" id="connect">Share my card with ' + first + '</button>' +
+          '<p class="hint" style="margin-top:10px;text-align:center">Your Tagg card goes with it automatically.</p>'
+        : '<div id="authzone"></div>' +
+          '<h2 class="section">Add context <span class="soon">optional</span></h2>' + contextHtml +
+          '<div style="height:10px"></div><button class="btn btn-plain" id="guest">Continue without an account</button>') +
       '</div>' +
-      '<p class="footer-note">Nothing is sent until you tap the button.</p>'
+      '<p class="footer-note">Nothing is sent until you create your account or tap the button.</p>'
     );
-    document.getElementById("connect").addEventListener("click", function () {
-      var btn = this;
-      var name = mine ? mine.name : document.getElementById("f-name").value.trim();
-      var contact = mine ? (mine.email || mine.phone || "") : document.getElementById("f-contact").value.trim();
+    setupDictate(null, "f-dictate", "f-note");
+    // Reads the optional context from the form and sends the connection request.
+    function sendConnect(name, contact, btn) {
       var eventName = document.getElementById("f-event").value.trim();
-      if (!name) { toast("Add your name first"); return; }
-      btn.disabled = true; btn.textContent = "Sharing...";
-      withLocation(function (loc) {
+      var note = document.getElementById("f-note").value.trim();
+      var wantLoc = document.getElementById("f-loc").checked;
+      if (btn) { btn.disabled = true; btn.textContent = "Sharing..."; }
+      function go(loc) {
         ensureOwner().then(function () {
           return api("/api/connect", { method: "POST", body: {
-            slug: slug, name: name, contact: contact, event: eventName, location: loc, requesterToken: ownerToken() } });
+            slug: slug, name: name, contact: contact, event: eventName, note: note, location: loc, requesterToken: ownerToken() } });
         }).then(function (d) {
           setOwnerToken(d.requestToken);
           sentState(d.requestId);
         }).catch(function (e) {
-          btn.disabled = false; btn.textContent = "Share my contact with " + first;
+          if (btn) { btn.disabled = false; btn.textContent = "Share my card with " + first; }
           toast((e && e.error) || "Could not reach the database - try again");
         });
+      }
+      if (wantLoc) withLocation(go); else go(null);
+    }
+    if (signedIn) {
+      document.getElementById("connect").addEventListener("click", function () {
+        var card = loadCard(), prof = profile() || {};
+        sendConnect(card ? card.name : (prof.name || prof.email || "New connection"), card ? (card.email || card.phone || "") : (prof.email || ""), this);
       });
-    });
+    } else {
+      // Sign up as part of the scan: once the account exists we make a basic card from it
+      // (so you are reciprocal, not a guest) and the connection request goes out automatically.
+      mountAuthBlock(document.getElementById("authzone"), { mode: "signup", cta: "Create account and share with " + first, onDone: function (d, typedName) {
+        var prof = d.profile || {};
+        var ensureCard = loadCard() ? Promise.resolve() : (function () {
+          var card = { name: typedName || prof.name || (prof.email || "").split("@")[0] || "New member", headline: "", email: prof.email || "", phone: "", links: {} };
+          saveCard(card);
+          return syncCard();
+        })();
+        ensureCard.then(function () {
+          var card = loadCard();
+          sendConnect(card.name, card.email || "", null);
+        });
+      } });
+      document.getElementById("guest").addEventListener("click", function () {
+        // Guest path (kept from earlier versions): only a name and a way to reach you.
+        document.getElementById("connectzone").insertAdjacentHTML("afterbegin",
+          '<div class="field"><label>Your name</label><input class="input" id="f-name" placeholder="Your name"></div>' +
+          '<div class="field"><label>How to reach you</label><input class="input" id="f-contact" placeholder="you@example.com"></div>');
+        document.getElementById("authzone").remove();
+        var g = this; g.className = "btn btn-accent"; g.textContent = "Share my contact with " + first; g.id = "connect";
+        var fresh = g.cloneNode(true); g.parentNode.replaceChild(fresh, g);
+        fresh.addEventListener("click", function () {
+          var n = document.getElementById("f-name").value.trim();
+          if (!n) { toast("Add your name first"); return; }
+          sendConnect(n, document.getElementById("f-contact").value.trim(), fresh);
+        });
+      });
+    }
     function sentState(requestId) {
       document.getElementById("connectzone").innerHTML =
         '<div class="group"><div class="row"><div class="grow">' +
@@ -671,7 +769,7 @@
       '<div class="metagrid">' +
       meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
       meta("At", p.event || "-") +
-      (loc && loc.label ? meta("Where", esc(loc.label) + (mapLink ? ' · <span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">map</a></span>' : "")) : (mapLink ? meta("Where", '<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open map</a></span>') : "")) +
+      whereMeta(loc, mapLink) +
       '</div>' +
       '<h2 class="section">Links</h2>' +
       '<div class="taggcard"><div class="tc-links" style="margin-top:0">' + (chipsHtml(p.card) || '<span style="color:var(--text-2);font-size:14px">No links shared</span>') + '</div></div>' +
@@ -731,6 +829,20 @@
     });
     setupDictate(p);
     setupPhoto(p);
+  }
+  // "Where" tile: nearby place name, city, and free Google Maps / Street View links (plain links, no API key or cost).
+  // Street View is only a link to the PLACE - it is never shown as a photo of the person.
+  function whereMeta(loc, mapLink) {
+    if (!loc || (loc.lat == null && !loc.label && !loc.place)) return "";
+    var parts = [];
+    var name = [loc.place, loc.label].filter(Boolean).join(" - ");
+    if (name) parts.push(esc(name));
+    if (loc.lat != null && loc.lon != null) {
+      var sv = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + loc.lat + "," + loc.lon;
+      parts.push('<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Map</a> · <a href="' + sv + '" target="_blank" rel="noopener">Street View</a></span>');
+      parts.push('<span style="color:var(--text-2);font-size:12px">' + loc.lat + ", " + loc.lon + '</span>');
+    }
+    return meta("Where", parts.join("<br>"));
   }
   function meta(k, v) {
     return '<div class="metacard"><div class="k">' + k + '</div><div class="v">' + v + '</div></div>';
@@ -939,8 +1051,10 @@
     if (ownerToken()) api("/api/people/" + p.id, { method: "PUT", body: fields })
       .catch(function () { toast("Saved on this device only - database unreachable"); });
   }
-  function setupDictate(p) {
-    var btn = document.getElementById("dictate");
+  // Voice-to-text using the browser's built-in speech recognition (free, on-device or
+  // via the browser vendor). Works for any button + textarea pair; hides itself if unsupported.
+  function setupDictate(p, btnId, taId) {
+    var btn = document.getElementById(btnId || "dictate");
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { btn.style.display = "none"; return; }
     var rec = null, active = false;
@@ -948,7 +1062,7 @@
       if (active) { try { rec.stop(); } catch (e) {} return; }
       rec = new SR();
       rec.lang = "en-US"; rec.interimResults = true; rec.continuous = true;
-      var ta = document.getElementById("note");
+      var ta = document.getElementById(taId || "note");
       var base = ta.value;
       rec.onresult = function (e) {
         var interim = "", fin = "";

@@ -1,0 +1,18 @@
+# Cloudflare Worker config for the Tagg API (free tier).
+name = "tagg-api"
+main = "worker.js"
+compatibility_date = "2026-10-24"
+
+# Workers KV namespace that stores cards, people, and accounts.
+# Existing namespace id (an id is not a secret). For a fresh deploy: `npx wrangler kv namespace create TAGG_KV` and paste the new id.
+[[kv_namespaces]]
+binding = "KV"
+id = "3dd8acfa3bb24dc098dc10da2fe25ef3"
+
+[vars]
+GOOGLE_CLIENT_ID = "234788686355-ah0fsgjc8cr8n2h1f9oi0ielbket64jf.apps.googleusercontent.com"
+
+# Secrets (never commit these). Set each with `npx wrangler secret put NAME`:
+#   GEMINI_API_KEY    - Ask Tagg answers (free tier key)
+#   GITHUB_TOKEN      - optional, raises GitHub profile enrichment rate limit
+#   BRIGHTDATA_API_KEY / APIFY_TOKEN - optional LinkedIn enrichment
