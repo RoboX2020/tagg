@@ -246,27 +246,40 @@
   }
   // Live view for the card owner: while the home screen is open, check for scans and requests every 4 seconds
   // and redraw only when something changed. A scan is anonymous: it says "someone", never who.
-  var livePoll = null, liveSig = "";
+  var livePoll = null, liveSig = "", liveFails = 0;
   function scanBannerHtml() {
     if (!SCANS.length) return "";
     var n = SCANS.length;
-    return '<div class="scanbanner" id="scanbanner"><span class="dot"></span><span>' + (n === 1 ? "Someone just scanned your code." : n + " scans of your code in the last few minutes.") +
-      ' <span style="color:var(--text-2)">Waiting to see if they share details.</span></span></div>';
+    // We cannot tell a QR scan from a link preview or a bot, so this only claims the card was opened.
+    return '<div class="scanbanner" id="scanbanner"><span class="dot"></span><span>' + (n === 1 ? "Your card was just opened." : "Your card was opened " + n + " times in the last few minutes.") +
+      ' <span style="color:var(--text-2)">Anonymous. It could be a scan or a link preview. Waiting to see if they share details.</span></span></div>';
   }
+  // Polls only while the owner's home screen is visible and signed in: stops on leaving the screen or hiding the tab,
+  // resumes on return, and backs off (4 s up to 60 s) after failures.
+  function liveWanted() { var h = location.hash || "#/"; return !!ownerToken() && (h === "#/" || h === "") && !document.hidden; }
+  function stopLive() { if (livePoll) { clearTimeout(livePoll); livePoll = null; } }
   function startLive() {
-    if (livePoll) return;
-    livePoll = setInterval(function () {
-      var h = location.hash || "#/";
-      if (!ownerToken() || (h !== "#/" && h !== "") || document.hidden || document.querySelector(".sheet-bg") || syncing) return;
+    if (livePoll || !liveWanted()) return;
+    function tick() {
+      livePoll = null;
+      if (!liveWanted()) return;                       // left the screen: stop, no timer left behind
+      if (document.querySelector(".sheet-bg") || syncing) { livePoll = setTimeout(tick, 4000); return; }
       api("/api/inbox").then(function (d) {
+        liveFails = 0;
         var sig = (d.scans || []).map(function (x) { return x.id; }).join() + "|" + (d.requests || []).map(function (x) { return x.id; }).join();
-        if (sig === liveSig) return;
-        liveSig = sig;
-        INBOX = d.requests || []; INBOX_COUNT = INBOX.length; SCANS = d.scans || [];
-        if ((location.hash || "#/") === "#/" && !document.querySelector(".sheet-bg")) { lastSync = 0; refreshSoon(true); }
-      }).catch(function () {});
-    }, 4000);
+        if (sig !== liveSig) {
+          liveSig = sig;
+          INBOX = d.requests || []; INBOX_COUNT = INBOX.length; SCANS = d.scans || [];
+          if (liveWanted() && !document.querySelector(".sheet-bg")) { lastSync = 0; refreshSoon(true); }
+        }
+      }).catch(function () { liveFails++; }).then(function () {
+        if (liveWanted()) livePoll = setTimeout(tick, Math.min(60000, 4000 * Math.pow(2, Math.min(liveFails, 4))));
+      });
+    }
+    livePoll = setTimeout(tick, 4000);
   }
+  window.addEventListener("hashchange", function () { stopLive(); startLive(); });
+  document.addEventListener("visibilitychange", function () { stopLive(); startLive(); });
   // One-time disclosure sheet. Remembers the answer per feature, so it asks once, before the first action.
   function consentThen(key, title, body, label, go) {
     if (localStorage.getItem("tagg.consent." + key)) return go();
@@ -799,12 +812,12 @@
         ? contextHtml + '<div style="height:14px"></div><button class="btn btn-accent" id="connect">Share my card with ' + first + '</button>' +
           '<p class="hint" style="margin-top:8px;text-align:center">Your Tagg card goes with it automatically.</p>' +
           '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
-          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' in your people. Nothing is sent to them.</p>'
+          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' in your people. Shares no name, contact or request. ' + first + ' may see that their card was opened, nothing more.</p>'
         : '<div id="authzone"></div>' +
           '<h2 class="section">Add context <span class="soon">optional</span></h2>' + contextHtml +
           '<div style="height:10px"></div><button class="btn btn-plain" id="guest">Continue without an account</button>' +
           '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
-          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' on this phone. No account, nothing is sent to them.</p>') +
+          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' on this phone. No account. Shares no name, contact or request; ' + first + ' may see that their card was opened.</p>') +
       '</div>' +
       '<p class="footer-note">Nothing is sent until you create your account or tap the button.</p>'
     );
@@ -842,7 +855,7 @@
         var people = loadPeople(); people.unshift(person); savePeople(people);
         return person.id;
       }).then(function (id) {
-        toast("Saved. Nothing was sent to " + first); location.hash = "#/p/" + id;
+        toast("Saved. No details were shared with " + first); location.hash = "#/p/" + id;
       }).catch(function (e) {
         btn.disabled = false; btn.textContent = "Save only";
         toast((e && e.error) || "Could not save - try again");

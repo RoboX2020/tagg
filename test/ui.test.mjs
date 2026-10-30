@@ -104,28 +104,29 @@ try {
   // Alice deletes her account from the UI. Bob's own record of her must survive.
   // v5: live scan banner, location status, Save only. Carol scans Alice's code without an account.
   await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
-  await waitText(A, "scanned your code", 12000);
-  const before = await text(A); ok("owner home shows a scan banner from Bob's earlier scan (anonymous wording)");
+  await waitText(A, "card was", 12000);
+  const before = await text(A); ok("owner home shows a scan banner from Bob's earlier open (anonymous wording)");
   const Cc = await newUser("carol", { latitude: 33.4484, longitude: -112.074, accuracy: 10 });
   await Cc.goto(base + "#/c/" + slug, { waitUntil: "networkidle0" });
-  await waitText(A, "2 scans of your code", 14000); await sleep(300);
+  await waitText(A, "opened 2 times", 14000); await sleep(300);
   const bannerText = await A.$eval("#scanbanner", e => e.textContent);
-  assert.ok(!/carol/i.test(bannerText) && !/bob/i.test(bannerText)); ok("owner home updated live on a second scan, without naming anyone");
-  await A.screenshot({ path: "/tmp/work/shot-home-live.png" });
+  assert.ok(!/carol/i.test(bannerText) && !/bob/i.test(bannerText)); ok("owner home updated live on a second open, without naming anyone");
+  await A.evaluate(() => window.scrollTo(0, 0)); await A.screenshot({ path: "/tmp/work/shot-home-live.png" });
   await Cc.type("#f-event", "Phoenix Expo"); await Cc.type("#f-note", "Met at the booth, private");
   await Cc.click("#f-loc");
   await waitText(Cc, "Location ready", 15000);
   const maplink = await Cc.$eval("#locstatus a[href*='google.com/maps']", e => e.href);
   assert.match(maplink, /maps\/search\/\?api=1&query=33\.4484%2C-112\.074/); ok("location status shows ready with a Google Maps link and coordinates");
-  await sleep(800); await Cc.screenshot({ path: "/tmp/work/shot-scan-location.png", fullPage: true });
+  await sleep(800); await Cc.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await Cc.screenshot({ path: "/tmp/work/shot-scan-location.png" });
+  await Cc.$eval("#saveonly", e => e.scrollIntoView({ block: "center" })); await sleep(300); await Cc.screenshot({ path: "/tmp/work/shot-save-only.png" });
   assert.ok(await Cc.evaluate(() => !!document.getElementById("saveonly"))); ok("Save only is offered next to sharing");
   await Cc.$eval("#saveonly", e => e.click());
   await waitText(Cc, "Alice Ng", 10000); await sleep(1200);
   assert.ok((await Cc.evaluate(() => location.hash)).startsWith("#/p/")); ok("Save only opened the saved person");
   const ptxt = await text(Cc); assert.ok(ptxt.includes("Phoenix Expo") && ptxt.includes("33.4484")); ok("saved person keeps event and coordinates");
-  await Cc.screenshot({ path: "/tmp/work/shot-saved-only.png", fullPage: true });
+  await Cc.evaluate(() => window.scrollTo(0, 0)); await Cc.screenshot({ path: "/tmp/work/shot-saved-only.png" });
   await A.goto(base + "#/people"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
-  assert.ok(!(await text(A)).includes("Carol")); ok("Save only sent nothing to the owner");
+  assert.ok(!(await text(A)).includes("Carol")); ok("Save only shared no request or identity with the owner");
   // Denied permission shows the help text and a retry, instead of silently dropping the location.
   const dctx = await browser.createBrowserContext(); await dctx.overridePermissions(base, []);
   const D = await dctx.newPage(); await D.setViewport({ width: 390, height: 844 });
@@ -133,7 +134,7 @@ try {
   await D.goto(base + "#/c/" + slug, { waitUntil: "networkidle0" }); await waitText(D, "Alice Ng");
   await D.click("#f-loc"); await waitText(D, "blocked for this site", 8000);
   assert.ok((await text(D)).includes("Try again")); ok("denied location shows how to fix it and a Try again link");
-  await D.screenshot({ path: "/tmp/work/shot-loc-denied.png", fullPage: true });
+  await D.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await D.screenshot({ path: "/tmp/work/shot-loc-denied.png" });
   await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
   await A.waitForSelector("#delete-account", { timeout: 15000 });
   await A.$eval("#delete-account", e => e.click()); await sleep(400);
