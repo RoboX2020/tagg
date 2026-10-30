@@ -140,6 +140,33 @@ try {
   ok("Bob's saved Alice with his private note");
 
   // Alice deletes her account from the UI. Bob's own record of her must survive.
+  // Interactive graph: drag a node, pan, zoom, tap to open. Compared by canvas pixels.
+  await A.goto(base + "#/map"); await sleep(1800);
+  const gh = () => A.$eval("#graph", c => { const x = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let h = 0; for (let i = 0; i < x.length; i += 97) h = (h * 31 + x[i]) | 0; return h; });
+  const box = await A.$eval("#graph", c => { const r = c.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+  await A.evaluate(() => document.getElementById("graph").scrollIntoView({ block: "center" })); await sleep(300);
+  const box2 = await A.$eval("#graph", c => { const r = c.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
+  await A.screenshot({ path: "/tmp/work/shot-graph-1.png" });
+  let h0 = await gh(); for (let i = 0; i < 20; i++) { await sleep(300); const hn = await gh(); if (hn === h0) break; h0 = hn; }
+  await A.mouse.move(box2.x + 40, box2.y + 40); await A.mouse.down(); await A.mouse.move(box2.x + 90, box2.y + 70, { steps: 5 }); await A.mouse.up(); await sleep(400);
+  const h1 = await gh(); assert.notEqual(h0, h1); ok("dragging the background pans the graph");
+  await A.$eval("#g-in", e => e.click()); await sleep(200); const h2 = await gh(); assert.notEqual(h1, h2); ok("zoom in changes the view");
+  await A.$eval("#g-reset", e => e.click()); await sleep(500); const h3 = await gh(); assert.notEqual(h3, h2); await sleep(500); assert.equal(await gh(), h3); ok("reset restores the view and the graph holds still");
+  await A.mouse.move(box2.x + box2.w / 2, box2.y + box2.h / 2); const hw = await gh(); await A.mouse.wheel({ deltaY: -300 }); await sleep(200); assert.notEqual(await gh(), hw); ok("scroll wheel zooms");
+  await A.$eval("#g-reset", e => e.click()); await sleep(200);
+  await sleep(800);
+  const n0 = await A.$eval("#graph", c => c.tagg.screen(1));
+  const p0 = await A.$eval("#graph", c => { const r = c.getBoundingClientRect(), p = c.tagg.screen(1); return { x: r.x + p.x, y: r.y + p.y }; });
+  await A.mouse.move(p0.x, p0.y); await A.mouse.down(); await A.mouse.move(p0.x + 60, p0.y + 40, { steps: 6 }); await A.mouse.up(); await sleep(300);
+  const n1 = await A.$eval("#graph", c => c.tagg.screen(1)); assert.ok(Math.abs(n1.x - n0.x) + Math.abs(n1.y - n0.y) > 20); ok("dragging a node moves it");
+  await sleep(2500);
+  const bp = await A.$eval("#graph", c => { const r = c.getBoundingClientRect(), p = c.tagg.screen(1); return { x: r.x + p.x, y: r.y + p.y }; });
+  await A.mouse.click(bp.x, bp.y); await sleep(400);
+  const opened = (await A.evaluate(() => location.hash)).startsWith("#/p/");
+  assert.ok(opened); ok("tapping a node opens that person");
+  await A.goto(base + "#/map"); await sleep(1500);
+  await A.screenshot({ path: "/tmp/work/shot-graph-2.png" });
+  await A.goto(base + "#/"); await sleep(300);
   // v5: live scan banner, location status, Save only. Carol scans Alice's code without an account.
   await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
   await waitText(A, "card was", 12000);

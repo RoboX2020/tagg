@@ -307,3 +307,4 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 
 .panel{background:var(--bg-elev);border:1px solid var(--sep);border-radius:var(--radius);padding:16px;margin:8px 0 12px}
 .panel .input{background:var(--card)}
+.graphctl{position:absolute;right:16px;top:16px;display:flex;flex-direction:column;gap:6px}.graphctl button{min-width:36px;height:36px;border-radius:10px;border:1px solid var(--sep);background:var(--bg-elev);color:var(--text);font:600 15px var(--font);cursor:pointer;padding:0 8px}.graphctl button:active{background:var(--card)}
