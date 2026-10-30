@@ -49,7 +49,7 @@ try {
   const code = await A.$eval(".sheet .answer", e => e.textContent.trim());
   assert.match(code, /^[a-z0-9]{5}(-[a-z0-9]{5}){3}$/); ok("recovery code shown after signup");
   await clickText(A, "button", "I saved it");
-  await waitText(A, "Signed in as alice-" + RUN);
+  await A.goto(base + "#/settings"); await waitText(A, "Signed in as alice-" + RUN);
   await A.goto(base + "#/edit"); await sleep(500);
   await A.screenshot({ path: "/tmp/work/shot-edit.png" });
   const ids = await A.evaluate(() => [...document.querySelectorAll("input.input")].map(i => i.id));
@@ -60,7 +60,7 @@ try {
   const slug = await A.evaluate(() => localStorage.getItem("tagg.slug.v1"));
   assert.match(slug, /^[a-z0-9]{8}$/); ok("Alice has a synced card slug " + slug);
 
-  await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500); await A.waitForSelector("#themeseg", { timeout: 15000 });
+  await A.goto(base + "#/settings"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500); await A.waitForSelector("#themeseg", { timeout: 15000 });
   // Theme: light is the default, dark is an option that persists.
   assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "light"); ok("light mode is the default");
   const bgLight = await A.evaluate(() => getComputedStyle(document.body).backgroundColor); assert.notEqual(bgLight, "rgb(10, 10, 11)");
@@ -92,7 +92,7 @@ try {
   assert.equal(li.school, "Arizona State University"); assert.equal(li.source, "linkedin-pasted-text"); ok("confirmed import stored with provenance");
   await A.$eval("#liimport", e => e.scrollIntoView({ block: "center" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-li-done.png" });
   await A.goto(base + "#/"); await sleep(300);
-  await A.goto(base + "#/"); await waitText(A, "WHAT PEOPLE SEE", 8000); await waitText(A, "ADDED FROM LINKEDIN", 8000);
+  await A.goto(base + "#/settings"); await waitText(A, "WHAT PEOPLE SEE", 8000); await waitText(A, "ADDED FROM LINKEDIN", 8000);
   assert.ok((await text(A)).includes("Not verified by Tagg") || (await text(A)).includes("has not verified")); ok("owner sees the shared profile preview with imported details and a not-verified label");
   assert.ok(await A.evaluate(() => !!document.querySelector("#sharedprofile a[href='#/edit']"))); ok("shared profile links to editing the same fields");
   await A.$eval("#sharedprofile", e => e.scrollIntoView({ block: "start" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-profile-preview.png" });
@@ -203,7 +203,7 @@ try {
   await waitText(D, "blocked for this site", 8000);
   assert.ok((await text(D)).includes("Try again")); ok("denied location shows how to fix it and a Try again link");
   await D.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await D.screenshot({ path: "/tmp/work/shot-loc-denied.png" });
-  await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
+  await A.goto(base + "#/settings"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
   await A.waitForSelector("#delete-account", { timeout: 15000 });
   await A.$eval("#delete-account", e => e.click()); await sleep(400);
   await A.type("#da-word", "DELETE"); await A.type("#da-pass", "wrong-pass-1");

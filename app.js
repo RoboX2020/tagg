@@ -517,6 +517,7 @@
     people: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.8-3 2.9-4.6 5.5-4.6s4.7 1.6 5.5 4.6"/><circle cx="17" cy="9" r="2.4"/><path d="M16 14.6c2.4.2 4 1.6 4.6 4"/></svg>',
     ask: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a8 8 0 0 0-8 8c0 2.1.8 4 2.2 5.4L5 21l4.8-1.3c.7.2 1.4.3 2.2.3a8 8 0 0 0 0-16Z"/><path d="M9.6 10.2c.2-1.2 1.2-2 2.4-2 1.3 0 2.3.9 2.3 2 0 1.4-1.4 1.8-2.2 2.7-.1.2-.1.5-.1 1"/><circle cx="12" cy="15.6" r="0.4" fill="currentColor"/></svg>',
     map: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="2.6"/><circle cx="4.5" cy="6" r="1.8"/><circle cx="19.5" cy="5.5" r="1.8"/><circle cx="5" cy="18.5" r="1.8"/><circle cx="19" cy="18" r="1.8"/><path d="M6.2 7l3.6 3.2M17.8 6.6l-3.4 3.3M6.5 17.2l3.2-3M16.6 16.5l-2.6-2.4"/></svg>',
+    settings: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>',
     qr: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14h1M14 20h1M18 18h3v3h-3z"/></svg>',
     mic: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>',
     chev: '<svg class="chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>'
@@ -549,6 +550,7 @@
     if (h === "#/edit") return renderEdit();
     if (h === "#/people") { refreshSoon(); return renderPeople(); }
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
+    if (h === "#/settings") { refreshSoon(); return renderSettings(); }
     if (h === "#/map") { refreshSoon(); return renderMap(); }
     refreshSoon();
     return renderHome();
@@ -566,13 +568,14 @@
   function tabbarHtml(active) {
     function tab(id, href, icon, label) {
       var badge = (id === "people" && INBOX_COUNT) ? '<span class="tabbadge"></span>' : "";
-      return '<a class="tab' + (active === id ? " active" : "") + '" href="' + href + '">' + icon + badge + '<span>' + label + '</span></a>';
+      return '<a class="tab' + (active === id ? " active" : "") + '" href="' + href + '"' + (active === id ? ' aria-current="page"' : "") + '>' + icon + badge + '<span>' + label + '</span></a>';
     }
-    return '<nav class="tabbar">' +
+    return '<nav class="tabbar" aria-label="Main">' +
       tab("card", "#/", IC.card, "My Card") +
       tab("people", "#/people", IC.people, "People") +
       tab("map", "#/map", IC.map, "Map") +
       tab("ask", "#/ask", IC.ask, "Ask") +
+      tab("settings", "#/settings", IC.settings, "Settings") +
       '</nav>';
   }
 
@@ -604,20 +607,74 @@
       '<div style="height:10px"></div>' +
       '<button class="btn btn-gray" id="install" style="display:none">Install Tagg on your phone</button>' +
       '<div style="height:16px"></div>' +
-      (profile()
-        ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Signed in as <b>' + esc(profile().email) + '</b> - your card and people are backed up to your Tagg account.</div></div></div>' +
-          '<div class="row"><div class="grow"><div class="detail">Delete your account and the data stored for it.</div></div><button class="btn btn-gray" id="delete-account" style="width:auto;padding:0 14px">Delete account</button></div>' +
-          (profile().kind === "email" ? (profile().emailVerified ? '<div class="row"><div class="grow"><div class="detail">Email verified</div></div></div>' : '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Email not verified yet. Other people see your card as unverified.</div></div><button class="btn btn-tinted" id="verify-email" style="width:auto;padding:0 14px">Verify email</button></div>') : '') + '</div>'
-        : '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>') +
+      (!profile() ? '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>' : "") +
       (INBOX_COUNT ? '<h2 class="section">Requests</h2><a class="group" style="display:block;text-decoration:none;color:inherit" href="#/people"><div class="row"><div class="avatar" style="background:var(--card-2);color:var(--accent-2)">' + IC.people + '</div><div class="grow"><div class="title">' + INBOX_COUNT + ' connection request' + (INBOX_COUNT > 1 ? "s" : "") + '</div><div class="detail">Tap to connect back and save the moment</div></div>' + IC.chev + '</div></a>' : "") +
-      '<h2 class="section">What people see</h2>' +
-      '<div class="panel" id="sharedprofile"><div class="fineprint" style="margin:0">Loading your shared profile...</div></div>' +
-      (profile() ? '<h2 class="section">Connect your own agent</h2><div class="panel" id="agentpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' : "") +
-      '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
         '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
+      '<h2 class="section">Connect Tagg to your AI</h2>' +
+      '<a class="group" style="display:block;text-decoration:none;color:inherit" href="#/settings"><div class="row"><div class="grow"><div class="title">Let your own AI agent search who you have met</div><div class="detail" style="white-space:normal">Read-only, private notes off by default, revocable any time. Set up in Settings.</div></div>' + IC.chev + '</div></a>' +
       '<p class="footer-note">Your card and the people you meet live in your own Tagg database - synced, backed up, and always recallable.<br>Tagg is live at ' + esc(location.host) + '.</p>'
+    );
+    document.getElementById("copylink").addEventListener("click", function () {
+      (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
+        .then(function () { toast("Link copied"); }, function () { toast("Copy failed - long-press the QR page URL"); });
+    });
+    document.getElementById("wallet").addEventListener("click", function () {
+      var btn = this;
+      consentThen("wallet", "Make a Wallet pass?",
+        "To build the pass, Tagg sends your card to a free third-party Wallet signing service (walletmcppass.com): your name, headline, links, email and your card link. Tagg does not control that service. Your QR in the app does the same job without it.",
+        "Send my card and make the pass", function () { makePass(btn); });
+    });
+    function makePass(btn) {
+      btn.disabled = true; btn.textContent = "Making your Wallet pass...";
+      api("/api/pass", { method: "POST", body: {} }).then(function (d) {
+        btn.disabled = false; btn.textContent = "Add to Apple Wallet";
+        window.location.href = d.download_url;
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = "Add to Apple Wallet";
+        toast((e && e.error) || "Wallet pass unavailable - your QR does the same job");
+      });
+    }
+    var inst = document.getElementById("install");
+    if (deferredInstall || isIosUninstalled()) inst.style.display = "";
+    inst.addEventListener("click", function () {
+      if (deferredInstall) {
+        deferredInstall.prompt();
+        deferredInstall.userChoice.then(function () { deferredInstall = null; inst.style.display = "none"; });
+        return;
+      }
+      var bg = document.createElement("div");
+      bg.className = "sheet-bg";
+      bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Install Tagg</h3>' +
+        '<p class="hint">In Safari: tap the Share button, then "Add to Home Screen". Tagg then opens full-screen from your home screen, like a native app.</p>' +
+        '<button class="btn btn-gray" id="closesheet">Got it</button></div>';
+      document.body.appendChild(bg);
+      bg.addEventListener("click", function (e) { if (e.target === bg) bg.remove(); });
+      bg.querySelector("#closesheet").addEventListener("click", function () { bg.remove(); });
+    });
+    var gsign = document.getElementById("gsign");
+    if (gsign) mountGoogleButton(gsign);
+  }
+  /* ================= settings ================= */
+  function renderSettings() {
+    var card = loadCard();
+    if (!card) { location.hash = "#/"; return; }
+    shell("settings",
+      '<h1 class="largetitle">Settings</h1>' +
+      '<p class="lead">Your account, what people see, your AI connection and how Tagg looks.</p>' +
+      '<h2 class="section">Account</h2>' +
+      (profile()
+        ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Signed in as <b>' + esc(profile().email) + '</b> - your card and people are backed up to your Tagg account.</div></div></div>' +
+          '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Delete your account and the data stored for it.</div></div><button class="btn btn-gray" id="delete-account" style="width:auto;padding:0 14px">Delete account</button></div>' +
+          (profile().kind === "email" ? (profile().emailVerified ? '<div class="row"><div class="grow"><div class="detail">Email verified</div></div></div>' : '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Email not verified yet. Other people see your card as unverified.</div></div><button class="btn btn-tinted" id="verify-email" style="width:auto;padding:0 14px">Verify email</button></div>') : '') + '</div>'
+        : '') +
+      (!profile() ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">You are not signed in. Go to My Card to sign in and back up your Tagg.</div></div><a class="btn btn-tinted" href="#/" style="width:auto;padding:0 14px">My Card</a></div></div>' : '') +
+      '<h2 class="section">What people see</h2>' +
+      '<div class="panel" id="sharedprofile"><div class="fineprint" style="margin:0">Loading your shared profile...</div></div>' +
+      '<h2 class="section">Connect your own agent</h2>' + (profile() ? '<div class="panel" id="agentpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' : '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Sign in first, then you can connect an AI agent of your choice.</div></div></div></div>') +
+      '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
+      '<p class="footer-note"><a href="#/privacy">Privacy</a></p>'
     );
     (function () {
       var cur = localStorage.getItem("tagg.theme") === "dark" ? "dark" : "light";
@@ -676,45 +733,6 @@
     })();
     var da = document.getElementById("delete-account"); if (da) da.addEventListener("click", showDeleteAccount);
     var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
-    document.getElementById("copylink").addEventListener("click", function () {
-      (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())
-        .then(function () { toast("Link copied"); }, function () { toast("Copy failed - long-press the QR page URL"); });
-    });
-    document.getElementById("wallet").addEventListener("click", function () {
-      var btn = this;
-      consentThen("wallet", "Make a Wallet pass?",
-        "To build the pass, Tagg sends your card to a free third-party Wallet signing service (walletmcppass.com): your name, headline, links, email and your card link. Tagg does not control that service. Your QR in the app does the same job without it.",
-        "Send my card and make the pass", function () { makePass(btn); });
-    });
-    function makePass(btn) {
-      btn.disabled = true; btn.textContent = "Making your Wallet pass...";
-      api("/api/pass", { method: "POST", body: {} }).then(function (d) {
-        btn.disabled = false; btn.textContent = "Add to Apple Wallet";
-        window.location.href = d.download_url;
-      }).catch(function (e) {
-        btn.disabled = false; btn.textContent = "Add to Apple Wallet";
-        toast((e && e.error) || "Wallet pass unavailable - your QR does the same job");
-      });
-    }
-    var inst = document.getElementById("install");
-    if (deferredInstall || isIosUninstalled()) inst.style.display = "";
-    inst.addEventListener("click", function () {
-      if (deferredInstall) {
-        deferredInstall.prompt();
-        deferredInstall.userChoice.then(function () { deferredInstall = null; inst.style.display = "none"; });
-        return;
-      }
-      var bg = document.createElement("div");
-      bg.className = "sheet-bg";
-      bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Install Tagg</h3>' +
-        '<p class="hint">In Safari: tap the Share button, then "Add to Home Screen". Tagg then opens full-screen from your home screen, like a native app.</p>' +
-        '<button class="btn btn-gray" id="closesheet">Got it</button></div>';
-      document.body.appendChild(bg);
-      bg.addEventListener("click", function (e) { if (e.target === bg) bg.remove(); });
-      bg.querySelector("#closesheet").addEventListener("click", function () { bg.remove(); });
-    });
-    var gsign = document.getElementById("gsign");
-    if (gsign) mountGoogleButton(gsign);
   }
   function recentHtml(people) {
     var rows = people.slice(0, 3).map(function (p) {
@@ -1149,6 +1167,7 @@
       whereMeta(loc, mapLink) +
       '</div>' +
       '<h2 class="section">Links</h2>' +
+      '<div class="fineprint" id="cardstate" style="margin:0 0 8px"></div>' +
       '<div class="taggcard"><div class="tc-links" style="margin-top:0">' + (chipsHtml(p.card) || '<span style="color:var(--text-2);font-size:14px">No links shared</span>') + '</div></div>' +
       enrichHtml(p) +
       '<div style="height:12px"></div>' +
@@ -1169,6 +1188,26 @@
       '<div style="height:14px"></div>' +
       '<button class="btn btn-plain" id="del" style="color:#ff6961">Remove from Tagg</button>'
     );
+    // Refresh the shared card from the server every time this person is opened. Private notes, place and photo stay yours.
+    if (ownerToken() && p.slug) {
+      api("/api/people/" + id).then(function (d) {
+        if (!d || !d.person) return;
+        var cur = location.hash === "#/p/" + id;
+        if (!cur) return;
+        var changed = JSON.stringify(d.person.card) !== JSON.stringify(p.card) || JSON.stringify(d.person.enriched || null) !== JSON.stringify(p.enriched || null);
+        if (d.cardStatus === "live") {
+          var all = loadPeople(); for (var k = 0; k < all.length; k++) if (all[k].id === id) { all[k].card = d.person.card; all[k].enriched = d.person.enriched || null; }
+          savePeople(all);
+          if (changed && !(document.activeElement && document.activeElement.id === "note")) renderPerson(id);
+        } else if (d.cardStatus === "removed") {
+          var hold = document.getElementById("cardstate");
+          if (hold) hold.textContent = "This person no longer shares their card. Only their name is kept. Your notes, place and photo are unchanged.";
+        }
+      }).catch(function () {
+        var hold = document.getElementById("cardstate");
+        if (hold) hold.textContent = "Showing the copy saved on " + fmtDate(p.metAt) + ". Could not check for updates right now.";
+      });
+    }
     document.getElementById("vcf").addEventListener("click", function () { downloadVcf(p); });
     document.getElementById("savenote").addEventListener("click", function () {
       p.note = document.getElementById("note").value;
@@ -1316,13 +1355,25 @@
       var pending = { r: "tagg", t: "Thinking..." }; CHAT.push(pending); paint();
       function done(text, links) { pending.t = text; pending.links = links || ""; saveChat(); paint(); speak(text); }
       if (!ownerToken()) { var tmp = document.createElement("div"); tmp.innerHTML = answerHtml(q); return done(tmp.textContent, quickLinks(q)); }
-      api("/api/ask", { method: "POST", body: { q: q, history: history } }).then(function (d) { done(d.answer, quickLinks(q)); })
+      api("/api/ask", { method: "POST", body: { q: q, history: history } }).then(function (d) {
+        var chips = "", seen = {};
+        (d.suggestions || []).forEach(function (s) {
+          var key = s.heard + ">" + s.meant; if (seen[key]) return; seen[key] = 1;
+          var fixed = q.replace(new RegExp("\\b" + s.heard.replace(/[^A-Za-z0-9]/g, "") + "\\b", "i"), s.meant);
+          chips += '<button class="btn btn-tinted small sugg" data-q="' + esc(fixed) + '" style="margin:6px 8px 0 0;width:auto">Search ' + esc(s.meant) + ' instead of ' + esc(s.heard) + '</button>';
+        });
+        done(d.answer, (chips ? '<div class="suggs">' + chips + '</div>' : "") + (d.suggestions ? "" : quickLinks(q)));
+      })
         .catch(function (e) {
           if (e && e.error === "ask_failed") return done("Ask is unavailable right now. The free AI allowance may be used up for today. Try again later.", quickLinks(q));
           var tmp2 = document.createElement("div"); tmp2.innerHTML = answerHtml(q); done(tmp2.textContent, quickLinks(q));
         });
     }
     document.getElementById("go").addEventListener("click", go);
+    thread.addEventListener("click", function (e) {
+      var b = e.target.closest ? e.target.closest(".sugg") : null; if (!b) return;
+      document.getElementById("q").value = b.getAttribute("data-q"); go();
+    });
     document.getElementById("q").addEventListener("keydown", function (e) { if (e.key === "Enter") go(); });
     var sp = document.getElementById("speak");
     if (sp) sp.addEventListener("change", function () { localStorage.setItem("tagg.speak", sp.checked ? "1" : "0"); if (!sp.checked) try { window.speechSynthesis.cancel(); } catch (e) {} });

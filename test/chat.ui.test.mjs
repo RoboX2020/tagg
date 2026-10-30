@@ -55,8 +55,25 @@ try {
   ok("a context-dependent follow-up reaches the model with the earlier turns");
   assert.equal(await P.$$eval(".bubble", e => e.length), 4); ok("conversation keeps both turns");
   await P.screenshot({ path: "/tmp/work/shot-chat.png" });
+  await P.type("#q", "Who did I meet from CAL HAKS"); await P.click("#go"); await waitText(P, "Search HACKS instead of HAKS");
+  ok("a misheard word shows a labelled suggestion button, not a silent correction");
+  assert.ok((await text(P)).includes("not a confirmed match"));
+  await P.screenshot({ path: "/tmp/work/shot-didyoumean.png" });
+  await P.click(".sugg"); await sleep(800);
+  assert.ok((await P.$$eval(".bubble.me", e => e.map(x => x.textContent))).some(s => /HACKS/.test(s))); ok("tapping the suggestion asks the corrected question visibly");
+  // Settings tab
+  await P.goto(base + "#/settings"); await sleep(600);
+  assert.equal(await P.$$eval(".tabbar .tab", e => e.length), 5); ok("five tabs in the bottom bar");
+  assert.ok((await P.$eval(".tab.active", e => e.getAttribute("aria-current"))) === "page" && (await text(P)).includes("Delete account")); ok("Settings is the current page and holds account deletion");
+  const fits = await P.evaluate(() => [...document.querySelectorAll(".tabbar .tab")].every(t => t.scrollWidth <= t.clientWidth + 1 && t.getBoundingClientRect().width >= 60 && t.getBoundingClientRect().height >= 44));
+  assert.ok(fits); ok("five tabs fit at 390px with 44px touch targets");
+  await P.screenshot({ path: "/tmp/work/shot-settings.png" });
+  await P.goto(base + "#/"); await sleep(800);
+  assert.ok(/connect tagg to your ai/i.test(await text(P)) && !/delete account/i.test(await text(P))); ok("home keeps only a teaser; deletion lives in Settings");
+  await P.screenshot({ path: "/tmp/work/shot-home-new.png", fullPage: true });
+  await P.goto(base + "#/settings"); await P.reload({ waitUntil: "networkidle0" });
   // Agent panel
-  await P.goto(base + "#/"); await P.reload({ waitUntil: "networkidle0" }); await P.waitForSelector("#agname", { timeout: 15000 });
+  await P.goto(base + "#/settings"); await P.reload({ waitUntil: "networkidle0" }); await P.waitForSelector("#agname", { timeout: 15000 });
   await P.type("#agname", "My agent"); await P.click("#agadd"); await waitText(P, "It is shown once");
   const tok = await P.$eval("#tokval", e => e.textContent);
   assert.ok(tok.startsWith("tgm_")); ok("connection key is shown once on creation");

@@ -249,6 +249,40 @@ if (env) {
   globalThis.fetch = realFetch2;
 }
 
+// Opening a saved person refreshes their shared card; private fields stay; removed fields are not resurrected.
+{
+  const own = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const sc = (await call("POST", "/api/card", { ownerToken: own, card: { name: "Rhea Stone", headline: "Old headline", email: "rhea@example.com", links: { github: "rhea-old" } } })).body;
+  const viewer = (await call("POST", "/api/owner", {})).body.ownerToken;
+  await call("POST", "/api/card", { ownerToken: viewer, card: { name: "Viewer", headline: "v", links: {} } });
+  const sv = (await call("POST", "/api/people", { slug: sc.slug, event: "Refresh Expo", note: "my private note", location: { lat: 1, lon: 2, label: "Somewhere" } }, viewer)).body.person;
+  ok("a new save has an unauthenticated-free GET refuse", (await call("GET", "/api/people/" + sv.id)).status === 401);
+  await call("POST", "/api/card", { ownerToken: own, card: { name: "Rhea Stone-Lee", headline: "New headline", links: {} } });
+  const rf = await call("GET", "/api/people/" + sv.id, null, viewer);
+  ok("opening a person returns their latest shared card", rf.body.cardStatus === "live" && rf.body.person.card.name === "Rhea Stone-Lee" && rf.body.person.card.headline === "New headline");
+  ok("a field they removed is not restored from the old snapshot", !rf.body.person.card.links.github && !rf.body.person.card.email);
+  ok("my private note, place and event are unchanged by refresh", rf.body.person.note === "my private note" && rf.body.person.event === "Refresh Expo" && rf.body.person.location.label === "Somewhere");
+  ok("another user cannot refresh my saved person", (await call("GET", "/api/people/" + sv.id, null, own)).status === 404);
+  const stored = (await call("GET", "/api/people", null, viewer)).body.people[0];
+  ok("the refreshed card is stored as the latest known copy", stored.card.name === "Rhea Stone-Lee");
+}
+// "Did you mean": similar words come only from the user's own records, are labelled suggestions, and are never applied silently.
+{
+  env.AI = { run: async () => ({ response: "MODEL ANSWER" }) };
+  const o1 = (await call("POST", "/api/owner", {})).body.ownerToken, o2 = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const mkc = async (t, n, h) => (await call("POST", "/api/card", { ownerToken: t, card: { name: n, headline: h, links: {} } })).body;
+  await mkc(o1, "Me", "x");
+  const p1 = await mkc(o2, "Dana Webb", "Engineer"); const p2 = await mkc((await call("POST", "/api/owner", {})).body.ownerToken, "Eli Cho", "Designer");
+  await call("POST", "/api/people", { slug: p1.slug, event: "ISTB Open House" }, o1); await call("POST", "/api/people", { slug: p2.slug, event: "Cal Hacks" }, o1);
+  const hs = await call("POST", "/api/ask", { q: "Who did I meet from HSTB?" }, o1);
+  ok("a misheard acronym returns a suggestion, not a model guess", hs.body.suggestions && hs.body.suggestions[0].heard === "HSTB" && hs.body.suggestions[0].meant === "ISTB" && hs.body.exact === false && hs.body.answer !== "MODEL ANSWER");
+  ok("suggested people come from the user's own saved records", hs.body.suggestions[0].people.length === 1 && hs.body.suggestions[0].people[0].name === "Dana Webb");
+  ok("the answer says it is a suggestion, not a confirmed match", /suggestion, not a confirmed match/.test(hs.body.answer) && /nothing in your saved people/.test(hs.body.answer));
+  ok("an exact term is answered normally with no suggestions", (await call("POST", "/api/ask", { q: "Who did I meet from ISTB?" }, o1)).body.answer === "MODEL ANSWER");
+  const none = await call("POST", "/api/ask", { q: "Who did I meet from ZZQX?" }, o1);
+  ok("nothing similar means no invented suggestion", !none.body.suggestions);
+  ok("another user's records are never suggested", !(await call("POST", "/api/ask", { q: "Who did I meet from HSTB?" }, o2)).body.suggestions);
+}
 // Migrate must not duplicate people the server already has.
 {
   const before = (await call("GET", "/api/people", null, bTok)).body.people;

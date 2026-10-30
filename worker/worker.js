@@ -140,6 +140,44 @@ async function mcpCall(env, owner, scope, name, args) {
   if (name === "list_events") { const m = {}; for (const x of people) { const e = x.event || "(no event)"; m[e] = (m[e] || 0) + 1; } return { events: Object.keys(m).map(e => ({ event: e, people: m[e] })) }; }
   return null;
 }
+
+// "Did you mean": speech-to-text and typos. Candidates come ONLY from the user's own saved records, are never applied silently,
+// and are labelled as suggestions (an exact match is a different thing from a similar-looking word).
+const ASK_STOP = new Set("who did i meet met at the a an and or of with in on from to that this those these what when where which was were is are do does works work working worked about tell me show person people guy girl someone anyone know knew anybody study studied studies school college university company companies job role title there their they them her his she he it my our any all some than then also who's whom".split(" "));
+function lev(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length; let prev = Array.from({ length: n + 1 }, (_, i) => i);
+  for (let i = 1; i <= m; i++) { const cur = [i]; for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = cur; }
+  return prev[n];
+}
+function personFields(x) {
+  const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : {};
+  return [["name", x.card && x.card.name], ["headline", x.card && x.card.headline], ["event", x.event], ["place", x.location && x.location.label], ["LinkedIn headline", li.headline], ["LinkedIn role", (li.titles || []).join(" ")], ["LinkedIn company", (li.companies || []).join(" ")], ["LinkedIn school", (li.schools || []).join(" ")], ["note", x.note]];
+}
+const wordsOf = s => String(s || "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+function askSuggestions(question, people) {
+  const qWords = String(question).split(/[^A-Za-z0-9]+/).filter(Boolean);
+  const vocab = new Map(); // token -> [{p, field}]
+  for (const x of people) for (const [field, val] of personFields(x)) for (const t of new Set(wordsOf(val))) { if (!vocab.has(t)) vocab.set(t, []); vocab.get(t).push({ p: x, field }); }
+  const terms = qWords.filter(t => t.length >= 3 && !ASK_STOP.has(t.toLowerCase()));
+  const exact = terms.filter(t => vocab.has(t.toLowerCase()));
+  const out = [];
+  for (const t of terms) {
+    const lt = t.toLowerCase(); if (vocab.has(lt)) continue;
+    const acronym = t.length <= 6 && t === t.toUpperCase() && /[A-Z]/.test(t);
+    if (!acronym && exact.length) continue;
+    const maxD = lt.length <= 5 ? 1 : 2;
+    const cands = [];
+    for (const [tok, hits] of vocab) { if (Math.abs(tok.length - lt.length) > maxD || tok.length < 3) continue; const d = lev(lt, tok); if (d > 0 && d <= maxD) cands.push({ tok, d, hits }); }
+    cands.sort((a, b) => a.d - b.d || b.hits.length - a.hits.length);
+    for (const c of cands.slice(0, 3)) {
+      const seen = new Set(), ppl = [];
+      for (const h of c.hits) if (!seen.has(h.p.id)) { seen.add(h.p.id); ppl.push({ id: h.p.id, name: h.p.card.name, matchedIn: h.field, event: h.p.event || null }); }
+      out.push({ heard: t, meant: c.tok.length <= 6 ? c.tok.toUpperCase() : c.tok, distance: c.d, exactMatch: false, people: ppl.slice(0, 5) });
+    }
+  }
+  return out.slice(0, 4);
+}
 async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + owner)) || []; }
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
@@ -358,6 +396,27 @@ export default {
 
     // Update/delete a person (note).
     const pm = p.match(/^\/api\/people\/([a-z0-9_]+)$/);
+    // Open one saved person: re-read their CURRENT shared card so an update shows up. Your private note, place, photo and event
+    // always come from your own record. A field they removed is not restored from the old snapshot. If their card is gone,
+    // only the name is kept and the status says so.
+    if (pm && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      if (await overLimit(env, "pget/" + owner, 300, 3600)) return j({ error: "Too many requests" }, 429);
+      const list = await getPeople(env, owner);
+      const i = list.findIndex(x => x.id === pm[1]);
+      if (i < 0) return j({ error: "not found" }, 404);
+      const person = list[i];
+      if (!person.slug) return j({ person, cardStatus: "saved" });
+      const rec = await getJSON(env.KV, "card/" + person.slug);
+      if (!rec) {
+        const stripped = { ...person, card: { name: person.card.name, headline: "", email: "", phone: "", links: {} }, enriched: null };
+        return j({ person: stripped, cardStatus: "removed" });
+      }
+      const fresh = { ...person, card: rec.card, enriched: (await getJSON(env.KV, "enrich/" + person.slug)) || null };
+      if (JSON.stringify(fresh.card) !== JSON.stringify(person.card) || JSON.stringify(fresh.enriched) !== JSON.stringify(person.enriched || null)) { list[i] = fresh; await putPeople(env, owner, list); }
+      return j({ person: fresh, cardStatus: "live", checkedAt: new Date().toISOString() });
+    }
     if (pm && (req.method === "PUT" || req.method === "DELETE")) {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
@@ -854,6 +913,12 @@ export default {
       }));
       const hist = (body && Array.isArray(body.history) ? body.history : []).slice(-6).filter(h => h && (h.r === "me" || h.r === "tagg") && typeof h.t === "string").map(h => (h.r === "me" ? "USER: " : "TAGG: ") + h.t.slice(0, 500)).join("\n");
       const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + (hist ? "\n\nEARLIER IN THIS CONVERSATION (use it to resolve words like she, he, they, that person, and who else):\n" + hist : "") + "\n\nQUESTION: " + q;
+      const sug = askSuggestions(q, await getPeople(env, owner));
+      if (sug.length) {
+        const byHeard = {}; for (const s of sug) (byHeard[s.heard] = byHeard[s.heard] || []).push(s);
+        const text = Object.keys(byHeard).map(h => "I found nothing in your saved people for \"" + h + "\". " + (byHeard[h].length > 1 ? "Similar words in your records: " : "A similar word in your records: ") + byHeard[h].map(s => s.meant + " (" + s.people.map(p => p.name).join(", ") + ")").join("; ") + ". This is a suggestion, not a confirmed match.").join("\n");
+        return j({ answer: text, suggestions: sug, exact: false });
+      }
       let answer = null, lastStatus = 0;
       if (await overLimit(env, "ask/" + owner, 60, 3600)) return j({ error: "Too many questions - try again in a while" }, 429);
       if (env.AI) {
