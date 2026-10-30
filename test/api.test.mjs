@@ -206,9 +206,10 @@ if (env) {
 // LinkedIn import from pasted text: preview, review, confirm. Gemini is mocked locally; hallucinated values must be dropped.
 if (env) {
   const realFetch2 = globalThis.fetch;
-  let geminiCalls = 0, linkedinCalls = 0;
+  let geminiCalls = 0, linkedinCalls = 0, apifyCalls = 0;
   globalThis.fetch = async (u, init) => {
     const us = String(u);
+    if (us.includes("api.apify.com")) { apifyCalls++; if (init && init.method === "POST") return new Response(JSON.stringify([{ headline: "Student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); }
     if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
     return realFetch2(u, init);
   };
@@ -233,6 +234,14 @@ if (env) {
   ok("a preview works once", (await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: pv.body.fields }, aTok)).status === 410);
   ok("scanners see the confirmed import", (await call("GET", "/api/c/" + slug)).body.enriched.linkedin.companies[0] === "Acme Robotics");
   ok("import can be removed", (await call("DELETE", "/api/import/linkedin", null, aTok)).body.ok === true && ((await call("GET", "/api/c/" + slug)).body.enriched || {}).linkedin === undefined);
+  env.APIFY_TOKEN = "mock";
+  ok("link import needs the own-profile confirmation", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person" }, aTok)).status === 400 && apifyCalls === 0);
+  const lk = await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
+  ok("link import returns a preview from the provider", lk.status === 200 && lk.body.fields.schools[0] === "Arizona State University" && lk.body.fields.titles[0] === "Lab Assistant" && apifyCalls === 1);
+  const lc = await call("POST", "/api/import/linkedin/confirm", { previewId: lk.body.previewId, fields: lk.body.fields }, aTok);
+  ok("link import is stored with its own provenance only after confirm", lc.body.linkedin.source === "linkedin-link-import");
+  await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok); await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
+  ok("link imports are capped per person per day", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok)).status === 429);
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;
