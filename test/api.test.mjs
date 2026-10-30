@@ -202,5 +202,41 @@ if (env) {
   ok("google token no longer works", (await call("GET", "/api/me", null, gTok)).status === 401);
   globalThis.fetch = realFetch;
 }
+
+// LinkedIn import from pasted text: preview, review, confirm. Gemini is mocked locally; hallucinated values must be dropped.
+if (env) {
+  const realFetch2 = globalThis.fetch;
+  let geminiCalls = 0, linkedinCalls = 0;
+  globalThis.fetch = async (u, init) => {
+    const us = String(u);
+    if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
+    if (us.includes("generativelanguage.googleapis.com")) {
+      geminiCalls++;
+      const out = { headline: "Robotics Engineering Student | Intern", titles: ["Software Engineering Intern", "CEO"], companies: ["Acme Robotics", "Google"], schools: ["Arizona State University", "Stanford University"], location: "Tempe, Arizona, United States" };
+      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(out) }] } }] }), { status: 200 });
+    }
+    return realFetch2(u, init);
+  };
+  env.GEMINI_API_KEY = "mock";
+  const text = "Test Person\nRobotics Engineering Student | Intern\nTempe, Arizona, United States\nExperience\nSoftware Engineering Intern\nAcme Robotics - Internship\nEducation\nArizona State University\nBachelor of Science, Robotics Engineering";
+  ok("import needs a signed-in owner", (await call("POST", "/api/import/linkedin", { text })).status === 401);
+  ok("import rejects a non-LinkedIn link", (await call("POST", "/api/import/linkedin", { url: "https://evil.example/in/x", text }, aTok)).status === 400);
+  ok("import rejects empty text", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", text: "hi" }, aTok)).status === 400);
+  const pv = await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", text }, aTok);
+  ok("import returns a preview", pv.status === 200 && pv.body.previewId && pv.body.url === "https://www.linkedin.com/in/test-person");
+  ok("values found in the text are kept", pv.body.fields.companies.includes("Acme Robotics") && pv.body.fields.schools.includes("Arizona State University") && pv.body.fields.titles.includes("Software Engineering Intern"));
+  ok("values not in the text are dropped", !pv.body.fields.companies.includes("Google") && !pv.body.fields.schools.includes("Stanford University") && !pv.body.fields.titles.includes("CEO"));
+  ok("linkedin.com is never fetched", linkedinCalls === 0 && geminiCalls === 1);
+  ok("nothing is saved before confirm", ((await call("GET", "/api/c/" + slug)).body.enriched || {}).linkedin === undefined);
+  ok("another owner cannot confirm my preview", (await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: pv.body.fields }, bTok)).status === 410);
+  const cf = await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: { ...pv.body.fields, schools: ["Arizona State University"] } }, aTok);
+  ok("confirm stores the reviewed fields with provenance", cf.status === 200 && cf.body.linkedin.source === "linkedin-pasted-text" && cf.body.linkedin.confirmedAt && cf.body.linkedin.school === "Arizona State University");
+  ok("a preview works once", (await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: pv.body.fields }, aTok)).status === 410);
+  ok("scanners see the confirmed import", (await call("GET", "/api/c/" + slug)).body.enriched.linkedin.companies[0] === "Acme Robotics");
+  ok("import can be removed", (await call("DELETE", "/api/import/linkedin", null, aTok)).body.ok === true && ((await call("GET", "/api/c/" + slug)).body.enriched || {}).linkedin === undefined);
+  let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
+  ok("imports are rate limited", rl.status === 429);
+  globalThis.fetch = realFetch2;
+}
 srv.close();
 console.log("\n" + passed + " checks passed");

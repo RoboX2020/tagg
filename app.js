@@ -703,6 +703,77 @@
     }
   }
 
+  /* LinkedIn import: paste your profile text, review what was found, then add it. LinkedIn itself is never contacted. */
+  function mountLinkedinImport(collect, onHeadline) {
+    var box = document.getElementById("liimport"); if (!box) return;
+    function list(a) { return (a || []).filter(Boolean).join(", "); }
+    function summary(li) {
+      return '<div class="panel"><div style="font-weight:600">Imported from LinkedIn</div>' +
+        '<div style="color:var(--text-2);font-size:13px;margin-top:4px;line-height:1.5">' +
+        [li.titles && li.titles.length ? list(li.titles) : li.title, list(li.companies && li.companies.length ? li.companies : [li.company]), list(li.schools && li.schools.length ? li.schools : [li.school]), li.location].filter(Boolean).map(esc).join("<br>") +
+        '</div><div class="fineprint" style="margin-top:6px">Shown to people who scan your code and used when you ask Tagg who you met.</div>' +
+        '<button class="btn btn-plain" id="li-remove" style="margin-top:4px">Remove imported details</button></div>';
+    }
+    function idle(li) {
+      box.innerHTML = (li ? summary(li) : "") + '<button class="btn btn-gray" id="li-open" style="margin:8px 0 4px">' + (li ? "Import again" : "Import school and work from LinkedIn") + '</button>';
+      document.getElementById("li-open").addEventListener("click", ask);
+      var rm = document.getElementById("li-remove");
+      if (rm) rm.addEventListener("click", function () {
+        api("/api/import/linkedin", { method: "DELETE" }).then(function () { toast("Imported details removed"); idle(null); }).catch(function () { toast("Could not remove - try again"); });
+      });
+    }
+    function ask() {
+      box.innerHTML = '<div class="panel"><div style="font-weight:600">Import from LinkedIn</div>' +
+        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">LinkedIn does not allow apps to read profiles from a link, so Tagg works from your own copy. Open your profile in LinkedIn, select all, copy, and paste it here. Or use More, then Save to PDF, and paste the text.</p>' +
+        '<textarea class="input" id="li-text" rows="6" placeholder="Paste your profile text"></textarea>' +
+        '<button class="btn btn-accent" id="li-read" style="margin-top:8px">Read my profile</button>' +
+        '<button class="btn btn-plain" id="li-cancel">Cancel</button><div class="fineprint" id="li-err" style="color:var(--danger,#c0392b)"></div></div>';
+      document.getElementById("li-cancel").addEventListener("click", function () { load(); });
+      document.getElementById("li-read").addEventListener("click", function () {
+        var text = document.getElementById("li-text").value, err = document.getElementById("li-err"), btn = this;
+        if (text.trim().length < 40) { err.textContent = "Paste the text of your profile first."; return; }
+        var c = collect(); if (!c.name) { err.textContent = "Add your name above first."; return; }
+        consentThen("liimport", "Read your profile text with Google Gemini?",
+          "Tagg sends the text you paste to Google Gemini to pick out your job, employer and school. Tagg never contacts LinkedIn. Nothing is saved until you review it.",
+          "Continue", function () {
+            btn.disabled = true; btn.textContent = "Reading..."; err.textContent = "";
+            Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
+            saveCard(c);
+            syncCard().then(function () {
+              return api("/api/import/linkedin", { method: "POST", body: { url: c.links.linkedin || "", text: text } });
+            }).then(review).catch(function (e) {
+              btn.disabled = false; btn.textContent = "Read my profile"; err.textContent = (e && e.error) || "Could not read that. Try again.";
+            });
+          });
+      });
+    }
+    function review(d) {
+      var f = d.fields;
+      function fld(id, label, val) { return '<div class="field"><label>' + label + '</label><input class="input" id="' + id + '" value="' + esc(val || "") + '"></div>'; }
+      box.innerHTML = '<div class="panel"><div style="font-weight:600">Check what Tagg found</div>' +
+        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">Only text from what you pasted. Fix anything, clear what you do not want. Nothing is saved until you add it.</p>' +
+        fld("li-headline", "Headline", f.headline) + fld("li-titles", "Roles, separated by commas", list(f.titles)) +
+        fld("li-companies", "Employers", list(f.companies)) + fld("li-schools", "Schools", list(f.schools)) + fld("li-location", "Location", f.location) +
+        '<div class="fineprint">Shown to people who scan your code.</div>' +
+        '<button class="btn btn-accent" id="li-add" style="margin-top:8px">Add to my card</button>' +
+        '<button class="btn btn-plain" id="li-discard">Discard</button><div class="fineprint" id="li-err2"></div></div>';
+      document.getElementById("li-discard").addEventListener("click", function () { load(); });
+      document.getElementById("li-add").addEventListener("click", function () {
+        var btn = this; btn.disabled = true;
+        function split(id) { return document.getElementById(id).value.split(/[,\n]/).map(function (x) { return x.trim(); }).filter(Boolean); }
+        var fields = { headline: document.getElementById("li-headline").value.trim(), titles: split("li-titles"), companies: split("li-companies"), schools: split("li-schools"), location: document.getElementById("li-location").value.trim() };
+        api("/api/import/linkedin/confirm", { method: "POST", body: { previewId: d.previewId, fields: fields } }).then(function (r) {
+          toast("Added to your card"); onHeadline(fields.headline); idle(r.linkedin);
+        }).catch(function (e) { btn.disabled = false; document.getElementById("li-err2").textContent = (e && e.error) || "Could not save - try again"; });
+      });
+    }
+    function load() {
+      idle(null);
+      var slug = cardSlug();
+      if (slug) api("/api/c/" + slug).then(function (d) { if (d.enriched && d.enriched.linkedin) idle(d.enriched.linkedin); }).catch(function () {});
+    }
+    load();
+  }
   function renderEdit() {
     var c = loadCard() || { name: "", headline: "", email: "", phone: "", links: {} };
     shell(null,
@@ -711,6 +782,7 @@
       '<div class="field"><label>Name</label><input class="input" id="f-name" placeholder="Prajval Arora" value="' + esc(c.name) + '"></div>' +
       '<div class="field"><label>Headline</label><input class="input" id="f-head" placeholder="Robotics engineering at ASU" value="' + esc(c.headline) + '"></div>' +
       '<div class="field"><label>LinkedIn</label><input class="input" id="f-linkedin" placeholder="username or URL" value="' + esc(c.links.linkedin || "") + '"></div>' +
+      '<div id="liimport"></div>' +
       '<div class="field"><label>GitHub</label><input class="input" id="f-github" placeholder="username or URL" value="' + esc(c.links.github || "") + '"></div>' +
       '<div class="field"><label>X</label><input class="input" id="f-x" placeholder="handle" value="' + esc(c.links.x || "") + '"></div>' +
       '<div class="field"><label>Instagram</label><input class="input" id="f-instagram" placeholder="handle" value="' + esc(c.links.instagram || "") + '"></div>' +
@@ -744,6 +816,7 @@
       i.addEventListener("input", refresh);
     });
     refresh();
+    mountLinkedinImport(collect, function (headline) { var h = document.getElementById("f-head"); if (headline && !h.value.trim()) { h.value = headline; refresh(); } });
     document.getElementById("save").addEventListener("click", function () {
       var c = collect();
       if (!c.name) { toast("Add your name first"); return; }
@@ -810,9 +883,10 @@
       '<div class="field"><label>Context <span style="text-transform:none;color:var(--text-3);font-weight:400">(optional - private to you)</span></label>' +
       '<textarea class="input" id="f-note" placeholder="What are you two talking about?"></textarea></div>' +
       '<div style="height:8px"></div><button class="btn btn-gray" id="f-dictate">' + IC.mic + ' Dictate</button>' +
-      '<label class="row" style="margin-top:12px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:18px;height:18px;accent-color:var(--accent)">' +
-      '<span class="grow"><span class="title" style="display:block">Add where we met</span><span class="detail" style="white-space:normal">Uses your location once and saves the spot in your own record. ' + first + ' gets it only if you share your card; Save only keeps it private. Off by default.</span></span></label>' +
-      '<div class="locstatus" id="locstatus" style="display:none"></div>';
+      '<div class="locstatus" id="locstatus">Finding where you are...</div>' +
+      '<label class="row" id="shareloc-row" style="margin-top:8px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:18px;height:18px;accent-color:var(--accent)">' +
+      '<span class="grow"><span class="title" style="display:block">Also send the place to ' + first + '</span><span class="detail" style="white-space:normal">The place is saved in your own record automatically. It goes to ' + first + ' only if you tick this and share your card. Save only never sends it.</span></span></label>' +
+      '';
     shell(null,
       '<span class="pill">You just met</span>' +
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
@@ -843,21 +917,19 @@
       locP = locate(function (kind, loc) { locEl.innerHTML = locStatusHtml(kind, loc); });
       return locP;
     }
-    locBox.addEventListener("change", function () {
-      if (locBox.checked) startLoc(); else { locP = null; locEl.style.display = "none"; }
-    });
+    // Capture starts on its own when the page opens: the phone asks for permission once, and the fix is ready before Save.
+    // Capturing is private to this device/account. It is sent to the other person only if the box above is ticked.
     locEl.addEventListener("click", function (e) {
       if (e.target && e.target.getAttribute && e.target.getAttribute("data-locretry")) { e.preventDefault(); startLoc(); }
     });
-    function getLoc() {
-      if (!locBox.checked) return Promise.resolve(null);
-      return (locP || startLoc()).then(function (r) { return r.ok ? r.loc : null; });
-    }
+    function getLoc() { return (locP || startLoc()).then(function (r) { return r.ok ? r.loc : null; }); }
+    startLoc();
     // Third option: just save them. No request, no email, no follow-up. Context and location stay private to the saver.
     document.getElementById("saveonly").addEventListener("click", function () {
       var btn = this; btn.disabled = true; btn.textContent = "Saving...";
       var eventName = document.getElementById("f-event").value.trim();
       var note = document.getElementById("f-note").value.trim();
+      if (locP) btn.textContent = "Saving with location...";
       getLoc().then(function (loc) {
         if (ownerToken()) {
           return api("/api/people", { method: "POST", body: { slug: slug, event: eventName, note: note, location: loc } }).then(function (d) {
@@ -893,7 +965,8 @@
         });
       }
       if (btn) btn.textContent = wantLoc ? "Getting location..." : "Sharing...";
-      getLoc().then(function (loc) { if (wantLoc && !loc) toast("Sent without a location"); go(loc); });
+      if (!wantLoc) return go(null);
+      getLoc().then(function (loc) { if (!loc) toast("Sent without a location"); go(loc); });
     }
     if (signedIn) {
       document.getElementById("connect").addEventListener("click", function () {

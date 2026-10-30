@@ -11,6 +11,14 @@ const REMOTE = process.env.TAGG_API || "";
 const api = REMOTE ? { srv: { close() {} } } : await start(8787);
 const API_URL = REMOTE || "http://localhost:8787";
 const RUN = Date.now().toString(36);
+// Gemini is mocked for the import test (no API spend). It also returns values that are NOT in the pasted text, which must be dropped.
+if (api.env) {
+  api.env.GEMINI_API_KEY = "mock";
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (u, init) => String(u).includes("generativelanguage.googleapis.com")
+    ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ headline: "Robotics Engineering Student", titles: ["Software Engineering Intern"], companies: ["Acme Robotics", "Google"], schools: ["Arizona State University", "Stanford University"], location: "Tempe, Arizona, United States" }) }] } }] }), { status: 200 })
+    : realFetch(u, init);
+}
 const web = http.createServer((q, r) => {
   const f = path.join(root, q.url.split("?")[0] === "/" ? "index.html" : q.url.split("?")[0]);
   if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); }
@@ -70,6 +78,24 @@ try {
   assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "dark"); ok("Dark choice persists after reload");
   await A.waitForSelector("#themeseg [data-th=light]"); await A.$eval("#themeseg [data-th=light]", e => e.click()); await sleep(500);
   assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "light"); ok("Back to light");
+
+  // LinkedIn import: paste, review, add. Values not in the pasted text are dropped before review.
+  await A.goto(base + "#/edit"); await sleep(600);
+  await A.$eval("#li-open", e => e.click());
+  await A.type("#li-text", "Alice Ng\nRobotics Engineering Student\nTempe, Arizona, United States\nExperience\nSoftware Engineering Intern\nAcme Robotics\nEducation\nArizona State University");
+  await A.screenshot({ path: "/tmp/work/shot-li-paste.png", fullPage: true });
+  await A.$eval("#li-read", e => e.click()); await waitText(A, "Continue", 5000); await A.screenshot({ path: "/tmp/work/shot-li-consent.png" });
+  await clickText(A, "button", "Continue");
+  await waitText(A, "Check what Tagg found", 12000); await sleep(300);
+  const rv = await A.evaluate(() => ({ c: document.getElementById("li-companies").value, s: document.getElementById("li-schools").value }));
+  assert.equal(rv.c, "Acme Robotics"); assert.equal(rv.s, "Arizona State University"); ok("review shows only values found in the pasted text");
+  await A.$eval("#li-headline", e => e.scrollIntoView({ block: "start" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-li-review.png" });
+  assert.equal((await fetch(API_URL + "/api/c/" + slug).then(r => r.json())).enriched?.linkedin, undefined); ok("nothing is stored before the owner confirms");
+  await A.$eval("#li-add", e => e.click()); await waitText(A, "Imported from LinkedIn", 8000); await sleep(300);
+  const li = (await fetch(API_URL + "/api/c/" + slug).then(r => r.json())).enriched.linkedin;
+  assert.equal(li.school, "Arizona State University"); assert.equal(li.source, "linkedin-pasted-text"); ok("confirmed import stored with provenance");
+  await A.$eval("#liimport", e => e.scrollIntoView({ block: "center" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-li-done.png" });
+  await A.goto(base + "#/"); await sleep(300);
   // Bob: opens Alice's QR link, signs up as part of the scan, adds context and location.
   const B = await newUser("bob", { latitude: 33.4242, longitude: -111.9281, accuracy: 10 });
   await B.goto(base + "#/c/" + slug, { waitUntil: "networkidle0" });
@@ -78,6 +104,8 @@ try {
   ok("scan page shows card and account signup");
   await B.type("#au-name", "Bob Li"); await B.type("#au-email", "bob-" + RUN + "@tagg-test.invalid"); await B.type("#au-pass", "bob-secret-12");
   await B.type("#f-event", "Cal Hacks"); await B.type("#f-note", "Wants to talk sim2real");
+  await waitText(B, "Location ready", 15000);
+  assert.equal(await B.$eval("#f-loc", e => e.checked), false); ok("location is captured automatically but not ticked for sending");
   await B.click("#f-loc");
   await clickText(B, "button", "Create account and share");
   await waitText(B, "Save your recovery code"); await clickText(B, "button", "I saved it");
@@ -127,8 +155,7 @@ try {
   assert.ok(!/carol/i.test(bannerText) && !/bob/i.test(bannerText)); ok("owner home updated live on a second open, without naming anyone");
   await A.evaluate(() => window.scrollTo(0, 0)); await A.screenshot({ path: "/tmp/work/shot-home-live.png" });
   await Cc.type("#f-event", "Phoenix Expo"); await Cc.type("#f-note", "Met at the booth, private");
-  await Cc.click("#f-loc");
-  await waitText(Cc, "Location ready", 15000);
+  await waitText(Cc, "Location ready", 15000); ok("location is found automatically, with no tap");
   const maplink = await Cc.$eval("#locstatus a[href*='google.com/maps']", e => e.href);
   assert.match(maplink, /maps\/search\/\?api=1&query=33\.4484%2C-112\.074/); ok("location status shows ready with a Google Maps link and coordinates");
   await sleep(800); await Cc.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await Cc.screenshot({ path: "/tmp/work/shot-scan-location.png" });
@@ -146,7 +173,7 @@ try {
   const D = await dctx.newPage(); await D.setViewport({ width: 390, height: 844 });
   await D.evaluateOnNewDocument((api) => { localStorage.setItem("tagg.api", api); }, API_URL);
   await D.goto(base + "#/c/" + slug, { waitUntil: "networkidle0" }); await waitText(D, "Alice Ng");
-  await D.click("#f-loc"); await waitText(D, "blocked for this site", 8000);
+  await waitText(D, "blocked for this site", 8000);
   assert.ok((await text(D)).includes("Try again")); ok("denied location shows how to fix it and a Try again link");
   await D.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await D.screenshot({ path: "/tmp/work/shot-loc-denied.png" });
   await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);

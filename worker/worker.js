@@ -42,59 +42,51 @@ async function enrichGithub(env, slug, card) {
     await env.KV.put("enrich/" + slug, JSON.stringify(enriched));
   } catch (e) { /* enrichment is best-effort */ }
 }
-async function enrichLinkedin(env, slug, card) {
-  try {
-    const li = card.links && card.links.linkedin;
-    if (!li) return;
-    let it = null;
-    if (env.BRIGHTDATA_API_KEY) {
-      const r = await fetch("https://api.brightdata.com/datasets/v3/scrape?dataset_id=gd_l1viktl72bvl7bjuj0&include_errors=true", {
-        method: "POST",
-        headers: { "Authorization": "Bearer " + env.BRIGHTDATA_API_KEY, "Content-Type": "application/json" },
-        body: JSON.stringify({ input: [{ url: li }] })
-      });
-      if (r.ok) {
-        const data = await r.json();
-        const arr = Array.isArray(data) ? data : [data];
-        it = arr.find(x => x && !x.error) || arr[0];
-        if (it) {
-          const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
-          existing.linkedin = {
-            headline: it.position || null,
-            summary: it.about || null,
-            company: (it.current_company && it.current_company.name) || (it.experience && it.experience[0] && it.experience[0].company) || null,
-            title: (it.experience && it.experience[0] && it.experience[0].title) || null,
-            school: (it.education && it.education[0] && (it.education[0].title || it.education[0].name)) || null,
-            location: it.city || null,
-            avatar: it.avatar || it.profile_image || null
-          };
-          existing.fetchedAt = new Date().toISOString();
-          await env.KV.put("enrich/" + slug, JSON.stringify(existing));
-          return;
-        }
-      }
-    }
-    if (!env.APIFY_TOKEN) return;
-    const r = await fetch("https://api.apify.com/v2/acts/curious_coder~linkedin-profile-scraper/run-sync-get-dataset-items?token=" + env.APIFY_TOKEN, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profileUrls: [li] })
-    });
-    if (!r.ok) return;
-    const items = await r.json();
-    it = Array.isArray(items) && items[0];
-    if (!it) return;
-    const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
-    existing.linkedin = {
-      headline: it.headline || null,
-      summary: it.summary || it.about || null,
-      company: it.companyName || (it.experiences && it.experiences[0] && it.experiences[0].companyName) || null,
-      school: (it.educations && it.educations[0] && (it.educations[0].schoolName || it.educations[0].title)) || null,
-      location: it.location || it.address || null,
-      avatar: it.profilePic || it.profilePicture || null
-    };
-    existing.fetchedAt = new Date().toISOString();
-    await env.KV.put("enrich/" + slug, JSON.stringify(existing));
-  } catch (e) { /* best-effort */ }
+// LinkedIn import (user-initiated, reviewed). LinkedIn's robots.txt and User Agreement forbid automated reading of profile pages
+// and it answers server requests with HTTP 999, so Tagg never fetches linkedin.com. The owner pastes the text of their OWN profile
+// (or its "Save to PDF" export); Gemini (free tier) pulls out roles, employers, schools and place, and every extracted value must
+// appear in the pasted text or it is dropped. Nothing is stored until the owner reviews it and confirms.
+function parseLinkedinUrl(raw) {
+  if (typeof raw !== "string") return null;
+  let t = raw.trim();
+  if (!t) return null;
+  if (!/^https?:\/\//i.test(t)) t = "https://" + t.replace(/^\/+/, "");
+  let u; try { u = new URL(t); } catch (e) { return null; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  if (!/^([a-z]{2,3}\.|www\.)?linkedin\.com$/i.test(u.hostname)) return null;
+  const m = u.pathname.match(/^\/in\/([^\/?#]{2,100})\/?$/);
+  if (!m) return null;
+  return "https://www.linkedin.com/in/" + m[1];
+}
+const clip = (v, n) => (typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, n) : "");
+function asNames(x, max) {
+  const arr = Array.isArray(x) ? x : x ? [x] : [];
+  const out = [];
+  for (const it of arr) { const n = clip(typeof it === "string" ? it : it && it.name, 120); if (n && !out.includes(n)) out.push(n); if (out.length >= max) break; }
+  return out;
+}
+const norm = (x) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+async function extractProfile(env, text) {
+  const prompt = "Extract facts from this pasted LinkedIn profile text. Copy values EXACTLY as written in the text. Never guess, infer or add anything that is not in the text. Leave a list empty if the text does not say. headline = the profile headline if present. titles = job titles held (current first). companies = employers (current first). schools = schools or universities attended. location = the place shown on the profile.\n\nTEXT:\n" + text;
+  const schema = { type: "OBJECT", properties: { headline: { type: "STRING" }, titles: { type: "ARRAY", items: { type: "STRING" } }, companies: { type: "ARRAY", items: { type: "STRING" } }, schools: { type: "ARRAY", items: { type: "STRING" } }, location: { type: "STRING" } }, required: ["headline", "titles", "companies", "schools", "location"] };
+  let raw = null;
+  for (const m of ["gemini-2.5-flash", "gemini-2.0-flash"]) {
+    try {
+      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent", {
+        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 1024, responseMimeType: "application/json", responseSchema: schema, thinkingConfig: { thinkingBudget: 0 } } }),
+        signal: AbortSignal.timeout(15000) });
+      if (!r.ok) continue;
+      const d = await r.json();
+      raw = JSON.parse(d.candidates[0].content.parts[0].text); break;
+    } catch (e) { /* try next model */ }
+  }
+  if (!raw) return null;
+  const nt = norm(text);
+  const keep = (arr, n) => asNames(Array.isArray(arr) ? arr : [], 12).filter(v => nt.includes(norm(v))).slice(0, n);
+  const one = (v, n) => { const c = clip(v, n); return c && nt.includes(norm(c)) ? c : ""; };
+  const out = { headline: one(raw.headline, 300), titles: keep(raw.titles, 5), companies: keep(raw.companies, 6), schools: keep(raw.schools, 6), location: one(raw.location, 120) };
+  return (out.headline || out.titles.length || out.companies.length || out.schools.length || out.location) ? out : null;
 }
 async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + owner)) || []; }
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
@@ -261,7 +253,6 @@ export default {
       const rec = { card, ownerToken: owner, slug, updatedAt: new Date().toISOString(), createdAt: (await getJSON(env.KV, "card/" + slug))?.createdAt || new Date().toISOString() };
       await env.KV.put("card/" + slug, JSON.stringify(rec));
       ctx.waitUntil(enrichGithub(env, slug, card));
-      ctx.waitUntil(enrichLinkedin(env, slug, card));
       return j({ ownerToken: owner, slug });
     }
 
@@ -674,6 +665,54 @@ export default {
       return j({ ok: true, status: "accepted", personId: op.id });
     }
 
+    // LinkedIn import, step 1: read the public page of the URL the owner typed and return a PREVIEW. Nothing is saved yet.
+    if (p === "/api/import/linkedin" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      const urlIn = body && typeof body.url === "string" && body.url.trim() ? body.url : "";
+      const url = urlIn ? parseLinkedinUrl(urlIn) : null;
+      if (urlIn && !url) return j({ error: "Paste a link like linkedin.com/in/yourname" }, 400);
+      const text = body && typeof body.text === "string" ? body.text.trim().slice(0, 12000) : "";
+      if (text.length < 40) return j({ error: "Paste the text of your LinkedIn profile first" }, 400);
+      if (!env.GEMINI_API_KEY) return j({ error: "Import is unavailable right now" }, 503);
+      if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+      const data = await extractProfile(env, text);
+      if (!data) return j({ error: "Could not find a role, employer or school in that text. Paste the Experience and Education sections, or type them on your card." }, 422);
+      const res = { data };
+      const previewId = rand(16);
+      await env.KV.put("liprev/" + previewId, JSON.stringify({ owner, url: url || "", data: res.data, at: new Date().toISOString() }), { expirationTtl: 900 });
+      return j({ previewId, url, fields: res.data, source: "Text you pasted from LinkedIn" });
+    }
+    // Step 2: the owner reviews/edits the fields, then confirms. Only then is anything stored, with its provenance.
+    if (p === "/api/import/linkedin/confirm" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      const prev = body && typeof body.previewId === "string" ? await getJSON(env.KV, "liprev/" + body.previewId) : null;
+      if (!prev || prev.owner !== owner) return j({ error: "That import expired - start again" }, 410);
+      const f = (body && body.fields) || {};
+      const list = (x, n) => asNames(Array.isArray(x) ? x.filter(v => typeof v === "string") : [], n);
+      const fields = { headline: clip(f.headline, 300), titles: list(f.titles, 5), companies: list(f.companies, 6), schools: list(f.schools, 6), location: clip(f.location, 120) };
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      existing.linkedin = Object.assign(fields, { source: "linkedin-pasted-text", url: prev.url, importedAt: prev.at, confirmedAt: new Date().toISOString(),
+        company: fields.companies[0] || null, title: fields.titles[0] || null, school: fields.schools[0] || null });
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await env.KV.delete("liprev/" + body.previewId);
+      return j({ ok: true, linkedin: existing.linkedin });
+    }
+    if (p === "/api/import/linkedin" && req.method === "DELETE") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      delete existing.linkedin;
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      return j({ ok: true });
+    }
+
     // Ask Tagg: answer questions from your saved people via Gemini.
     if (p === "/api/ask" && req.method === "POST") {
       const owner = authOwner(req);
@@ -686,7 +725,7 @@ export default {
         name: x.card.name, headline: x.card.headline || null, links: Object.keys(x.card.links || {}),
         event: x.event || null, metAt: x.metAt, where: (x.location && x.location.label) || null,
         note: x.note || null,
-        about: x.enriched && x.enriched.linkedin ? [x.enriched.linkedin.headline, x.enriched.linkedin.company, x.enriched.linkedin.school].filter(Boolean).join("; ")
+        about: x.enriched && x.enriched.linkedin ? [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location].filter(v => v && !/: $/.test(v)).join("; ")
           : x.enriched && x.enriched.github ? [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ") : null
       }));
       const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + "\n\nQUESTION: " + q;

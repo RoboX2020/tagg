@@ -304,3 +304,6 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .themeseg button { flex:1; border:0; background:transparent; color: var(--text-2); font: 500 13px var(--font); padding: 7px 0; border-radius: 8px; cursor:pointer; }
 .themeseg button.on { background: var(--bg-elev); color: var(--text); box-shadow: 0 1px 3px var(--shadow); }
 .btnrow + .btn { margin-top: 10px; }
+
+.panel{background:var(--bg-elev);border:1px solid var(--sep);border-radius:var(--radius);padding:16px;margin:8px 0 12px}
+.panel .input{background:var(--card)}
