@@ -524,6 +524,11 @@
 
   /* ================= routing ================= */
   var app = document.getElementById("app");
+  function setTheme(t) {
+    localStorage.setItem("tagg.theme", t === "dark" ? "dark" : "light");
+    document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
+    var m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", t === "dark" ? "#0a0a0b" : "#f4f4f6");
+  }
   function route() {
     var h = location.hash || "#/";
     window.scrollTo(0, 0);
@@ -605,11 +610,19 @@
           (profile().kind === "email" ? (profile().emailVerified ? '<div class="row"><div class="grow"><div class="detail">Email verified</div></div></div>' : '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Email not verified yet. Other people see your card as unverified.</div></div><button class="btn btn-tinted" id="verify-email" style="width:auto;padding:0 14px">Verify email</button></div>') : '') + '</div>'
         : '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>') +
       (INBOX_COUNT ? '<h2 class="section">Requests</h2><a class="group" style="display:block;text-decoration:none;color:inherit" href="#/people"><div class="row"><div class="avatar" style="background:var(--card-2);color:var(--accent-2)">' + IC.people + '</div><div class="grow"><div class="title">' + INBOX_COUNT + ' connection request' + (INBOX_COUNT > 1 ? "s" : "") + '</div><div class="detail">Tap to connect back and save the moment</div></div>' + IC.chev + '</div></a>' : "") +
+      '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
         '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
       '<p class="footer-note">Your card and the people you meet live in your own Tagg database - synced, backed up, and always recallable.<br>Tagg is live at ' + esc(location.host) + '.</p>'
     );
+    (function () {
+      var cur = localStorage.getItem("tagg.theme") === "dark" ? "dark" : "light";
+      [].forEach.call(document.querySelectorAll("#themeseg button"), function (b) {
+        if (b.getAttribute("data-th") === cur) b.className = "on";
+        b.addEventListener("click", function () { setTheme(b.getAttribute("data-th")); route(); });
+      });
+    })();
     var da = document.getElementById("delete-account"); if (da) da.addEventListener("click", showDeleteAccount);
     var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
     document.getElementById("copylink").addEventListener("click", function () {
@@ -1218,14 +1231,15 @@
       var a = -Math.PI / 2 + (2 * Math.PI * i) / people.length;
       return { p: p, x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) };
     });
-    g.strokeStyle = "rgba(255,255,255,0.14)"; g.lineWidth = 1;
+    var cs = getComputedStyle(document.documentElement); var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim();
+    g.strokeStyle = mapLine; g.lineWidth = 1;
     nodes.forEach(function (n) { g.beginPath(); g.moveTo(cx, cy); g.lineTo(n.x, n.y); g.stroke(); });
     nodes.forEach(function (n) {
-      g.beginPath(); g.arc(n.x, n.y, 20, 0, 7); g.fillStyle = "#2c2c2e"; g.fill();
-      g.strokeStyle = "rgba(255,255,255,0.18)"; g.stroke();
-      g.fillStyle = "#fff"; g.font = "600 13px " + font; g.textAlign = "center"; g.textBaseline = "middle";
+      g.beginPath(); g.arc(n.x, n.y, 20, 0, 7); g.fillStyle = mapNode; g.fill();
+      g.strokeStyle = mapLine; g.stroke();
+      g.fillStyle = mapText; g.font = "600 13px " + font; g.textAlign = "center"; g.textBaseline = "middle";
       g.fillText(initial(n.p.card.name), n.x, n.y);
-      g.fillStyle = "#8e8e93"; g.font = "11px " + font;
+      g.fillStyle = mapSub; g.font = "11px " + font;
       var nm = n.p.card.name.split(" ")[0];
       g.fillText(nm.length > 10 ? nm.slice(0, 9) + "…" : nm, n.x, n.y + 32);
     });
@@ -1235,7 +1249,7 @@
     g.fillStyle = "#0a0a0b"; g.font = "700 15px " + font;
     var me = loadCard();
     g.fillText(me ? initial(me.name) : "Y", cx, cy);
-    g.fillStyle = "#8e8e93"; g.font = "11px " + font;
+    g.fillStyle = mapSub; g.font = "11px " + font;
     g.fillText("You", cx, cy + 38);
     cv.addEventListener("click", function (e) {
       var r = cv.getBoundingClientRect();

@@ -4,8 +4,8 @@
   "description": "People memory with a personal agent. Meet once, Tagg remembers.",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0a0a0b",
-  "theme_color": "#0a0a0b",
+  "background_color": "#f4f4f6",
+  "theme_color": "#f4f4f6",
   "icons": [
     {
       "src": "icon-192.png",

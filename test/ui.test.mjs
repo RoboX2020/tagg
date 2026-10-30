@@ -56,6 +56,20 @@ try {
   const slug = await A.evaluate(() => localStorage.getItem("tagg.slug.v1"));
   assert.match(slug, /^[a-z0-9]{8}$/); ok("Alice has a synced card slug " + slug);
 
+  await A.goto(base + "#/"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500); await A.waitForSelector("#themeseg", { timeout: 15000 });
+  // Theme: light is the default, dark is an option that persists.
+  assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "light"); ok("light mode is the default");
+  const bgLight = await A.evaluate(() => getComputedStyle(document.body).backgroundColor); assert.notEqual(bgLight, "rgb(10, 10, 11)");
+  await A.evaluate(() => window.scrollTo(0, 0)); await A.screenshot({ path: "/tmp/work/shot-home-light.png" });
+  await A.$eval("#themeseg", e => e.scrollIntoView({ block: "center" })); await sleep(200); await A.screenshot({ path: "/tmp/work/shot-theme-switch-light.png" });
+  await A.$eval("#themeseg [data-th=dark]", e => e.click()); await sleep(600);
+  assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "dark");
+  assert.equal(await A.evaluate(() => getComputedStyle(document.body).backgroundColor), "rgb(10, 10, 11)"); ok("Dark option switches the theme");
+  await A.evaluate(() => window.scrollTo(0, 0)); await A.screenshot({ path: "/tmp/work/shot-home-dark.png" });
+  await A.reload({ waitUntil: "networkidle0" }); await sleep(800);
+  assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "dark"); ok("Dark choice persists after reload");
+  await A.waitForSelector("#themeseg [data-th=light]"); await A.$eval("#themeseg [data-th=light]", e => e.click()); await sleep(500);
+  assert.equal(await A.evaluate(() => document.documentElement.getAttribute("data-theme")), "light"); ok("Back to light");
   // Bob: opens Alice's QR link, signs up as part of the scan, adds context and location.
   const B = await newUser("bob", { latitude: 33.4242, longitude: -111.9281, accuracy: 10 });
   await B.goto(base + "#/c/" + slug, { waitUntil: "networkidle0" });

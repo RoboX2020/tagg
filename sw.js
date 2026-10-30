@@ -1,5 +1,5 @@
 /* Tagg service worker - offline app shell, stale-while-revalidate */
-var CACHE = "tagg-v7";
+var CACHE = "tagg-v8";
 var SHELL = ["./", "index.html", "styles.css", "app.js", "qrcode.min.js",
   "icon.svg", "icon-180.png", "icon-192.png", "icon-512.png", "manifest.webmanifest"];
 self.addEventListener("install", function (e) {

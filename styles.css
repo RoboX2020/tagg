@@ -1,5 +1,31 @@
 /* Tagg - Apple HIG dark, quiet orange/black/white. Tighter spacing and smaller type (v5). */
 :root {
+  /* Light is the default. Dark is [data-theme="dark"] below. */
+  --bg: #f4f4f6;
+  --bg-elev: #ffffff;
+  --card: #ececf0;
+  --card-2: #e2e2e7;
+  --sep: rgba(0,0,0,0.09);
+  --text: #1c1c1e;
+  --text-2: #6c6c72;
+  --text-3: #a0a0a6;
+  --accent: #d9733d;
+  --accent-2: #c2602b;
+  --accent-soft: rgba(217,115,61,0.12);
+  --topbar-bg: rgba(244,244,246,0.8);
+  --tabbar-bg: rgba(250,250,251,0.86);
+  --overlay: rgba(0,0,0,0.35);
+  --chip-bg: rgba(0,0,0,0.05);
+  --shadow: rgba(0,0,0,0.12);
+  --map-line: rgba(0,0,0,0.14);
+  --map-node: #ffffff;
+  --map-text: #1c1c1e;
+  --on-accent: #ffffff;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+[data-theme="dark"] {
   --bg: #0a0a0b;
   --bg-elev: #151517;
   --card: #1e1e21;
@@ -8,13 +34,19 @@
   --text: #f5f5f7;
   --text-2: #8b8b92;
   --text-3: #5d5d63;
-  --accent: #d9733d;
   --accent-2: #e5954f;
-  --accent-soft: rgba(217,115,61,0.12);
-  --radius: 14px;
-  --radius-sm: 10px;
-  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --topbar-bg: rgba(0,0,0,0.72);
+  --tabbar-bg: rgba(28,28,30,0.82);
+  --overlay: rgba(0,0,0,0.55);
+  --chip-bg: rgba(255,255,255,0.08);
+  --shadow: rgba(0,0,0,0.5);
+  --map-line: rgba(255,255,255,0.14);
+  --map-node: #2c2c2e;
+  --map-text: #ffffff;
+  --on-accent: #0a0a0b;
 }
+/* The brand card and answer panel stay dark in both themes. */
+.taggcard, .answer { --text:#f5f5f7; --text-2:#9a9aa1; --text-3:#6d6d73; --sep: rgba(255,255,255,0.1); --chip-bg: rgba(255,255,255,0.08); --accent-2:#e5954f; color: var(--text); }
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 html { height:100%; }
 body {
@@ -44,7 +76,7 @@ body {
 .topbar {
   position: sticky; top: 0; z-index: 20;
   padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px 9px;
-  background: rgba(0,0,0,0.72);
+  background: var(--topbar-bg);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 0.5px solid var(--sep);
@@ -62,12 +94,12 @@ body {
 .topbar .sub { color: var(--text-2); font-size: 12px; margin-top: 1px; margin-left: 34px; }
 
 /* ---------- content ---------- */
-.content { flex: 1; padding: 10px 14px; padding-bottom: 96px; animation: fadeUp .34s cubic-bezier(.22,.9,.3,1); }
+.content { flex: 1; padding: 18px 20px; padding-bottom: 104px; animation: fadeUp .34s cubic-bezier(.22,.9,.3,1); }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(10px);} to { opacity:1; transform:none;} }
 
-h1.largetitle { font-size: 26px; font-weight: 650; letter-spacing:-0.5px; margin: 4px 0 3px; }
-p.lead { color: var(--text-2); font-size: 14px; line-height: 1.45; margin-bottom: 14px; }
-h2.section { font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--text-2); margin: 20px 4px 6px; }
+h1.largetitle { font-size: 24px; font-weight: 650; letter-spacing:-0.5px; margin: 6px 0 4px; }
+p.lead { color: var(--text-2); font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+h2.section { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .07em; color: var(--text-2); margin: 26px 4px 8px; }
 
 /* ---------- grouped list (iOS inset) ---------- */
 .group { background: var(--bg-elev); border-radius: var(--radius); overflow: hidden; }
@@ -82,8 +114,8 @@ h2.section { font-size: 11.5px; font-weight: 600; text-transform: uppercase; let
 .row:last-child { border-bottom: none; }
 .row:active { background: var(--card); }
 .row .grow { flex:1; min-width:0; }
-.row .title { font-size: 15px; font-weight: 500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.row .detail { font-size: 12.5px; color: var(--text-2); margin-top: 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row .title { font-size: 14px; font-weight: 500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row .detail { font-size: 12px; color: var(--text-2); margin-top: 1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .chevron { color: var(--text-3); flex:none; }
 .avatar {
   width: 36px; height: 36px; border-radius: 50%; flex:none;
@@ -98,18 +130,18 @@ h2.section { font-size: 11.5px; font-weight: 600; text-transform: uppercase; let
   display:flex; align-items:center; justify-content:center; gap:8px;
   width:100%; padding: 12px 16px;
   border:none; border-radius: 14px;
-  font-family: var(--font); font-size: 15px; font-weight: 600;
+  font-family: var(--font); font-size: 14px; font-weight: 600;
   cursor:pointer; text-decoration:none;
   transition: transform .12s, opacity .15s, background .15s;
   user-select:none;
 }
 .btn:active { transform: scale(0.97); }
-.btn-accent { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color:#000; }
+.btn-accent { background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: var(--on-accent); }
 .btn-tinted { background: var(--accent-soft); color: var(--accent-2); }
 .btn-gray { background: var(--card); color: var(--text); }
 .btn-plain { background: transparent; color: var(--accent-2); }
 .btn.small { width:auto; padding: 9px 16px; font-size: 14px; border-radius: 10px; }
-.btn + .btn { margin-top: 8px; }
+.btn + .btn { margin-top: 10px; }
 .btnrow { display:flex; gap:10px; }
 .btnrow .btn { flex:1; }
 .btnrow .btn + .btn { margin-top:0; }
@@ -129,19 +161,19 @@ h2.section { font-size: 11.5px; font-weight: 600; text-transform: uppercase; let
   background: radial-gradient(circle, rgba(255,107,26,0.28), transparent 70%);
 }
 .taggcard .tc-mark { font-size:13px; font-weight:800; letter-spacing:.18em; color:var(--accent-2); text-transform:uppercase; }
-.taggcard .tc-name { font-size: 22px; font-weight: 650; letter-spacing:-0.4px; margin-top: 10px; }
-.taggcard .tc-head { font-size: 14px; color: var(--text-2); margin-top: 3px; line-height:1.4; }
+.taggcard .tc-name { font-size: 20px; font-weight: 650; letter-spacing:-0.4px; margin-top: 10px; }
+.taggcard .tc-head { font-size: 13px; color: var(--text-2); margin-top: 3px; line-height:1.4; }
 .taggcard .tc-links { display:flex; flex-wrap:wrap; gap:8px; margin-top: 12px; position:relative; }
 .chip {
   display:inline-flex; align-items:center; gap:6px;
-  background: rgba(255,255,255,0.08);
+  background: var(--chip-bg);
   border: 0.5px solid var(--sep);
   color: var(--text);
   border-radius: 999px; padding: 6px 12px;
   font-size: 12.5px; font-weight: 500; text-decoration:none;
   transition: background .15s;
 }
-.chip:active { background: rgba(255,255,255,0.16); }
+.chip:active { background: var(--sep); }
 .chip svg { flex:none; }
 
 /* ---------- QR ---------- */
@@ -156,10 +188,10 @@ h2.section { font-size: 11.5px; font-weight: 600; text-transform: uppercase; let
 
 /* ---------- forms ---------- */
 .field { margin-bottom: 4px; }
-.field label { display:block; font-size:12px; font-weight:600; color:var(--text-2); margin: 10px 4px 5px; }
+.field label { display:block; font-size:12px; font-weight:600; color:var(--text-2); margin: 14px 4px 6px; }
 .input, textarea.input {
   width:100%; background: var(--bg-elev); border: 0.5px solid var(--sep);
-  border-radius: var(--radius-sm); padding: 11px 13px;
+  border-radius: var(--radius-sm); padding: 11px 14px;
   color: var(--text); font-family: var(--font); font-size: 16px;
   outline: none; transition: border-color .15s, box-shadow .15s;
 }
@@ -172,7 +204,7 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
   position: fixed; bottom: 0; left: 50%; transform: translateX(-50%);
   width:100%; max-width: 520px; z-index: 30;
   display:flex;
-  background: rgba(28,28,30,0.82);
+  background: var(--tabbar-bg);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   backdrop-filter: saturate(180%) blur(20px);
   border-top: 0.5px solid var(--sep);
@@ -190,7 +222,7 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 /* ---------- sheet / modal ---------- */
 .sheet-bg {
   position: fixed; inset:0; z-index: 50;
-  background: rgba(0,0,0,0.55);
+  background: var(--overlay);
   -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
   display:flex; align-items:flex-end; justify-content:center;
   animation: fadeIn .2s;
@@ -206,8 +238,8 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 }
 @keyframes slideUp { from { transform: translateY(60px); opacity:.4;} to { transform:none; opacity:1;} }
 .sheet .grab { width: 38px; height: 5px; border-radius: 3px; background: var(--card-2); margin: 0 auto 16px; }
-.sheet h3 { font-size: 18px; font-weight: 650; letter-spacing:-0.3px; margin-bottom: 6px; }
-.sheet p.hint { color: var(--text-2); font-size: 13px; line-height:1.5; margin-bottom: 14px; }
+.sheet h3 { font-size: 17px; font-weight: 650; letter-spacing:-0.3px; margin-bottom: 6px; }
+.sheet p.hint { color: var(--text-2); font-size: 12.5px; line-height:1.5; margin-bottom: 14px; }
 
 /* ---------- misc ---------- */
 .empty { text-align:center; padding: 44px 24px; color: var(--text-2); }
@@ -221,20 +253,20 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 }
 .metacard { background: var(--bg-elev); border-radius: var(--radius); padding: 16px; }
 .metacard .k { font-size:12px; font-weight:600; color:var(--text-2); text-transform:uppercase; letter-spacing:.05em; }
-.metacard .v { font-size:16px; margin-top:3px; line-height:1.45; }
+.metacard .v { font-size:14.5px; margin-top:3px; line-height:1.45; }
 .metagrid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
 .answer {
   background: linear-gradient(160deg, #171717, #000);
   border: 1px solid rgba(255,107,26,0.3);
   border-radius: var(--radius); padding: 18px;
-  font-size: 15.5px; line-height: 1.55;
+  font-size: 14.5px; line-height: 1.55;
 }
 .answer b { color: var(--accent-2); }
 .toast {
   position: fixed; left:50%; bottom: 100px; transform: translateX(-50%);
   background: var(--card-2); color: var(--text);
   border-radius: 12px; padding: 11px 18px; font-size: 14px; font-weight: 500;
-  z-index: 90; box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+  z-index: 90; box-shadow: 0 8px 30px var(--shadow);
   animation: fadeUp .25s;
 }
 .recbar { display:flex; align-items:center; gap:12px; background:var(--card); border-radius: var(--radius-sm); padding: 12px 14px; }
@@ -260,10 +292,15 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 }
 
 /* small explanatory text with breathing room (used for verification and post-send notes) */
-.fineprint { color: var(--text-2); font-size: 13px; line-height: 1.45; margin: 0 0 12px; }
+.fineprint { color: var(--text-2); font-size: 12.5px; line-height: 1.45; margin: 0 0 12px; }
 
 /* v5: live-scan banner and location status */
 .scanbanner { display:flex; align-items:center; gap:10px; background: var(--accent-soft); border: 0.5px solid rgba(217,115,61,.35); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 12px; font-size: 14px; }
 .scanbanner .dot { width:8px; height:8px; border-radius:50%; background: var(--accent); animation: pulse 1.4s infinite; flex:none; }
 .locstatus { font-size: 13px; color: var(--text-2); margin: 8px 4px 0; line-height: 1.45; }
 .locstatus a { color: var(--accent-2); }
+
+.themeseg { display:flex; gap:4px; background: var(--card); border-radius: 10px; padding: 3px; }
+.themeseg button { flex:1; border:0; background:transparent; color: var(--text-2); font: 500 13px var(--font); padding: 7px 0; border-radius: 8px; cursor:pointer; }
+.themeseg button.on { background: var(--bg-elev); color: var(--text); box-shadow: 0 1px 3px var(--shadow); }
+.btnrow + .btn { margin-top: 10px; }
