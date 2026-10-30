@@ -160,6 +160,29 @@ const finnAfter = (await call("GET", "/api/people", null, fTok)).body.people.fin
 ok("Finn's own record of Erin survives with time, place and his note", !!finnAfter && finnAfter.metAt === finnBefore.metAt && finnAfter.location.place === "Hayden Library" && finnAfter.note.includes("Finn only"));
 ok("Finn's own card and login are unaffected", (await call("GET", "/api/c/" + fCard.body.slug)).status === 200 && (await call("GET", "/api/me", null, fTok)).status === 200);
 
+// Live scan ping + Save only
+const sO = (await call("POST", "/api/auth/signup", { email: "sara@example.com", password: "sara pass 123" })).body.ownerToken;
+const sCard = await call("POST", "/api/card", { ownerToken: sO, card: { name: "Sara Owner", headline: "Hosts", links: {} } });
+const tS = (await call("POST", "/api/auth/signup", { email: "tom@example.com", password: "tom pass 123" })).body.ownerToken;
+const tCard = await call("POST", "/api/card", { ownerToken: tS, card: { name: "Tom Scanner", headline: "Scans", links: {} } });
+ok("owner inbox starts with no scans", (await call("GET", "/api/inbox", null, sO)).body.scans.length === 0);
+ok("scan with a bad slug refused", (await call("POST", "/api/scan", { slug: "../x" })).status === 400);
+ok("scan of an unknown card is 404", (await call("POST", "/api/scan", { slug: "zzzzzzzz" })).status === 404);
+ok("anonymous scan accepted", (await call("POST", "/api/scan", { slug: sCard.body.slug })).body.ok === true);
+const sc = (await call("GET", "/api/inbox", null, sO)).body.scans;
+ok("owner sees one scan", sc.length === 1);
+ok("scan carries only id and time, no identity", Object.keys(sc[0]).sort().join() === "at,id");
+ok("scans are not visible to another account", (await call("GET", "/api/inbox", null, tS)).body.scans.length === 0);
+for (let i = 0; i < 5; i++) await call("POST", "/api/scan", { slug: sCard.body.slug });
+ok("repeat scans from one source are throttled", (await call("GET", "/api/inbox", null, sO)).body.scans.length <= 3);
+ok("save-only needs sign-in", (await call("POST", "/api/people", { slug: sCard.body.slug })).status === 401);
+const so = await call("POST", "/api/people", { slug: sCard.body.slug, event: "Expo", note: "Tom's private note", location: { lat: 33.4, lon: -111.9, label: "Tempe, AZ", place: "Expo Hall" } }, tS);
+ok("save-only stores Sara in Tom's people with context and place", so.status === 200 && so.body.person.card.name === "Sara Owner" && so.body.person.note === "Tom's private note" && so.body.person.location.place === "Expo Hall");
+ok("save-only is idempotent per card", (await call("GET", "/api/people", null, tS)).body.people.filter(x => x.slug === sCard.body.slug).length === 1);
+ok("save-only sends nothing to the owner", (await call("GET", "/api/inbox", null, sO)).body.requests.length === 0 && (await call("GET", "/api/people", null, sO)).body.people.length === 0);
+ok("save-only of your own card refused", (await call("POST", "/api/people", { slug: sCard.body.slug }, sO)).status === 400);
+ok("save-only of an unknown card refused", (await call("POST", "/api/people", { slug: "zzzzzzzz" }, tS)).status === 404);
+
 // Google account deletion needs a fresh Google sign-in for the same account. Google is stubbed here (no network).
 if (env) {
   const realFetch = globalThis.fetch; const GCLIENT = "test-client";

@@ -432,9 +432,46 @@ export default {
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
       for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
       if (slug) keys.push("card/" + slug, "enrich/" + slug);
-      keys.push("ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "own/" + owner);
+      keys.push("ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner);
       for (const k of keys) await env.KV.delete(k);
       return j({ deleted: true });
+    }
+
+    // Anonymous scan ping: someone opened this card's link. Tells the owner "someone scanned" with NO identity (no name,
+    // no IP stored). Rate limited, short lived. Identity only ever arrives later, if the scanner chooses to share.
+    if (p === "/api/scan" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      const slug = body && typeof body.slug === "string" ? body.slug : "";
+      if (!/^[a-z0-9]{6,10}$/.test(slug)) return j({ error: "bad slug" }, 400);
+      const ip = req.headers.get("CF-Connecting-IP") || "x";
+      if (await overLimit(env, "scan/" + slug + "/" + ip, 3, 60)) return j({ ok: true, throttled: true });
+      if (await overLimit(env, "scanslug/" + slug, 40, 3600)) return j({ ok: true, throttled: true });
+      const rec = await getJSON(env.KV, "card/" + slug);
+      if (!rec || !rec.ownerToken) return j({ error: "not found" }, 404);
+      const list = ((await getJSON(env.KV, "scn/" + rec.ownerToken)) || []).filter(x => Date.now() - Date.parse(x.at) < 900000);
+      list.unshift({ id: "s_" + rand(8), at: new Date().toISOString() });
+      await env.KV.put("scn/" + rec.ownerToken, JSON.stringify(list.slice(0, 20)), { expirationTtl: 3600 });
+      return j({ ok: true });
+    }
+    // Save someone privately: adds their public card to MY people with my context. Nothing is sent to them.
+    if (p === "/api/people" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      const slug = body && typeof body.slug === "string" ? body.slug : "";
+      const rec = /^[a-z0-9]{6,10}$/.test(slug) ? await getJSON(env.KV, "card/" + slug) : null;
+      if (!rec) return j({ error: "That card was not found" }, 404);
+      if (rec.ownerToken === owner) return j({ error: "That is your own card" }, 400);
+      const list = await getPeople(env, owner);
+      let person = list.find(x => x.slug === slug);
+      if (!person) {
+        person = { id: "p_" + rand(10), slug, card: rec.card, metAt: new Date().toISOString(),
+          event: typeof body.event === "string" ? body.event.slice(0, 200) : "", location: cleanLocation(body.location),
+          note: typeof body.note === "string" ? body.note.slice(0, 2000) : "", enriched: (await getJSON(env.KV, "enrich/" + slug)) || null, savedPrivately: true };
+        list.unshift(person);
+        await putPeople(env, owner, list);
+      }
+      return j({ person });
     }
 
     // Email verification: request a 6-digit code (valid 15 min), then confirm it. Only for email/password accounts.
@@ -580,7 +617,8 @@ export default {
       const pend = inbox.filter(x => x.status === "pending");
       const out = [];
       for (const x of pend) out.push({ id: x.id, name: x.name, contact: x.contact, event: x.event, location: x.location, at: x.at, hasCard: !!x.requesterSlug, verified: await isVerified(env, x.requesterToken) });
-      return j({ requests: out });
+      const scans = ((await getJSON(env.KV, "scn/" + owner)) || []).filter(x => Date.now() - Date.parse(x.at) < 900000).map(x => ({ id: x.id, at: x.at }));
+      return j({ requests: out, scans });
     }
 
     // Owner accepts or declines; accept saves the connection both ways.

@@ -233,16 +233,39 @@
     google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: function (resp) { if (onCredential) onCredential(resp.credential); else googleSignIn(resp.credential, onDone); } });
     google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
   }
-  var lastSync = 0, syncing = false, INBOX = [], INBOX_COUNT = 0;
+  var lastSync = 0, syncing = false, INBOX = [], INBOX_COUNT = 0, SCANS = [];
   function refreshSoon(force) {
     if (syncing || (!force && Date.now() - lastSync < 10000)) return;
     syncing = true; lastSync = Date.now();
     syncPeople().then(function () {
       if (!ownerToken()) return;
       return api("/api/inbox").then(function (d) {
-        INBOX = d.requests || []; INBOX_COUNT = INBOX.length;
+        INBOX = d.requests || []; INBOX_COUNT = INBOX.length; SCANS = d.scans || [];
       }).catch(function () {});
     }).then(function () { syncing = false; route(); }, function () { syncing = false; });
+  }
+  // Live view for the card owner: while the home screen is open, check for scans and requests every 4 seconds
+  // and redraw only when something changed. A scan is anonymous: it says "someone", never who.
+  var livePoll = null, liveSig = "";
+  function scanBannerHtml() {
+    if (!SCANS.length) return "";
+    var n = SCANS.length;
+    return '<div class="scanbanner" id="scanbanner"><span class="dot"></span><span>' + (n === 1 ? "Someone just scanned your code." : n + " scans of your code in the last few minutes.") +
+      ' <span style="color:var(--text-2)">Waiting to see if they share details.</span></span></div>';
+  }
+  function startLive() {
+    if (livePoll) return;
+    livePoll = setInterval(function () {
+      var h = location.hash || "#/";
+      if (!ownerToken() || (h !== "#/" && h !== "") || document.hidden || document.querySelector(".sheet-bg") || syncing) return;
+      api("/api/inbox").then(function (d) {
+        var sig = (d.scans || []).map(function (x) { return x.id; }).join() + "|" + (d.requests || []).map(function (x) { return x.id; }).join();
+        if (sig === liveSig) return;
+        liveSig = sig;
+        INBOX = d.requests || []; INBOX_COUNT = INBOX.length; SCANS = d.scans || [];
+        if ((location.hash || "#/") === "#/" && !document.querySelector(".sheet-bg")) { lastSync = 0; refreshSoon(true); }
+      }).catch(function () {});
+    }, 4000);
   }
   // One-time disclosure sheet. Remembers the answer per feature, so it asks once, before the first action.
   function consentThen(key, title, body, label, go) {
@@ -262,26 +285,54 @@
   // happened), then look up the nearest city name. Fully optional: any failure
   // or refusal quietly calls back with null and the app moves on - the total
   // wait is capped at 4.5 s so a slow GPS fix never hangs the flow.
-  function withLocation(cb) {
-    function done(v) { clearTimeout(timer); cb(v); }
-    var timer = setTimeout(function () { cb(null); }, 4500);
-    if (!navigator.geolocation) { clearTimeout(timer); return cb(null); }
-    navigator.geolocation.getCurrentPosition(function (pos) {
-      // Round coordinates to 5 decimals (~1 meter precision) - precise enough
-      // for "where we met", and it avoids storing needlessly exact GPS trails.
-      var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "", place: "" };
-      // Reverse geocode: turn lat/lon into "City, State" via OpenStreetMap's
-      // free Nominatim service. zoom=18 is building level, so we also get the
-      // nearest named place (a venue, building or street) for "loc.place".
-      fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=" + loc.lat + "&lon=" + loc.lon)
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-          var a = d.address || {};
-          loc.place = d.name || a.amenity || a.building || a.tourism || a.leisure || a.shop || a.road || "";
-          loc.label = [a.city || a.town || a.village || a.suburb || a.county || "", a.state || ""].filter(Boolean).join(", ") || (d.display_name || "").split(",").slice(0, 2).join(",");
-          done(loc);
-        }).catch(function () { done(loc); });
-    }, function () { done(null); }, { timeout: 2500, maximumAge: 300000 });
+  // Location, in two independent steps so a slow or failed place lookup never loses the coordinates:
+  //  1. the device position (permission prompt, up to 20 s, high accuracy), 2. the nearest place name (own 5 s limit).
+  // locate() returns a promise of {ok, loc, reason}. reason: denied | unavailable | timeout | unsupported | insecure.
+  // onStatus(kind, loc) is called as it goes so the page can show what is happening.
+  function locate(onStatus) {
+    onStatus = onStatus || function () {};
+    return new Promise(function (resolve) {
+      if (!window.isSecureContext) { onStatus("insecure"); return resolve({ ok: false, reason: "insecure" }); }
+      if (!navigator.geolocation) { onStatus("unsupported"); return resolve({ ok: false, reason: "unsupported" }); }
+      onStatus("asking");
+      navigator.geolocation.getCurrentPosition(function (pos) {
+        // 5 decimals is about 1 meter: enough for "where we met" without storing a needlessly exact trail.
+        var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "", place: "" };
+        onStatus("found", loc);
+        var ctl = window.AbortController ? new AbortController() : null;
+        var t = setTimeout(function () { if (ctl) ctl.abort(); finish(); }, 5000);
+        var finished = false;
+        function finish() { if (finished) return; finished = true; clearTimeout(t); onStatus("named", loc); resolve({ ok: true, loc: loc }); }
+        // Free OpenStreetMap Nominatim reverse lookup; zoom 18 gives the nearest venue, building or street.
+        fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=" + loc.lat + "&lon=" + loc.lon, ctl ? { signal: ctl.signal } : undefined)
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            var a = d.address || {};
+            loc.place = d.name || a.amenity || a.building || a.tourism || a.leisure || a.shop || a.road || "";
+            loc.label = [a.city || a.town || a.village || a.suburb || a.county || "", a.state || ""].filter(Boolean).join(", ") || (d.display_name || "").split(",").slice(0, 2).join(",");
+            finish();
+          }).catch(finish);
+      }, function (err) {
+        var reason = err && err.code === 1 ? "denied" : err && err.code === 3 ? "timeout" : "unavailable";
+        onStatus(reason); resolve({ ok: false, reason: reason });
+      }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 });
+    });
+  }
+  function withLocation(cb) { locate().then(function (r) { cb(r.ok ? r.loc : null); }); }
+  function mapsUrl(loc) { return "https://www.google.com/maps/search/?api=1&query=" + loc.lat + "%2C" + loc.lon; }
+  function locStatusHtml(kind, loc) {
+    var retry = ' <a href="#" data-locretry="1">Try again</a>';
+    if (kind === "asking") return "Finding your location. Allow access if your phone asks.";
+    if (kind === "found" || kind === "named") {
+      var nm = loc && [loc.place, loc.label].filter(Boolean).join(", ");
+      return "Location ready" + (nm ? ": " + esc(nm) : (kind === "found" ? ". Looking up the place name..." : ". Place name not available, the pin is saved.")) +
+        '<br><a href="' + mapsUrl(loc) + '" target="_blank" rel="noopener">Open in Google Maps</a> <span style="color:var(--text-3)">(' + loc.lat + ", " + loc.lon + ")</span>";
+    }
+    if (kind === "denied") return "Location is blocked for this site. On iPhone: Settings, Privacy and Security, Location Services, Safari Websites, set to While Using. Then" + retry + "." ;
+    if (kind === "timeout") return "Could not get a location fix in time. Move near a window if you are indoors." + retry;
+    if (kind === "insecure") return "Location needs a secure (https) page.";
+    if (kind === "unsupported") return "This browser does not support location.";
+    return "Location is unavailable right now." + retry;
   }
 
   /* ================= card payload (QR) ================= */
@@ -520,6 +571,7 @@
 
     shell("card",
       '<h1 class="largetitle">Your Tagg</h1>' +
+      scanBannerHtml() +
       '<p class="lead">Show the QR when you meet someone. They scan it - no app to install - and you both walk away remembered.</p>' +
       cardHtml(card) +
       '<div style="height:16px"></div>' +
@@ -684,6 +736,11 @@
   function renderScannedRoute(id) {
     if (/^[a-z0-9]{6,10}$/.test(id)) {
       shell(null, '<div class="empty"><div class="t">Pulling up their card...</div><div class="d">One second.</div></div>');
+      // Anonymous "someone scanned" ping so the owner's app updates at once. Carries no identity, once per tab session.
+      if (cardSlug() !== id && !sessionStorage.getItem("tagg.pinged." + id)) {
+        sessionStorage.setItem("tagg.pinged." + id, "1");
+        fetch(API + "/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: id }) }).catch(function () {});
+      }
       api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified); }).catch(function () {
         shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       });
@@ -727,8 +784,9 @@
       '<div class="field"><label>Context <span style="text-transform:none;color:var(--text-3);font-weight:400">(optional - private to you)</span></label>' +
       '<textarea class="input" id="f-note" placeholder="What are you two talking about?"></textarea></div>' +
       '<div style="height:8px"></div><button class="btn btn-gray" id="f-dictate">' + IC.mic + ' Dictate</button>' +
-      '<label class="row" style="margin-top:12px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:22px;height:22px;accent-color:var(--accent)">' +
-      '<span class="grow"><span class="title" style="display:block">Add where we met</span><span class="detail" style="white-space:normal">Uses your location once, and shares the spot with ' + first + '. Off by default.</span></span></label>';
+      '<label class="row" style="margin-top:12px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:18px;height:18px;accent-color:var(--accent)">' +
+      '<span class="grow"><span class="title" style="display:block">Add where we met</span><span class="detail" style="white-space:normal">Uses your location once, and shares the spot with ' + first + '. Off by default.</span></span></label>' +
+      '<div class="locstatus" id="locstatus" style="display:none"></div>';
     shell(null,
       '<span class="pill">You just met</span>' +
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
@@ -739,19 +797,62 @@
       '<div id="connectzone">' +
       (signedIn
         ? contextHtml + '<div style="height:14px"></div><button class="btn btn-accent" id="connect">Share my card with ' + first + '</button>' +
-          '<p class="hint" style="margin-top:10px;text-align:center">Your Tagg card goes with it automatically.</p>'
+          '<p class="hint" style="margin-top:8px;text-align:center">Your Tagg card goes with it automatically.</p>' +
+          '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
+          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' in your people. Nothing is sent to them.</p>'
         : '<div id="authzone"></div>' +
           '<h2 class="section">Add context <span class="soon">optional</span></h2>' + contextHtml +
-          '<div style="height:10px"></div><button class="btn btn-plain" id="guest">Continue without an account</button>') +
+          '<div style="height:10px"></div><button class="btn btn-plain" id="guest">Continue without an account</button>' +
+          '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
+          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' on this phone. No account, nothing is sent to them.</p>') +
       '</div>' +
       '<p class="footer-note">Nothing is sent until you create your account or tap the button.</p>'
     );
     setupDictate(null, "f-dictate", "f-note");
+    // Location is requested the moment the box is ticked (so the phone's permission prompt is answered
+    // before Share is pressed) and the status stays visible. The result is reused when sending or saving.
+    var locP = null, locBox = document.getElementById("f-loc"), locEl = document.getElementById("locstatus");
+    function startLoc() {
+      locEl.style.display = "block";
+      locP = locate(function (kind, loc) { locEl.innerHTML = locStatusHtml(kind, loc); });
+      return locP;
+    }
+    locBox.addEventListener("change", function () {
+      if (locBox.checked) startLoc(); else { locP = null; locEl.style.display = "none"; }
+    });
+    locEl.addEventListener("click", function (e) {
+      if (e.target && e.target.getAttribute && e.target.getAttribute("data-locretry")) { e.preventDefault(); startLoc(); }
+    });
+    function getLoc() {
+      if (!locBox.checked) return Promise.resolve(null);
+      return (locP || startLoc()).then(function (r) { return r.ok ? r.loc : null; });
+    }
+    // Third option: just save them. No request, no email, no follow-up. Context and location stay private to the saver.
+    document.getElementById("saveonly").addEventListener("click", function () {
+      var btn = this; btn.disabled = true; btn.textContent = "Saving...";
+      var eventName = document.getElementById("f-event").value.trim();
+      var note = document.getElementById("f-note").value.trim();
+      getLoc().then(function (loc) {
+        if (ownerToken()) {
+          return api("/api/people", { method: "POST", body: { slug: slug, event: eventName, note: note, location: loc } }).then(function (d) {
+            return syncPeople().then(function () { return d.person.id; });
+          });
+        }
+        var person = { id: uid(), slug: slug, card: c, metAt: new Date().toISOString(), event: eventName, location: loc, note: note };
+        var people = loadPeople(); people.unshift(person); savePeople(people);
+        return person.id;
+      }).then(function (id) {
+        toast("Saved. Nothing was sent to " + first); location.hash = "#/p/" + id;
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = "Save only";
+        toast((e && e.error) || "Could not save - try again");
+      });
+    });
     // Reads the optional context from the form and sends the connection request.
     function sendConnect(name, contact, btn) {
       var eventName = document.getElementById("f-event").value.trim();
       var note = document.getElementById("f-note").value.trim();
-      var wantLoc = document.getElementById("f-loc").checked;
+      var wantLoc = locBox.checked;
       if (btn) { btn.disabled = true; btn.textContent = "Sharing..."; }
       function go(loc) {
         ensureOwner().then(function () {
@@ -765,7 +866,8 @@
           toast((e && e.error) || "Could not reach the database - try again");
         });
       }
-      if (wantLoc) withLocation(go); else go(null);
+      if (btn) btn.textContent = wantLoc ? "Getting location..." : "Sharing...";
+      getLoc().then(function (loc) { if (wantLoc && !loc) toast("Sent without a location"); go(loc); });
     }
     if (signedIn) {
       document.getElementById("connect").addEventListener("click", function () {
@@ -871,7 +973,7 @@
     if (!p) { location.hash = "#/people"; return; }
     var me = loadCard();
     var loc = p.location || (p.place ? { lat: p.place.lat, lon: p.place.lng, label: "" } : null);
-    var mapLink = loc && loc.lat != null ? "https://www.google.com/maps?q=" + loc.lat + "," + loc.lon : null;
+    var mapLink = loc && loc.lat != null ? mapsUrl(loc) : null;
     shell("people",
       '<div style="display:flex;align-items:center;gap:16px;margin:6px 0 14px">' +
       '<div class="avatar" style="width:60px;height:60px;font-size:24px">' + esc(initial(p.card.name)) + '</div>' +
@@ -951,7 +1053,7 @@
     if (name) parts.push(esc(name));
     if (loc.lat != null && loc.lon != null) {
       var sv = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + loc.lat + "," + loc.lon;
-      parts.push('<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Map</a> · <a href="' + sv + '" target="_blank" rel="noopener">Street View</a></span>');
+      parts.push('<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open in Google Maps</a> · <a href="' + sv + '" target="_blank" rel="noopener">Place image</a></span>');
       parts.push('<span style="color:var(--text-2);font-size:12px">' + loc.lat + ", " + loc.lon + '</span>');
     }
     return meta("Where", parts.join("<br>"));
@@ -1115,9 +1217,9 @@
       g.fillText(nm.length > 10 ? nm.slice(0, 9) + "…" : nm, n.x, n.y + 32);
     });
     var grd = g.createLinearGradient(cx - 24, cy - 24, cx + 24, cy + 24);
-    grd.addColorStop(0, "#ff6b1a"); grd.addColorStop(1, "#ff9500");
+    grd.addColorStop(0, "#d9733d"); grd.addColorStop(1, "#e5954f");
     g.beginPath(); g.arc(cx, cy, 26, 0, 7); g.fillStyle = grd; g.fill();
-    g.fillStyle = "#000"; g.font = "700 15px " + font;
+    g.fillStyle = "#0a0a0b"; g.font = "700 15px " + font;
     var me = loadCard();
     g.fillText(me ? initial(me.name) : "Y", cx, cy);
     g.fillStyle = "#8e8e93"; g.font = "11px " + font;
@@ -1265,6 +1367,7 @@
       !(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
   }
 
+  startLive();
   route();
   if (loadCard() || loadPeople().length || ownerToken()) {
     ensureOwner()
