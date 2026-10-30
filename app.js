@@ -1285,53 +1285,131 @@
     var people = loadPeople();
     shell("map",
       '<h1 class="largetitle">Your map</h1>' +
-      '<p class="lead">Everyone you have met, around you. Tap a node to open their card.</p>' +
+      '<p class="lead">Everyone you have met. Drag a person to move them, drag the background to pan, pinch or scroll to zoom, tap to open a card. Orange lines join people you met at the same event.</p>' +
       (people.length ?
-        '<div class="graphwrap"><canvas id="graph"></canvas></div>' +
+        '<div class="graphwrap" style="position:relative"><canvas id="graph"></canvas>' +
+        '<div class="graphctl"><button id="g-in" aria-label="Zoom in">+</button><button id="g-out" aria-label="Zoom out">\u2212</button><button id="g-reset" aria-label="Reset view">Reset</button></div></div>' +
         '<p class="hint" style="text-align:center;margin-top:10px">' + people.length + ' connection' + (people.length > 1 ? "s" : "") + ' so far</p>'
       : '<div class="empty"><div class="glyph">' + IC.map + '</div><div class="t">Nothing to map yet</div><div class="d">Meet people through Tagg and your constellation appears here.</div></div>')
     );
     if (!people.length) return;
+    // Interactive graph: nodes settle with a small physics model. Drag a node to move it, drag the background to pan,
+    // pinch / scroll / +- to zoom. People who met at the same event are linked. Tap a node (without dragging) to open it.
     var cv = document.getElementById("graph");
-    var W = cv.parentElement.clientWidth - 20, H = Math.min(430, Math.max(300, W));
+    var W = cv.parentElement.clientWidth - 20, H = Math.min(520, Math.max(340, Math.round(W * 1.15)));
     var dpr = window.devicePixelRatio || 1;
     cv.width = W * dpr; cv.height = H * dpr;
-    cv.style.width = W + "px"; cv.style.height = H + "px";
-    var g = cv.getContext("2d"); g.scale(dpr, dpr);
+    cv.style.width = W + "px"; cv.style.height = H + "px"; cv.style.touchAction = "none"; cv.style.cursor = "grab";
+    var g = cv.getContext("2d");
     var font = getComputedStyle(document.body).fontFamily;
-    var cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 48;
-    var nodes = people.map(function (p, i) {
-      var a = -Math.PI / 2 + (2 * Math.PI * i) / people.length;
-      return { p: p, x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) };
-    });
-    var cs = getComputedStyle(document.documentElement); var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim();
-    g.strokeStyle = mapLine; g.lineWidth = 1;
-    nodes.forEach(function (n) { g.beginPath(); g.moveTo(cx, cy); g.lineTo(n.x, n.y); g.stroke(); });
-    nodes.forEach(function (n) {
-      g.beginPath(); g.arc(n.x, n.y, 20, 0, 7); g.fillStyle = mapNode; g.fill();
-      g.strokeStyle = mapLine; g.stroke();
-      g.fillStyle = mapText; g.font = "600 13px " + font; g.textAlign = "center"; g.textBaseline = "middle";
-      g.fillText(initial(n.p.card.name), n.x, n.y);
-      g.fillStyle = mapSub; g.font = "11px " + font;
-      var nm = n.p.card.name.split(" ")[0];
-      g.fillText(nm.length > 10 ? nm.slice(0, 9) + "…" : nm, n.x, n.y + 32);
-    });
-    var grd = g.createLinearGradient(cx - 24, cy - 24, cx + 24, cy + 24);
-    grd.addColorStop(0, "#d9733d"); grd.addColorStop(1, "#e5954f");
-    g.beginPath(); g.arc(cx, cy, 26, 0, 7); g.fillStyle = grd; g.fill();
-    g.fillStyle = "#0a0a0b"; g.font = "700 15px " + font;
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var cs = getComputedStyle(document.documentElement);
+    var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim();
     var me = loadCard();
-    g.fillText(me ? initial(me.name) : "Y", cx, cy);
-    g.fillStyle = mapSub; g.font = "11px " + font;
-    g.fillText("You", cx, cy + 38);
-    cv.addEventListener("click", function (e) {
-      var r = cv.getBoundingClientRect();
-      var x = e.clientX - r.left, y = e.clientY - r.top;
-      for (var i = 0; i < nodes.length; i++) {
-        var n = nodes[i];
-        if ((x - n.x) * (x - n.x) + (y - n.y) * (y - n.y) < 27 * 27) { location.hash = "#/p/" + n.p.id; return; }
-      }
+    var R0 = Math.min(W, H) / 2 - 56;
+    var nodes = [{ you: true, x: 0, y: 0, vx: 0, vy: 0, r: 26, label: "You", init: me ? initial(me.name) : "Y", fixed: false }];
+    people.forEach(function (p, i) {
+      var a = -Math.PI / 2 + (2 * Math.PI * i) / people.length;
+      nodes.push({ p: p, x: R0 * Math.cos(a), y: R0 * Math.sin(a), vx: 0, vy: 0, r: 20, init: initial(p.card.name), label: (function (n) { return n.length > 10 ? n.slice(0, 9) + "\u2026" : n; })(p.card.name.split(" ")[0]) });
     });
+    var links = [];
+    for (var i = 1; i < nodes.length; i++) links.push({ a: 0, b: i, k: 0.02, len: R0 * 0.75, soft: false });
+    for (var i = 1; i < nodes.length; i++) for (var j = i + 1; j < nodes.length; j++) {
+      var ea = (nodes[i].p.event || "").trim().toLowerCase(), eb = (nodes[j].p.event || "").trim().toLowerCase();
+      if (ea && ea === eb) links.push({ a: i, b: j, k: 0.012, len: 70, soft: true });
+    }
+    var view = { x: W / 2, y: H / 2, k: 1 };
+    var energy = 1, raf = 0, drag = null, pan = null, pinch = null, moved = false;
+    function step() {
+      var n = nodes.length, e = 0;
+      for (var i = 0; i < n; i++) for (var j = i + 1; j < n; j++) {
+        var A = nodes[i], B = nodes[j], dx = B.x - A.x, dy = B.y - A.y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2);
+        var f = 2600 / d2, fx = dx / d * f, fy = dy / d * f;
+        A.vx -= fx; A.vy -= fy; B.vx += fx; B.vy += fy;
+      }
+      links.forEach(function (l) {
+        var A = nodes[l.a], B = nodes[l.b], dx = B.x - A.x, dy = B.y - A.y, d = Math.sqrt(dx * dx + dy * dy) || 1, f = (d - l.len) * l.k;
+        A.vx += dx / d * f; A.vy += dy / d * f; B.vx -= dx / d * f; B.vy -= dy / d * f;
+      });
+      nodes.forEach(function (nd) {
+        nd.vx -= nd.x * 0.002; nd.vy -= nd.y * 0.002;
+        if (nd === drag) { nd.vx = 0; nd.vy = 0; return; }
+        nd.vx *= 0.82; nd.vy *= 0.82; nd.x += nd.vx; nd.y += nd.vy; e += nd.vx * nd.vx + nd.vy * nd.vy;
+      });
+      return e;
+    }
+    function toWorld(px, py) { return { x: (px - view.x) / view.k, y: (py - view.y) / view.k }; }
+    function draw() {
+      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+      g.save(); g.translate(view.x, view.y); g.scale(view.k, view.k);
+      links.forEach(function (l) {
+        var A = nodes[l.a], B = nodes[l.b]; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y);
+        g.strokeStyle = l.soft ? "rgba(217,115,61,0.55)" : mapLine; g.lineWidth = (l.soft ? 1.6 : 1) / view.k; g.stroke();
+      });
+      nodes.forEach(function (n) {
+        g.beginPath(); g.arc(n.x, n.y, n.r, 0, 7);
+        if (n.you) { var grd = g.createLinearGradient(n.x - 24, n.y - 24, n.x + 24, n.y + 24); grd.addColorStop(0, "#d9733d"); grd.addColorStop(1, "#e5954f"); g.fillStyle = grd; }
+        else g.fillStyle = mapNode;
+        g.fill(); if (!n.you) { g.strokeStyle = mapLine; g.lineWidth = 1 / view.k; g.stroke(); }
+        g.fillStyle = n.you ? "#fff" : mapText; g.font = (n.you ? "700 15px " : "600 13px ") + font; g.textAlign = "center"; g.textBaseline = "middle";
+        g.fillText(n.init, n.x, n.y);
+        g.fillStyle = mapSub; g.font = "11px " + font; g.fillText(n.label, n.x, n.y + n.r + 12);
+      });
+      g.restore();
+    }
+    function loop() {
+      raf = 0;
+      if (!document.body.contains(cv)) return;           // left the Map screen: stop
+      energy = step(); draw();
+      if (energy > 0.02 || drag) raf = requestAnimationFrame(loop);
+    }
+    function kick() { if (reduce) { for (var i = 0; i < 4; i++) step(); draw(); } else if (!raf) raf = requestAnimationFrame(loop); }
+    if (reduce) { for (var i = 0; i < 300; i++) step(); draw(); }   // reduced motion: settle once, no animation
+    else { for (var i = 0; i < 60; i++) step(); raf = requestAnimationFrame(loop); }
+    function hit(px, py) {
+      var w = toWorld(px, py);
+      for (var i = nodes.length - 1; i >= 0; i--) { var n = nodes[i], r = n.r + 8 / view.k; if ((w.x - n.x) * (w.x - n.x) + (w.y - n.y) * (w.y - n.y) < r * r) return n; }
+      return null;
+    }
+    function pos(e) { var r = cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+    var pts = {};
+    function zoomAt(px, py, f) {
+      var nk = Math.max(0.4, Math.min(3.5, view.k * f)), w = toWorld(px, py);
+      view.k = nk; view.x = px - w.x * nk; view.y = py - w.y * nk; draw();
+    }
+    cv.addEventListener("pointerdown", function (e) {
+      cv.setPointerCapture(e.pointerId); var p = pos(e); pts[e.pointerId] = p; moved = false;
+      var ids = Object.keys(pts);
+      if (ids.length === 2) { var a = pts[ids[0]], b = pts[ids[1]]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), k: view.k }; drag = null; pan = null; return; }
+      var n = hit(p.x, p.y);
+      if (n) { drag = n; cv.style.cursor = "grabbing"; kick(); } else { pan = { x: p.x, y: p.y, vx: view.x, vy: view.y }; cv.style.cursor = "grabbing"; }
+    });
+    cv.addEventListener("pointermove", function (e) {
+      var p = pos(e);
+      if (!pts[e.pointerId]) { cv.style.cursor = hit(p.x, p.y) ? "pointer" : "grab"; return; }
+      pts[e.pointerId] = p;
+      var ids = Object.keys(pts);
+      if (pinch && ids.length === 2) {
+        var a = pts[ids[0]], b = pts[ids[1]], d = Math.hypot(a.x - b.x, a.y - b.y);
+        zoomAt((a.x + b.x) / 2, (a.y + b.y) / 2, (pinch.k * d / pinch.d) / view.k); moved = true; return;
+      }
+      if (drag) { var w = toWorld(p.x, p.y); if (Math.abs(w.x - drag.x) + Math.abs(w.y - drag.y) > 3) moved = true; drag.x = w.x; drag.y = w.y; drag.vx = drag.vy = 0; kick(); if (reduce) draw(); }
+      else if (pan) { if (Math.abs(p.x - pan.x) + Math.abs(p.y - pan.y) > 4) moved = true; view.x = pan.vx + p.x - pan.x; view.y = pan.vy + p.y - pan.y; draw(); }
+    });
+    function up(e) {
+      var wasDrag = drag; delete pts[e.pointerId]; if (Object.keys(pts).length < 2) pinch = null;
+      cv.style.cursor = "grab";
+      if (wasDrag && !moved && wasDrag.p) { drag = null; location.hash = "#/p/" + wasDrag.p.id; return; }
+      drag = null; pan = null; kick();
+    }
+    cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+    cv.addEventListener("wheel", function (e) { e.preventDefault(); var p = pos(e); zoomAt(p.x, p.y, e.deltaY < 0 ? 1.12 : 1 / 1.12); }, { passive: false });
+    function bind(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener("click", fn); }
+    bind("g-in", function () { zoomAt(W / 2, H / 2, 1.25); });
+    bind("g-out", function () { zoomAt(W / 2, H / 2, 1 / 1.25); });
+    bind("g-reset", function () { view = { x: W / 2, y: H / 2, k: 1 }; draw(); });
+    cv.tagg = { screen: function (i) { return { x: nodes[i].x * view.k + view.x, y: nodes[i].y * view.k + view.y }; } };
+    cv.setAttribute("role", "img"); cv.setAttribute("aria-label", "Network of the " + people.length + " people you have met. Drag to move, pinch or scroll to zoom.");
   }
 
   /* ================= shared bits: moment sheet, dictate, photo ================= */
