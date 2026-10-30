@@ -810,14 +810,14 @@
       '<div id="connectzone">' +
       (signedIn
         ? contextHtml + '<div style="height:14px"></div><button class="btn btn-accent" id="connect">Share my card with ' + first + '</button>' +
-          '<p class="hint" style="margin-top:8px;text-align:center">Your Tagg card goes with it automatically.</p>' +
+          '<p class="hint" style="margin:8px 4px 0;text-align:center;color:var(--text-2);font-size:12.5px;line-height:1.45">Your Tagg card goes with it automatically.</p>' +
           '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
-          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' in your people. Shares no name, contact or request. ' + first + ' may see that their card was opened, nothing more.</p>'
+          '<p class="hint" style="margin:8px 4px 0;text-align:center;color:var(--text-2);font-size:12.5px;line-height:1.45">Keeps ' + first + ' in your people. Shares no name, contact or request. ' + first + ' may see that their card was opened, nothing more.</p>'
         : '<div id="authzone"></div>' +
           '<h2 class="section">Add context <span class="soon">optional</span></h2>' + contextHtml +
           '<div style="height:10px"></div><button class="btn btn-plain" id="guest">Continue without an account</button>' +
           '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
-          '<p class="hint" style="margin-top:8px;text-align:center">Keeps ' + first + ' on this phone. No account. Shares no name, contact or request; ' + first + ' may see that their card was opened.</p>') +
+          '<p class="hint" style="margin:8px 4px 0;text-align:center;color:var(--text-2);font-size:12.5px;line-height:1.45">Keeps ' + first + ' on this phone. No account. Shares no name, contact or request; ' + first + ' may see that their card was opened.</p>') +
       '</div>' +
       '<p class="footer-note">Nothing is sent until you create your account or tap the button.</p>'
     );
