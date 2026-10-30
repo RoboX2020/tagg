@@ -5,7 +5,12 @@ import http from "node:http"; import fs from "node:fs"; import path from "node:p
 import assert from "node:assert/strict";
 import { start } from "./serve.mjs";
 const root = path.resolve(import.meta.dirname, "..");
-const api = await start(8787);
+// By default the real worker runs locally with in-memory storage. Set TAGG_API to test a deployed worker instead
+// (it then creates real test accounts using unique @tagg-test.invalid emails).
+const REMOTE = process.env.TAGG_API || "";
+const api = REMOTE ? { srv: { close() {} } } : await start(8787);
+const API_URL = REMOTE || "http://localhost:8787";
+const RUN = Date.now().toString(36);
 const web = http.createServer((q, r) => {
   const f = path.join(root, q.url.split("?")[0] === "/" ? "index.html" : q.url.split("?")[0]);
   if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); }
@@ -20,7 +25,7 @@ async function newUser(name, geo) {
   await ctx.overridePermissions(base, ["geolocation"]);
   const page = await ctx.newPage();
   await page.setViewport({ width: 390, height: 844 });
-  await page.evaluateOnNewDocument(() => { localStorage.setItem("tagg.api", "http://localhost:8787"); });
+  await page.evaluateOnNewDocument((api) => { localStorage.setItem("tagg.api", api); }, API_URL);
   if (geo) await page.setGeolocation(geo);
   page.on("pageerror", e => console.log("PAGEERROR", name, e.message));
   return page;
@@ -34,9 +39,9 @@ try {
   const A = await newUser("alice");
   await A.goto(base, { waitUntil: "networkidle0" });
   await clickText(A, "button", "Create a new account");
-  await A.type("#au-name", "Alice Ng"); await A.type("#au-email", "alice@example.com"); await A.type("#au-pass", "alice-secret-1");
+  await A.type("#au-name", "Alice Ng"); await A.type("#au-email", "alice-" + RUN + "@tagg-test.invalid"); await A.type("#au-pass", "alice-secret-1");
   await clickText(A, "button", "Create account");
-  await waitText(A, "Signed in as alice@example.com");
+  await waitText(A, "Signed in as alice-" + RUN);
   await A.goto(base + "#/edit"); await sleep(500);
   await A.screenshot({ path: "/tmp/work/shot-edit.png" });
   const ids = await A.evaluate(() => [...document.querySelectorAll("input.input")].map(i => i.id));
@@ -53,7 +58,7 @@ try {
   await waitText(B, "Alice Ng");
   await B.screenshot({ path: "/tmp/work/shot-scan.png", fullPage: true });
   ok("scan page shows card and account signup");
-  await B.type("#au-name", "Bob Li"); await B.type("#au-email", "bob@example.com"); await B.type("#au-pass", "bob-secret-12");
+  await B.type("#au-name", "Bob Li"); await B.type("#au-email", "bob-" + RUN + "@tagg-test.invalid"); await B.type("#au-pass", "bob-secret-12");
   await B.type("#f-event", "Cal Hacks"); await B.type("#f-note", "Wants to talk sim2real");
   await B.click("#f-loc");
   await clickText(B, "button", "Create account and share");
