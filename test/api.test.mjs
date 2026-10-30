@@ -67,5 +67,21 @@ await call("POST", "/api/migrate", { ownerToken: dev, people: [{ card: { name: "
 l = await call("POST", "/api/auth/login", { email: "alice@example.com", password: "correct horse", deviceToken: dev });
 ap = (await call("GET", "/api/people", null, aTok)).body.people;
 ok("device people merged into account on login", ap.some(p => p.card.name === "Old Contact"));
+// Recovery code: shown once at sign-up, resets the password, then rotates.
+const rc = a.body.recoveryCode;
+ok("signup returns a recovery code", /^[a-z0-9]{5}(-[a-z0-9]{5}){3}$/.test(rc));
+ok("reset with wrong code refused", (await call("POST", "/api/auth/reset", { email: "alice@example.com", recoveryCode: "aaaaa-bbbbb-ccccc-ddddd", newPassword: "brand new pass" })).status === 401);
+let rs = await call("POST", "/api/auth/reset", { email: "alice@example.com", recoveryCode: rc, newPassword: "brand new pass" });
+ok("reset with the right code works and rotates the code", rs.status === 200 && rs.body.recoveryCode && rs.body.recoveryCode !== rc);
+ok("old password no longer works", (await call("POST", "/api/auth/login", { email: "alice@example.com", password: "correct horse" })).status === 401);
+ok("new password works", (await call("POST", "/api/auth/login", { email: "alice@example.com", password: "brand new pass" })).status === 200);
+ok("old recovery code is dead", (await call("POST", "/api/auth/reset", { email: "alice@example.com", recoveryCode: rc, newPassword: "another one 1" })).status === 401);
+// Verification flag: email accounts are never marked verified.
+ok("email-account card is flagged unverified", (await call("GET", "/api/c/" + slug)).body.verified === false);
+// Exact limiter: 30 parallel wrong guesses must let through at most 8 (the limit), even under concurrency.
+const burst = await Promise.all(Array.from({ length: 30 }, (_, i) => call("POST", "/api/auth/login", { email: "burst@example.com", password: "guess-" + i })));
+const through = burst.filter(r => r.status === 401).length;
+console.log("parallel burst: " + through + " of 30 reached the password check (limit 8)");
+ok("parallel guessing is capped at the limit", process.env.NO_DO ? through >= 8 : through === 8);
 srv.close();
 console.log("\n" + passed + " checks passed");

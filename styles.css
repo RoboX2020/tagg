@@ -258,3 +258,6 @@ textarea.input { resize: vertical; min-height: 90px; line-height:1.45; }
   background: var(--accent);
   box-shadow: 0 0 0 2.5px rgba(28,28,30,0.95);
 }
+
+/* small explanatory text with breathing room (used for verification and post-send notes) */
+.fineprint { color: var(--text-2); font-size: 14px; line-height: 1.45; margin: 0 0 14px; }

@@ -102,6 +102,22 @@
       return afterAuth(d, true).then(function () { return d; });
     });
   }
+  // Shown once after sign-up or a password reset. Tagg cannot email you, so this code is the only
+  // way back in if the password is forgotten. We store only a hash of it.
+  function showRecoveryCode(code, done) {
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Save your recovery code</h3>' +
+      '<p class="hint">Tagg cannot send email yet, so this code is the only way to reset your password. It is shown once. Screenshot it or write it down.</p>' +
+      '<div class="answer" style="font-family:ui-monospace,Menlo,monospace;font-size:20px;letter-spacing:.04em;text-align:center">' + esc(code) + '</div>' +
+      '<div style="height:12px"></div><button class="btn btn-gray" id="rc-copy">Copy code</button>' +
+      '<button class="btn btn-accent" id="rc-ok">I saved it</button></div>';
+    document.body.appendChild(bg);
+    bg.querySelector("#rc-copy").addEventListener("click", function () {
+      if (navigator.clipboard) navigator.clipboard.writeText(code).then(function () { toast("Copied"); }, function () { toast("Copy failed - screenshot it"); });
+    });
+    bg.querySelector("#rc-ok").addEventListener("click", function () { bg.remove(); done(); });
+  }
   // The sign-up / sign-in block used on the home screen and on the scan page.
   // opts.mode = "signup" | "login"; opts.cta = button label; opts.onDone(d) runs after success.
   function mountAuthBlock(el, opts) {
@@ -116,7 +132,10 @@
         '<div class="field"><label>Password' + (su ? ' <span style="text-transform:none;color:var(--text-3);font-weight:400">(8+ characters)</span>' : '') + '</label><input class="input" id="au-pass" type="password" autocomplete="' + (su ? 'new-password' : 'current-password') + '"></div>' +
         '<div style="height:12px"></div>' +
         '<button class="btn btn-accent" id="au-go">' + esc(su ? (opts.cta || "Create account") : "Sign in") + '</button>' +
-        '<button class="btn btn-plain" id="au-switch">' + (su ? 'I already have an account' : 'Create a new account') + '</button>';
+        '<button class="btn btn-plain" id="au-switch">' + (su ? 'I already have an account' : 'Create a new account') + '</button>' +
+        (su ? '' : '<button class="btn btn-plain" id="au-forgot" style="color:var(--text-2)">Forgot password? Use recovery code</button>');
+      var fg = el.querySelector("#au-forgot");
+      if (fg) fg.addEventListener("click", function () { drawReset(); });
       mountGoogleButton(el.querySelector("#gbtn"), 0, function (d) { if (opts.onDone) opts.onDone(d); else route(); });
       el.querySelector("#au-switch").addEventListener("click", function () { mode = su ? "login" : "signup"; draw(); });
       el.querySelector("#au-go").addEventListener("click", function () {
@@ -128,11 +147,28 @@
         if (!email || !pw) { toast("Enter your email and password"); return; }
         var label = btn.textContent; btn.disabled = true; btn.textContent = "One moment...";
         emailAuth(mode, name, email, pw).then(function (d) {
-          if (opts.onDone) opts.onDone(d, name); else { toast("Signed in as " + email); route(); }
+          function finish() { if (opts.onDone) opts.onDone(d, name); else { toast("Signed in as " + email); route(); } }
+          if (d.recoveryCode) showRecoveryCode(d.recoveryCode, finish); else finish();
         }).catch(function (e) {
           btn.disabled = false; btn.textContent = label;
           toast((e && e.error) || "Could not reach the server - try again");
         });
+      });
+    }
+    // Reset the password with the recovery code from sign-up (a new code is issued).
+    function drawReset() {
+      el.innerHTML =
+        '<div class="field"><label>Email</label><input class="input" id="rs-email" type="email" autocomplete="email"></div>' +
+        '<div class="field"><label>Recovery code</label><input class="input" id="rs-code" placeholder="xxxxx-xxxxx-xxxxx-xxxxx" autocapitalize="off"></div>' +
+        '<div class="field"><label>New password</label><input class="input" id="rs-pass" type="password" autocomplete="new-password"></div>' +
+        '<div style="height:12px"></div><button class="btn btn-accent" id="rs-go">Reset password</button>' +
+        '<button class="btn btn-plain" id="rs-back">Back</button>';
+      el.querySelector("#rs-back").addEventListener("click", function () { mode = "login"; draw(); });
+      el.querySelector("#rs-go").addEventListener("click", function () {
+        var btn = this; btn.disabled = true;
+        api("/api/auth/reset", { method: "POST", body: { email: el.querySelector("#rs-email").value.trim(), recoveryCode: el.querySelector("#rs-code").value.trim(), newPassword: el.querySelector("#rs-pass").value } })
+          .then(function (d) { return afterAuth(d, true).then(function () { showRecoveryCode(d.recoveryCode, function () { if (opts.onDone) opts.onDone(d); else { toast("Password reset"); route(); } }); }); })
+          .catch(function (e) { btn.disabled = false; toast((e && e.error) || "Could not reach the server"); });
       });
     }
     draw();
@@ -156,6 +192,19 @@
         INBOX = d.requests || []; INBOX_COUNT = INBOX.length;
       }).catch(function () {});
     }).then(function () { syncing = false; route(); }, function () { syncing = false; });
+  }
+  // One-time disclosure sheet. Remembers the answer per feature, so it asks once, before the first action.
+  function consentThen(key, title, body, label, go) {
+    if (localStorage.getItem("tagg.consent." + key)) return go();
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>' + esc(title) + '</h3>' +
+      '<p class="hint">' + body + '</p>' +
+      '<button class="btn btn-accent" id="c-yes">' + esc(label) + '</button>' +
+      '<button class="btn btn-plain" id="c-no">Not now</button></div>';
+    document.body.appendChild(bg);
+    bg.querySelector("#c-no").addEventListener("click", function () { bg.remove(); });
+    bg.querySelector("#c-yes").addEventListener("click", function () { localStorage.setItem("tagg.consent." + key, "1"); bg.remove(); go(); });
   }
   /* location with a human-readable place label */
   // Ask the browser for the user's location (to record WHERE a meeting
@@ -448,7 +497,13 @@
         .then(function () { toast("Link copied"); }, function () { toast("Copy failed - long-press the QR page URL"); });
     });
     document.getElementById("wallet").addEventListener("click", function () {
-      var btn = this; btn.disabled = true; btn.textContent = "Making your Wallet pass...";
+      var btn = this;
+      consentThen("wallet", "Make a Wallet pass?",
+        "To build the pass, Tagg sends your card to a free third-party Wallet signing service (walletmcppass.com): your name, headline, links, email and your card link. Tagg does not control that service. Your QR in the app does the same job without it.",
+        "Send my card and make the pass", function () { makePass(btn); });
+    });
+    function makePass(btn) {
+      btn.disabled = true; btn.textContent = "Making your Wallet pass...";
       api("/api/pass", { method: "POST", body: {} }).then(function (d) {
         btn.disabled = false; btn.textContent = "Add to Apple Wallet";
         window.location.href = d.download_url;
@@ -456,7 +511,7 @@
         btn.disabled = false; btn.textContent = "Add to Apple Wallet";
         toast((e && e.error) || "Wallet pass unavailable - your QR does the same job");
       });
-    });
+    }
     var inst = document.getElementById("install");
     if (deferredInstall || isIosUninstalled()) inst.style.display = "";
     inst.addEventListener("click", function () {
@@ -574,14 +629,14 @@
   function renderScannedRoute(id) {
     if (/^[a-z0-9]{6,10}$/.test(id)) {
       shell(null, '<div class="empty"><div class="t">Pulling up their card...</div><div class="d">One second.</div></div>');
-      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched); }).catch(function () {
+      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified); }).catch(function () {
         shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       });
       return;
     }
     renderScanned(decodePayload(id), null, null);
   }
-  function renderScanned(c, slug, enriched) {
+  function renderScanned(c, slug, enriched, verified) {
     if (!c) {
       shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       return;
@@ -622,6 +677,7 @@
     shell(null,
       '<span class="pill">You just met</span>' +
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
+      (slug ? '<p class="fineprint" style="margin:-4px 0 12px">' + (verified ? 'Signed in with Google' : 'Identity not verified - the name and email on this card are what they typed.') + '</p>' : '') +
       '<p class="lead">' + (signedIn ? 'Share your card - ' + first + ' gets a request, and once they accept you both save the moment.' : 'Create your Tagg to connect. ' + first + ' gets your card and you both keep each other.') + '</p>' +
       cardHtml(c) +
       '<div style="height:18px"></div>' +
@@ -695,14 +751,15 @@
       document.getElementById("connectzone").innerHTML =
         '<div class="group"><div class="row"><div class="grow">' +
         '<div class="title">Shared with ' + esc(c.name) + '</div>' +
-        '<div class="detail" style="white-space:normal" id="cstatus">They are notified now. When they connect back, you are in each other\'s Tagg.</div>' +
+        '<div class="detail" style="white-space:normal" id="cstatus">Request sent. ' + first + ' needs to accept it. Once they do, you are in each other\'s Tagg.</div>' +
         '</div></div></div>' +
         '<div style="height:18px"></div>' +
-        '<h2 class="section" style="margin-top:0">Want this for yourself?</h2>' +
-        '<p class="hint">Your own QR, your own people memory - free, 30 seconds.</p>' +
-        (mine
-          ? '<a class="btn btn-tinted" href="#/">Open my dashboard</a>'
-          : '<a class="btn btn-tinted" href="#/edit">Make my Tagg</a>');
+        (loadCard()
+          ? '<h2 class="section" style="margin-top:0">Your Tagg</h2><p class="fineprint">Your card is saved. Add your links so people you meet get more than a name.</p>' +
+            '<a class="btn btn-tinted" href="#/edit">Finish my card</a><a class="btn btn-plain" href="#/">Open my dashboard</a>'
+          : '<h2 class="section" style="margin-top:0">Want this for yourself?</h2><p class="fineprint">Your own QR, your own people memory - free, 30 seconds.</p>' +
+            '<a class="btn btn-tinted" href="#/edit">Make my Tagg</a>');
+      var fn = document.querySelector(".footer-note"); if (fn) fn.textContent = "Sent. Nothing else is shared until " + first + " accepts.";
       pollStatus(requestId);
     }
     function pollStatus(requestId) {
@@ -857,7 +914,7 @@
       (INBOX.length ? '<h2 class="section" style="margin-top:6px">Connection requests</h2><div class="group">' + INBOX.map(function (r) {
         return '<div class="row"><div class="avatar">' + esc(initial(r.name || "?")) + '</div>' +
           '<div class="grow"><div class="title">' + esc(r.name || "Someone") + '</div>' +
-          '<div class="detail" style="white-space:normal">' + esc([r.event || (r.location && r.location.label) || "", fmtDate(r.at)].filter(Boolean).join(" · ")) + (r.contact ? " · " + esc(r.contact) : "") + (r.hasCard ? " · has a Tagg card" : "") + '</div></div></div>' +
+          '<div class="detail" style="white-space:normal">' + esc([r.event || (r.location && r.location.label) || "", fmtDate(r.at)].filter(Boolean).join(" · ")) + (r.contact ? " · " + esc(r.contact) : "") + (r.hasCard ? " · has a Tagg card" : "") + (r.verified ? " · Google-verified" : " · unverified identity") + '</div></div></div>' +
           '<div class="row" style="gap:8px;border-bottom:none;padding-top:0"><button class="btn btn-accent small" data-acc="' + r.id + '" style="flex:1">Connect back</button><button class="btn btn-gray small" data-dec="' + r.id + '" style="flex:1">Not now</button></div>';
       }).join("") + '</div>' : "") +
       (people.length ? '<div class="group">' + people.map(function (p) {
@@ -903,9 +960,12 @@
       '<div style="height:12px"></div>' +
       '<button class="btn btn-accent" id="go">Ask</button>' +
       '<div id="ans" style="margin-top:18px"></div>' +
-      '<p class="footer-note">Answers are read from the people saved in your Tagg by an AI model.<br>Nothing is shared with anyone but you.</p>'
+      '<p class="footer-note">To answer, Tagg sends the people you saved (names, headlines, where and when you met, enrichment snippets and your private notes) to Google Gemini. Nobody else sees them.</p>'
     );
-    function go() {
+    function go() { if (!document.getElementById("q").value.trim()) return; consentThen("ask", "Ask with Google Gemini?",
+      "To answer, Tagg sends the people you saved to Google Gemini, including names, headlines, where and when you met, public profile snippets and your private notes. Other Tagg users never see your notes.",
+      "Send and ask", go2); }
+    function go2() {
       var q = document.getElementById("q").value.trim();
       if (!q) return;
       var ans = document.getElementById("ans");

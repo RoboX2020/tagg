@@ -41,6 +41,10 @@ try {
   await clickText(A, "button", "Create a new account");
   await A.type("#au-name", "Alice Ng"); await A.type("#au-email", "alice-" + RUN + "@tagg-test.invalid"); await A.type("#au-pass", "alice-secret-1");
   await clickText(A, "button", "Create account");
+  await waitText(A, "Save your recovery code");
+  const code = await A.$eval(".sheet .answer", e => e.textContent.trim());
+  assert.match(code, /^[a-z0-9]{5}(-[a-z0-9]{5}){3}$/); ok("recovery code shown after signup");
+  await clickText(A, "button", "I saved it");
   await waitText(A, "Signed in as alice-" + RUN);
   await A.goto(base + "#/edit"); await sleep(500);
   await A.screenshot({ path: "/tmp/work/shot-edit.png" });
@@ -62,19 +66,27 @@ try {
   await B.type("#f-event", "Cal Hacks"); await B.type("#f-note", "Wants to talk sim2real");
   await B.click("#f-loc");
   await clickText(B, "button", "Create account and share");
-  await waitText(B, "Shared with Alice Ng", 15000);
-  await B.screenshot({ path: "/tmp/work/shot-sent.png", fullPage: true });
+  await waitText(B, "Save your recovery code"); await clickText(B, "button", "I saved it");
+  await waitText(B, "Shared with Alice Ng", 15000); await sleep(800);
+  await B.screenshot({ path: "/tmp/work/shot-sent.png" });
+  const sent = await text(B); assert.ok(!sent.includes("Make my Tagg") && sent.includes("Finish my card")); ok("post-signup copy is accurate (no Make my Tagg)");
   ok("Bob signed up during scan and the request was sent");
 
   // Alice sees the request (with Bob's shared location) and accepts.
   await A.goto(base + "#/people"); await A.reload({ waitUntil: "networkidle0" }); await A.goto(base + "#/people");
   await waitText(A, "Bob Li", 15000);
-  await A.screenshot({ path: "/tmp/work/shot-inbox.png", fullPage: true });
+  await sleep(800); await A.screenshot({ path: "/tmp/work/shot-inbox.png" });
+  assert.ok((await text(A)).includes("unverified identity")); ok("inbox labels unverified requester");
   await A.evaluate(() => document.querySelector("[data-acc]").click());
   await waitText(A, "Save the moment", 10000);
   await clickText(A, "button", "Skip for now");
   await waitText(A, "Bob Li");
-  await A.screenshot({ path: "/tmp/work/shot-person.png", fullPage: true });
+  await sleep(900);
+  assert.equal(await A.$$eval(".sheet-bg", e => e.length), 0); ok("no overlay left over person page");
+  await A.screenshot({ path: "/tmp/work/shot-person.png" });
+  await A.evaluate(() => window.scrollTo(0, document.body.scrollHeight)); await sleep(300);
+  await A.screenshot({ path: "/tmp/work/shot-person-bottom.png" });
+  await A.evaluate(() => window.scrollTo(0, 0));
   const pt = await text(A);
   assert.ok(pt.includes("Cal Hacks")); assert.ok(pt.includes("33.4242")); ok("Alice's person page shows event, coordinates");
   assert.ok(await A.evaluate(() => !![...document.querySelectorAll("a")].find(a => a.href.includes("map_action=pano")))); ok("Street View link present");
@@ -86,6 +98,7 @@ try {
   await B.evaluate(() => document.querySelector("a[href^='#/p/']").click());
   await waitText(B, "Alice Ng"); await sleep(500);
   assert.ok((await B.$eval("#note", e => e.value)).includes("sim2real"));
+  await B.$eval("#note", e => e.scrollIntoView({ block: "center" })); await sleep(300); await B.screenshot({ path: "/tmp/work/shot-bob-person.png" });
   ok("Bob's saved Alice with his private note");
   console.log("\nUI checks passed:", n);
 } catch (e) { console.log("FAIL", e.message); process.exitCode = 1; }

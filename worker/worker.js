@@ -115,10 +115,23 @@ function safeEqual(a, b) {
   let d = 0; for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return d === 0;
 }
+function newRecoveryCode() { return [rand(5), rand(5), rand(5), rand(5)].join("-"); }
+// An identity counts as verified only when Google vouched for the email. Email/password accounts are unverified.
+async function isVerified(env, owner) {
+  const prof = owner ? await getJSON(env.KV, "prof/" + owner) : null;
+  return !!(prof && prof.sub && !String(prof.sub).startsWith("email:"));
+}
 function normEmail(e) { return typeof e === "string" ? e.trim().toLowerCase().slice(0, 200) : ""; }
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 // Fixed-window attempt counter in KV (free tier). Returns true when the caller is over the limit.
 async function overLimit(env, key, max, windowSec) {
+  // Preferred: a Durable Object per key. It handles one request at a time, so the count is exact
+  // even under parallel guessing. Falls back to the KV counter below if the binding is missing.
+  if (env.RL) {
+    const stub = env.RL.get(env.RL.idFromName(key));
+    const r = await stub.fetch("https://rl/hit", { method: "POST", body: JSON.stringify({ max, windowSec }) });
+    return (await r.json()).over === true;
+  }
   const k = "rl/" + key;
   const n = parseInt((await env.KV.get(k)) || "0", 10);
   if (n >= max) return true;
@@ -161,6 +174,21 @@ async function linkIdentity(env, authKey, deviceTok) {
   return linked;
 }
 
+// Durable Object (SQLite-backed, available on the free plan): an exact fixed-window attempt counter.
+export class RateLimiter {
+  constructor(state) { this.state = state; }
+  async fetch(req) {
+    const { max, windowSec } = await req.json();
+    const now = Date.now();
+    let r = await this.state.storage.get("r");
+    if (!r || r.resetAt < now) r = { n: 0, resetAt: now + windowSec * 1000 };
+    if (r.n >= max) return Response.json({ over: true });
+    r.n++;
+    await this.state.storage.put("r", r);
+    return Response.json({ over: false });
+  }
+}
+
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
@@ -197,7 +225,7 @@ export default {
       const rec = await getJSON(env.KV, "card/" + cm[1]);
       if (!rec) return j({ error: "not found" }, 404);
       const enriched = await getJSON(env.KV, "enrich/" + cm[1]);
-      return j({ slug: rec.slug, card: rec.card, enriched: enriched || null });
+      return j({ slug: rec.slug, card: rec.card, enriched: enriched || null, verified: await isVerified(env, rec.ownerToken) });
     }
 
     // Scanner met a card owner.
@@ -272,11 +300,34 @@ export default {
       const deviceTok = typeof body.deviceToken === "string" && body.deviceToken.length > 10 ? body.deviceToken : null;
       // The credential record points at an owner token, created below.
       const owner = await linkIdentity(env, "auth/e/" + email + "#link", deviceTok);
-      await env.KV.put("auth/e/" + email, JSON.stringify({ owner, salt, hash, iter: PBKDF2_ITER, createdAt: new Date().toISOString() }));
+      // Recovery code: the only way back in if the password is forgotten, since we cannot verify email addresses.
+      const recoveryCode = newRecoveryCode();
+      const rsalt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      const rhash = await hashPassword(recoveryCode, rsalt, PBKDF2_ITER);
+      await env.KV.put("auth/e/" + email, JSON.stringify({ owner, salt, hash, iter: PBKDF2_ITER, rsalt, rhash, createdAt: new Date().toISOString() }));
       await env.KV.delete("auth/e/" + email + "#link");
       const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : "";
       await env.KV.put("prof/" + owner, JSON.stringify({ email, name, picture: "", sub: "email:" + email }));
-      return j({ ownerToken: owner, profile: { email, name, picture: "" } });
+      return j({ ownerToken: owner, profile: { email, name, picture: "" }, recoveryCode });
+    }
+    // Password reset with the recovery code shown at sign-up. Rotates the code on success.
+    if (p === "/api/auth/reset" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      const email = normEmail(body && body.email);
+      const code = body && typeof body.recoveryCode === "string" ? body.recoveryCode.trim().toLowerCase() : "";
+      const pw = body && typeof body.newPassword === "string" ? body.newPassword : "";
+      if (pw.length < 8 || pw.length > 200) return j({ error: "New password must be at least 8 characters" }, 400);
+      if (await overLimit(env, "reset/" + email, 5, 3600)) return j({ error: "Too many attempts - try again in an hour" }, 429);
+      const rec = await getJSON(env.KV, "auth/e/" + email);
+      const h = await hashPassword(code, rec && rec.rsalt ? rec.rsalt : b64(new Uint8Array(16)), PBKDF2_ITER);
+      if (!rec || !rec.rhash || !safeEqual(h, rec.rhash)) return j({ error: "Email or recovery code is wrong" }, 401);
+      const salt = b64(crypto.getRandomValues(new Uint8Array(16)));
+      rec.salt = salt; rec.iter = PBKDF2_ITER; rec.hash = await hashPassword(pw, salt, PBKDF2_ITER);
+      const recoveryCode = newRecoveryCode();
+      rec.rsalt = b64(crypto.getRandomValues(new Uint8Array(16))); rec.rhash = await hashPassword(recoveryCode, rec.rsalt, PBKDF2_ITER);
+      await env.KV.put("auth/e/" + email, JSON.stringify(rec));
+      const prof = await getJSON(env.KV, "prof/" + rec.owner);
+      return j({ ownerToken: rec.owner, profile: { email, name: (prof && prof.name) || "", picture: "" }, recoveryCode });
     }
     if (p === "/api/auth/login" && req.method === "POST") {
       const body = await req.json().catch(() => null);
@@ -408,8 +459,10 @@ export default {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
-      return j({ requests: inbox.filter(x => x.status === "pending").map(x => ({
-        id: x.id, name: x.name, contact: x.contact, event: x.event, location: x.location, at: x.at, hasCard: !!x.requesterSlug })) });
+      const pend = inbox.filter(x => x.status === "pending");
+      const out = [];
+      for (const x of pend) out.push({ id: x.id, name: x.name, contact: x.contact, event: x.event, location: x.location, at: x.at, hasCard: !!x.requesterSlug, verified: await isVerified(env, x.requesterToken) });
+      return j({ requests: out });
     }
 
     // Owner accepts or declines; accept saves the connection both ways.
