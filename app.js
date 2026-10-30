@@ -647,7 +647,8 @@
       function draw(list) {
         if (!document.body.contains(el)) return;
         el.innerHTML = '<div class="fineprint" style="margin:0 0 10px">Let an AI agent you choose search the people you have met. Read-only. Each connection has its own key that you can remove at any time, and it stops working immediately.</div>' +
-          (shown ? '<div class="tokenbox"><b>Copy this key now. It is shown once.</b><code id="tokval">' + esc(shown.token) + '</code><div class="fineprint" style="margin:6px 0">Server address: <code>' + esc(API + "/api/mcp") + '</code><br>Send the key as a Bearer token. Anyone holding it can read what you allowed below.</div><button class="btn btn-tinted" id="tokcopy">Copy key</button> <button class="btn btn-gray" id="tokdone" style="margin-top:8px">I saved it</button></div>' : "") +
+          '<div class="fineprint" style="margin:0 0 10px">Server address (MCP over HTTP, Bearer key): <code>' + esc(API + "/api/mcp") + '</code><br>Works with clients that accept a custom server URL and Authorization header. It does not use sign-in pages, so apps that only offer one-click connectors will not work with it yet.</div>' +
+          (shown ? '<div class="tokenbox"><b>Copy this key now. It is shown once.</b><code id="tokval">' + esc(shown.token) + '</code><div class="fineprint" style="margin:6px 0">Send the key as a Bearer token. Anyone holding it can read what you allowed below.</div><button class="btn btn-tinted" id="tokcopy">Copy key</button> <button class="btn btn-gray" id="tokdone" style="margin-top:8px">I saved it</button></div>' : "") +
           (list.length ? list.map(function (t) {
             return '<div class="row" style="padding:8px 0"><div class="grow"><div class="title">' + esc(t.name) + '</div><div class="detail">' + (t.scope === "people+notes" ? "People and your private notes" : "People only, no notes") + ' - last used ' + fmt(t.lastUsed) + ' - expires ' + fmt(t.expires) + '</div></div><button class="btn btn-gray" data-rev="' + esc(t.id) + '" style="width:auto;padding:0 14px">Remove</button></div>';
           }).join("") : '<div class="fineprint" style="margin:0 0 10px">No agents connected.</div>') +
@@ -1310,11 +1311,12 @@
       var qi = document.getElementById("q"), q = qi.value.trim();
       if (!q) return;
       qi.value = "";
+      var history = CHAT.filter(function (m) { return m.t && m.t !== "Thinking..."; }).slice(-6).map(function (m) { return { r: m.r, t: m.t }; });
       CHAT.push({ r: "me", t: q });
       var pending = { r: "tagg", t: "Thinking..." }; CHAT.push(pending); paint();
       function done(text, links) { pending.t = text; pending.links = links || ""; saveChat(); paint(); speak(text); }
       if (!ownerToken()) { var tmp = document.createElement("div"); tmp.innerHTML = answerHtml(q); return done(tmp.textContent, quickLinks(q)); }
-      api("/api/ask", { method: "POST", body: { q: q } }).then(function (d) { done(d.answer, quickLinks(q)); })
+      api("/api/ask", { method: "POST", body: { q: q, history: history } }).then(function (d) { done(d.answer, quickLinks(q)); })
         .catch(function (e) {
           if (e && e.error === "ask_failed") return done("Ask is unavailable right now. The free AI allowance may be used up for today. Try again later.", quickLinks(q));
           var tmp2 = document.createElement("div"); tmp2.innerHTML = answerHtml(q); done(tmp2.textContent, quickLinks(q));

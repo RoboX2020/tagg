@@ -9,7 +9,9 @@ const api = await start(8791);
 const API_URL = "http://localhost:8791";
 api.env.SIGNUP_PER_HOUR = "200";
 let lastPrompt = "";
-api.env.AI = { run: async (m, o) => { lastPrompt = o.messages[0].content; return { response: "You met Alice Ng at Cal Hacks. She works on robotics." }; } };
+api.env.AI = { run: async (m, o) => { lastPrompt = o.messages[0].content; 
+  if (/who else/.test(o.messages[0].content.split("QUESTION:")[1] || "") ) return { response: /EARLIER IN THIS CONVERSATION[\s\S]*who works on robotics[\s\S]*You met Alice Ng/.test(o.messages[0].content) ? "Follow-up saw the earlier turn." : "NO CONTEXT" };
+  return { response: "You met Alice Ng at Cal Hacks. She works on robotics." }; } };
 const web = http.createServer((q, r) => {
   const f = path.join(root, q.url.split("?")[0] === "/" ? "index.html" : q.url.split("?")[0]);
   if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); }
@@ -49,7 +51,8 @@ try {
   await P.click("#go"); await waitText(P, "You met Alice Ng at Cal Hacks");
   assert.ok(lastPrompt.includes("Alice Ng") && lastPrompt.includes("private note xyz")); ok("Ask retrieves the saved person server-side");
   assert.deepEqual(await P.evaluate(() => window.__spoken), ["You met Alice Ng at Cal Hacks. She works on robotics."]); ok("answer is spoken only when Read aloud is on");
-  await P.type("#q", "and who else?"); await P.click("#go"); await sleep(800);
+  await P.type("#q", "and who else?"); await P.click("#go"); await waitText(P, "Follow-up saw the earlier turn.");
+  ok("a context-dependent follow-up reaches the model with the earlier turns");
   assert.equal(await P.$$eval(".bubble", e => e.length), 4); ok("conversation keeps both turns");
   await P.screenshot({ path: "/tmp/work/shot-chat.png" });
   // Agent panel
