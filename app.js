@@ -798,7 +798,7 @@
       '<textarea class="input" id="f-note" placeholder="What are you two talking about?"></textarea></div>' +
       '<div style="height:8px"></div><button class="btn btn-gray" id="f-dictate">' + IC.mic + ' Dictate</button>' +
       '<label class="row" style="margin-top:12px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:18px;height:18px;accent-color:var(--accent)">' +
-      '<span class="grow"><span class="title" style="display:block">Add where we met</span><span class="detail" style="white-space:normal">Uses your location once, and shares the spot with ' + first + '. Off by default.</span></span></label>' +
+      '<span class="grow"><span class="title" style="display:block">Add where we met</span><span class="detail" style="white-space:normal">Uses your location once and saves the spot in your own record. ' + first + ' gets it only if you share your card; Save only keeps it private. Off by default.</span></span></label>' +
       '<div class="locstatus" id="locstatus" style="display:none"></div>';
     shell(null,
       '<span class="pill">You just met</span>' +
@@ -819,7 +819,7 @@
           '<button class="btn btn-gray" id="saveonly" style="margin-top:6px">Save only</button>' +
           '<p class="hint" style="margin:8px 4px 0;text-align:center;color:var(--text-2);font-size:12.5px;line-height:1.45">Keeps ' + first + ' on this phone. No account. Shares no name, contact or request; ' + first + ' may see that their card was opened.</p>') +
       '</div>' +
-      '<p class="footer-note">Nothing is sent until you create your account or tap the button.</p>'
+      '<p class="footer-note">Your contact details are not shared until you choose to share them.</p>'
     );
     setupDictate(null, "f-dictate", "f-note");
     // Location is requested the moment the box is ticked (so the phone's permission prompt is answered
