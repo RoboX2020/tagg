@@ -283,6 +283,19 @@ if (env) {
   ok("nothing similar means no invented suggestion", !none.body.suggestions);
   ok("another user's records are never suggested", !(await call("POST", "/api/ask", { q: "Who did I meet from HSTB?" }, o2)).body.suggestions);
 }
+// Several plausible interpretations: every qualifying candidate group is returned with all of its people, not only the first.
+{
+  const o1 = (await call("POST", "/api/owner", {})).body.ownerToken;
+  await call("POST", "/api/card", { ownerToken: o1, card: { name: "Me", headline: "x", links: {} } });
+  const mkp = async (n, ev) => { const t = (await call("POST", "/api/owner", {})).body.ownerToken; const c = (await call("POST", "/api/card", { ownerToken: t, card: { name: n, headline: "h", links: {} } })).body; await call("POST", "/api/people", { slug: c.slug, event: ev }, o1); };
+  await mkp("Ana One", "ISTB Mixer"); await mkp("Ben Two", "ISTB Mixer"); await mkp("Cy Three", "ASTB Summit"); await mkp("Di Four", "HSTA Day"); await mkp("Ed Five", "Cal Hacks");
+  const r = await call("POST", "/api/ask", { q: "Who did I meet at HSTB?" }, o1);
+  const m = Object.fromEntries((r.body.suggestions || []).map(s => [s.meant, s.people.map(p => p.name).sort().join()]));
+  ok("ambiguity returns every plausible interpretation as its own group", Object.keys(m).sort().join() === "ASTB,HSTA,ISTB");
+  ok("each group lists all its people", m.ISTB === "Ana One,Ben Two" && m.ASTB === "Cy Three" && m.HSTA === "Di Four");
+  ok("unrelated records are not suggested", !JSON.stringify(r.body.suggestions).includes("Ed Five"));
+  ok("the answer text names each interpretation", /ISTB/.test(r.body.answer) && /ASTB/.test(r.body.answer) && /HSTA/.test(r.body.answer));
+}
 // Migrate must not duplicate people the server already has.
 {
   const before = (await call("GET", "/api/people", null, bTok)).body.people;

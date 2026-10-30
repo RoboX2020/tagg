@@ -170,13 +170,13 @@ function askSuggestions(question, people) {
     const cands = [];
     for (const [tok, hits] of vocab) { if (Math.abs(tok.length - lt.length) > maxD || tok.length < 3) continue; const d = lev(lt, tok); if (d > 0 && d <= maxD) cands.push({ tok, d, hits }); }
     cands.sort((a, b) => a.d - b.d || b.hits.length - a.hits.length);
-    for (const c of cands.slice(0, 3)) {
+    for (const c of cands.slice(0, 6)) {
       const seen = new Set(), ppl = [];
       for (const h of c.hits) if (!seen.has(h.p.id)) { seen.add(h.p.id); ppl.push({ id: h.p.id, name: h.p.card.name, matchedIn: h.field, event: h.p.event || null }); }
-      out.push({ heard: t, meant: c.tok.length <= 6 ? c.tok.toUpperCase() : c.tok, distance: c.d, exactMatch: false, people: ppl.slice(0, 5) });
+      out.push({ heard: t, meant: c.tok.length <= 6 ? c.tok.toUpperCase() : c.tok, distance: c.d, exactMatch: false, people: ppl.slice(0, 10), morePeople: Math.max(0, ppl.length - 10) });
     }
   }
-  return out.slice(0, 4);
+  return out.slice(0, 8);
 }
 async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + owner)) || []; }
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
