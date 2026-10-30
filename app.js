@@ -610,6 +610,8 @@
           (profile().kind === "email" ? (profile().emailVerified ? '<div class="row"><div class="grow"><div class="detail">Email verified</div></div></div>' : '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Email not verified yet. Other people see your card as unverified.</div></div><button class="btn btn-tinted" id="verify-email" style="width:auto;padding:0 14px">Verify email</button></div>') : '') + '</div>'
         : '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>') +
       (INBOX_COUNT ? '<h2 class="section">Requests</h2><a class="group" style="display:block;text-decoration:none;color:inherit" href="#/people"><div class="row"><div class="avatar" style="background:var(--card-2);color:var(--accent-2)">' + IC.people + '</div><div class="grow"><div class="title">' + INBOX_COUNT + ' connection request' + (INBOX_COUNT > 1 ? "s" : "") + '</div><div class="detail">Tap to connect back and save the moment</div></div>' + IC.chev + '</div></a>' : "") +
+      '<h2 class="section">What people see</h2>' +
+      '<div class="panel" id="sharedprofile"><div class="fineprint" style="margin:0">Loading your shared profile...</div></div>' +
       '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
       '<h2 class="section">Recently met</h2>' +
       (people.length ? recentHtml(people) :
@@ -622,6 +624,20 @@
         if (b.getAttribute("data-th") === cur) b.className = "on";
         b.addEventListener("click", function () { setTheme(b.getAttribute("data-th")); route(); });
       });
+    })();
+    (function () {
+      var el = document.getElementById("sharedprofile");
+      function show(en) {
+        if (!el || !document.body.contains(el)) return;
+        var links = Object.keys(card.links || {}).join(", ");
+        el.innerHTML = '<div class="fineprint" style="margin:0 0 8px">This is your card as someone sees it after they scan your code and save you.</div>' +
+          cardHtml(card) + enrichHtml({ enriched: en }) +
+          '<h3 style="font-size:15px;margin:14px 0 4px">Shared</h3><div class="fineprint" style="margin:0">Name, headline' + (links ? ", links (" + esc(links) + ")" : "") + (card.email ? ", email" : "") + (card.phone ? ", phone" : "") + (en && en.linkedin ? ", the LinkedIn details above" : "") + '.</div>' +
+          '<h3 style="font-size:15px;margin:10px 0 4px">Private to you</h3><div class="fineprint" style="margin:0">Your notes, places and photos about people, who you saved, and your Ask questions. Never shown to anyone you meet.</div>' +
+          '<a class="btn btn-gray" href="#/edit" style="margin-top:10px">Edit shared details</a>';
+      }
+      show(null);
+      if (cardSlug()) api("/api/c/" + cardSlug()).then(function (d) { show(d.enriched || null); }).catch(function () {});
     })();
     var da = document.getElementById("delete-account"); if (da) da.addEventListener("click", showDeleteAccount);
     var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
@@ -892,7 +908,7 @@
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
       (slug ? '<p class="fineprint" style="margin:-4px 0 12px">' + (verified ? 'Signed in with Google' : 'Identity not verified - the name and email on this card are what they typed.') + '</p>' : '') +
       '<p class="lead">' + (signedIn ? 'Share your card - ' + first + ' gets a request, and once they accept you both save the moment.' : 'Create your Tagg to connect. ' + first + ' gets your card and you both keep each other.') + '</p>' +
-      cardHtml(c) +
+      cardHtml(c) + enrichHtml({ enriched: enriched }) +
       '<div style="height:18px"></div>' +
       '<div id="connectzone">' +
       (signedIn
@@ -1043,15 +1059,17 @@
   /* ================= person detail ================= */
   function enrichHtml(p) {
     var li = p.enriched && p.enriched.linkedin;
+    function lst(x) { return (x || []).filter(Boolean).map(esc).join(", "); }
     var liHtml = li ?
-      '<h2 class="section">From their public LinkedIn</h2>' +
-      '<div class="taggcard"><div style="display:flex;gap:14px;align-items:center">' +
-      (li.avatar ? '<img src="' + esc(li.avatar) + '" alt="" style="width:52px;height:52px;border-radius:50%">' : "") +
-      '<div>' + (li.headline ? '<div style="font-weight:600">' + esc(li.headline) + '</div>' : "") +
-      '<div style="color:var(--text-2);font-size:13px;margin-top:4px">' +
-      [li.company, li.school, li.location].filter(Boolean).map(esc).join(" · ") + '</div>' +
-      (li.summary ? '<div style="color:var(--text-2);font-size:13px;margin-top:6px">' + esc(li.summary.slice(0, 220)) + (li.summary.length > 220 ? "..." : "") + '</div>' : "") +
-      '</div></div></div>' : "";
+      '<h2 class="section">Added from LinkedIn</h2>' +
+      '<div class="panel" style="margin-top:0">' +
+      (li.headline ? '<div style="font-weight:600">' + esc(li.headline) + '</div>' : "") +
+      '<div style="color:var(--text-2);font-size:13px;margin-top:6px;line-height:1.55">' +
+      (lst(li.titles) || esc(li.title || "") ? '<div>Roles: ' + (lst(li.titles) || esc(li.title)) + '</div>' : "") +
+      (lst(li.companies) || esc(li.company || "") ? '<div>Work: ' + (lst(li.companies) || esc(li.company)) + '</div>' : "") +
+      (lst(li.schools) || esc(li.school || "") ? '<div>School: ' + (lst(li.schools) || esc(li.school)) + '</div>' : "") +
+      (li.location ? '<div>Place: ' + esc(li.location) + '</div>' : "") + '</div>' +
+      '<div class="fineprint" style="margin:8px 0 0">Entered or reviewed by the card owner. Tagg has not verified it.</div></div>' : "";
     var g = p.enriched && p.enriched.github;
     var gHtml = g ?
       '<h2 class="section">From their public GitHub</h2>' +

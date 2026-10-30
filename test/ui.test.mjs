@@ -92,6 +92,10 @@ try {
   assert.equal(li.school, "Arizona State University"); assert.equal(li.source, "linkedin-pasted-text"); ok("confirmed import stored with provenance");
   await A.$eval("#liimport", e => e.scrollIntoView({ block: "center" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-li-done.png" });
   await A.goto(base + "#/"); await sleep(300);
+  await A.goto(base + "#/"); await waitText(A, "WHAT PEOPLE SEE", 8000); await waitText(A, "ADDED FROM LINKEDIN", 8000);
+  assert.ok((await text(A)).includes("Not verified by Tagg") || (await text(A)).includes("has not verified")); ok("owner sees the shared profile preview with imported details and a not-verified label");
+  assert.ok(await A.evaluate(() => !!document.querySelector("#sharedprofile a[href='#/edit']"))); ok("shared profile links to editing the same fields");
+  await A.$eval("#sharedprofile", e => e.scrollIntoView({ block: "start" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-profile-preview.png" });
   // Bob: opens Alice's QR link, signs up as part of the scan, adds context and location.
   const B = await newUser("bob", { latitude: 33.4242, longitude: -111.9281, accuracy: 10 });
   await B.goto(base + "#/c/" + slug, { waitUntil: "networkidle0" });
