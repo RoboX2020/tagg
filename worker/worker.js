@@ -44,7 +44,7 @@ async function enrichGithub(env, slug, card) {
 }
 // LinkedIn import (user-initiated, reviewed). LinkedIn's robots.txt and User Agreement forbid automated reading of profile pages
 // and it answers server requests with HTTP 999, so Tagg never fetches linkedin.com. The owner pastes the text of their OWN profile
-// (or its "Save to PDF" export); Gemini (free tier) pulls out roles, employers, schools and place, and every extracted value must
+// (or its "Save to PDF" export); Cloudflare Workers AI (free tier) pulls out roles, employers, schools and place, and every extracted value must
 // appear in the pasted text or it is dropped. Nothing is stored until the owner reviews it and confirms.
 function parseLinkedinUrl(raw) {
   if (typeof raw !== "string") return null;
@@ -68,20 +68,18 @@ function asNames(x, max) {
 const norm = (x) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 async function extractProfile(env, text) {
   const prompt = "Extract facts from this pasted LinkedIn profile text. Copy values EXACTLY as written in the text. Never guess, infer or add anything that is not in the text. Leave a list empty if the text does not say. headline = the profile headline if present. titles = job titles held (current first). companies = employers (current first). schools = schools or universities attended. location = the place shown on the profile.\n\nTEXT:\n" + text;
-  const schema = { type: "OBJECT", properties: { headline: { type: "STRING" }, titles: { type: "ARRAY", items: { type: "STRING" } }, companies: { type: "ARRAY", items: { type: "STRING" } }, schools: { type: "ARRAY", items: { type: "STRING" } }, location: { type: "STRING" } }, required: ["headline", "titles", "companies", "schools", "location"] };
-  let raw = null;
-  for (const m of ["gemini-2.5-flash", "gemini-2.0-flash"]) {
+  const schema = { type: "object", properties: { headline: { type: "string" }, titles: { type: "array", items: { type: "string" } }, companies: { type: "array", items: { type: "string" } }, schools: { type: "array", items: { type: "string" } }, location: { type: "string" } }, required: ["headline", "titles", "companies", "schools", "location"] };
+  let raw = null, why = "";
+  const models = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct-fast", "@cf/meta/llama-3.2-3b-instruct", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/google/gemma-3-12b-it", "@cf/qwen/qwen3-30b-a3b-fp8"];
+  for (const m of models) {
     try {
-      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent", {
-        method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0, maxOutputTokens: 1024, responseMimeType: "application/json", responseSchema: schema, thinkingConfig: { thinkingBudget: 0 } } }),
-        signal: AbortSignal.timeout(15000) });
-      if (!r.ok) continue;
-      const d = await r.json();
-      raw = JSON.parse(d.candidates[0].content.parts[0].text); break;
-    } catch (e) { /* try next model */ }
+      const r = await env.AI.run(m, { messages: [{ role: "system", content: "You extract facts from text and answer only with JSON." }, { role: "user", content: prompt }],
+        response_format: { type: "json_schema", json_schema: schema }, max_tokens: 700, temperature: 0 });
+      raw = typeof r.response === "string" ? JSON.parse(r.response) : r.response;
+      if (raw && typeof raw === "object") break;
+    } catch (e) { why += m.split("/").pop() + ": " + String(e && e.message || e).slice(0, 70) + " | "; }
   }
-  if (!raw) return null;
+  if (!raw || typeof raw !== "object") return { unavailable: why || "no result" };
   const nt = norm(text);
   const keep = (arr, n) => asNames(Array.isArray(arr) ? arr : [], 12).filter(v => nt.includes(norm(v))).slice(0, n);
   const one = (v, n) => { const c = clip(v, n); return c && nt.includes(norm(c)) ? c : ""; };
@@ -676,9 +674,10 @@ export default {
       if (urlIn && !url) return j({ error: "Paste a link like linkedin.com/in/yourname" }, 400);
       const text = body && typeof body.text === "string" ? body.text.trim().slice(0, 12000) : "";
       if (text.length < 40) return j({ error: "Paste the text of your LinkedIn profile first" }, 400);
-      if (!env.GEMINI_API_KEY) return j({ error: "Import is unavailable right now" }, 503);
+      if (!env.AI) return j({ error: "Import is unavailable right now" }, 503);
       if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
       const data = await extractProfile(env, text);
+      if (data && data.unavailable !== undefined) return j({ error: "Import is busy right now - try again in a minute", reason: data.unavailable }, 503);
       if (!data) return j({ error: "Could not find a role, employer or school in that text. Paste the Experience and Education sections, or type them on your card." }, 422);
       const res = { data };
       const previewId = rand(16);

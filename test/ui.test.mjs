@@ -13,11 +13,7 @@ const API_URL = REMOTE || "http://localhost:8787";
 const RUN = Date.now().toString(36);
 // Gemini is mocked for the import test (no API spend). It also returns values that are NOT in the pasted text, which must be dropped.
 if (api.env) {
-  api.env.GEMINI_API_KEY = "mock";
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async (u, init) => String(u).includes("generativelanguage.googleapis.com")
-    ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify({ headline: "Robotics Engineering Student", titles: ["Software Engineering Intern"], companies: ["Acme Robotics", "Google"], schools: ["Arizona State University", "Stanford University"], location: "Tempe, Arizona, United States" }) }] } }] }), { status: 200 })
-    : realFetch(u, init);
+  api.env.AI = { run: async () => ({ response: { headline: "Robotics Engineering Student", titles: ["Software Engineering Intern"], companies: ["Acme Robotics", "Google"], schools: ["Arizona State University", "Stanford University"], location: "Tempe, Arizona, United States" } }) };
 }
 const web = http.createServer((q, r) => {
   const f = path.join(root, q.url.split("?")[0] === "/" ? "index.html" : q.url.split("?")[0]);

@@ -733,8 +733,8 @@
         var text = document.getElementById("li-text").value, err = document.getElementById("li-err"), btn = this;
         if (text.trim().length < 40) { err.textContent = "Paste the text of your profile first."; return; }
         var c = collect(); if (!c.name) { err.textContent = "Add your name above first."; return; }
-        consentThen("liimport", "Read your profile text with Google Gemini?",
-          "Tagg sends the text you paste to Google Gemini to pick out your job, employer and school. Tagg never contacts LinkedIn. Nothing is saved until you review it.",
+        consentThen("liimport", "Read your profile text with Cloudflare AI?",
+          "Tagg sends the text you paste to Cloudflare Workers AI, which also hosts Tagg, to pick out your job, employer and school. Tagg never contacts LinkedIn. Nothing is saved until you review it.",
           "Continue", function () {
             btn.disabled = true; btn.textContent = "Reading..."; err.textContent = "";
             Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });

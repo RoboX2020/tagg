@@ -210,14 +210,13 @@ if (env) {
   globalThis.fetch = async (u, init) => {
     const us = String(u);
     if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
-    if (us.includes("generativelanguage.googleapis.com")) {
-      geminiCalls++;
-      const out = { headline: "Robotics Engineering Student | Intern", titles: ["Software Engineering Intern", "CEO"], companies: ["Acme Robotics", "Google"], schools: ["Arizona State University", "Stanford University"], location: "Tempe, Arizona, United States" };
-      return new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(out) }] } }] }), { status: 200 });
-    }
     return realFetch2(u, init);
   };
-  env.GEMINI_API_KEY = "mock";
+  env.AI = { run: async () => {
+      geminiCalls++;
+      const out = { headline: "Robotics Engineering Student | Intern", titles: ["Software Engineering Intern", "CEO"], companies: ["Acme Robotics", "Google"], schools: ["Arizona State University", "Stanford University"], location: "Tempe, Arizona, United States" };
+      return { response: out };
+  } };
   const text = "Test Person\nRobotics Engineering Student | Intern\nTempe, Arizona, United States\nExperience\nSoftware Engineering Intern\nAcme Robotics - Internship\nEducation\nArizona State University\nBachelor of Science, Robotics Engineering";
   ok("import needs a signed-in owner", (await call("POST", "/api/import/linkedin", { text })).status === 401);
   ok("import rejects a non-LinkedIn link", (await call("POST", "/api/import/linkedin", { url: "https://evil.example/in/x", text }, aTok)).status === 400);
