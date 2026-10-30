@@ -128,6 +128,30 @@
       }).catch(function (e) { go.disabled = false; msg.textContent = (e && e.error) || "Something went wrong"; });
     });
   }
+
+  // Delete account: confirm with the word DELETE (and the password for email accounts). Clears this device too.
+  function showDeleteAccount() {
+    var isEmail = (profile() || {}).kind === "email";
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Delete your account</h3>' +
+      '<p class="hint" id="da-msg">This permanently deletes your card, your saved people, your notes, photos and locations, and your sign-in. It does not remove the copy of your card that other people already saved, and it cannot be undone.</p>' +
+      (isEmail ? '<input class="field" id="da-pass" type="password" placeholder="Password" autocomplete="current-password">' : '') +
+      '<input class="field" id="da-word" placeholder="Type DELETE to confirm" autocapitalize="characters">' +
+      '<div style="height:12px"></div><button class="btn btn-accent" id="da-go">Delete everything</button>' +
+      '<button class="btn btn-gray" id="da-close">Cancel</button></div>';
+    document.body.appendChild(bg);
+    var msg = bg.querySelector("#da-msg");
+    bg.querySelector("#da-close").addEventListener("click", function () { bg.remove(); });
+    bg.querySelector("#da-go").addEventListener("click", function () {
+      var pw = bg.querySelector("#da-pass");
+      api("/api/account", { method: "DELETE", body: { confirm: bg.querySelector("#da-word").value.trim(), password: pw ? pw.value : undefined } })
+        .then(function () {
+          Object.keys(localStorage).filter(function (k) { return k.indexOf("tagg.") === 0 && k !== "tagg.api"; }).forEach(function (k) { localStorage.removeItem(k); });
+          bg.remove(); toast("Account deleted"); location.hash = "#/"; route();
+        }).catch(function (e) { msg.textContent = (e && e.error) || "Something went wrong"; });
+    });
+  }
   function showRecoveryCode(code, done) {
     var bg = document.createElement("div");
     bg.className = "sheet-bg";
@@ -509,6 +533,7 @@
       '<div style="height:16px"></div>' +
       (profile()
         ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Signed in as <b>' + esc(profile().email) + '</b> - your card and people are backed up to your Tagg account.</div></div></div>' +
+          '<div class="row"><div class="grow"><div class="detail">Delete your account and the data stored for it.</div></div><button class="btn btn-gray" id="delete-account" style="width:auto;padding:0 14px">Delete account</button></div>' +
           (profile().kind === "email" ? (profile().emailVerified ? '<div class="row"><div class="grow"><div class="detail">Email verified</div></div></div>' : '<div class="row"><div class="grow"><div class="detail" style="white-space:normal">Email not verified yet. Other people see your card as unverified.</div></div><button class="btn btn-tinted" id="verify-email" style="width:auto;padding:0 14px">Verify email</button></div>') : '') + '</div>'
         : '<h2 class="section">Back up and sync</h2><div id="gsign"></div><p class="hint" style="margin-top:8px">Sign in so your card and the people you meet survive a new phone or a cleared browser.</p>') +
       (INBOX_COUNT ? '<h2 class="section">Requests</h2><a class="group" style="display:block;text-decoration:none;color:inherit" href="#/people"><div class="row"><div class="avatar" style="background:var(--card-2);color:var(--accent-2)">' + IC.people + '</div><div class="grow"><div class="title">' + INBOX_COUNT + ' connection request' + (INBOX_COUNT > 1 ? "s" : "") + '</div><div class="detail">Tap to connect back and save the moment</div></div>' + IC.chev + '</div></a>' : "") +
@@ -517,6 +542,7 @@
         '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">No one saved yet. When someone scans your code and saves you - or you scan theirs - they show up here.</div></div></div></div>') +
       '<p class="footer-note">Your card and the people you meet live in your own Tagg database - synced, backed up, and always recallable.<br>Tagg is live at ' + esc(location.host) + '.</p>'
     );
+    var da = document.getElementById("delete-account"); if (da) da.addEventListener("click", showDeleteAccount);
     var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
     document.getElementById("copylink").addEventListener("click", function () {
       (navigator.clipboard ? navigator.clipboard.writeText(url) : Promise.reject())

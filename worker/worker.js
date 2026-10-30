@@ -395,6 +395,32 @@ export default {
       if (ev && (ev.type === "email.bounced" || ev.type === "email.complained")) for (const a of to) await env.KV.put("suppress/" + normEmail(a), ev.type);
       return j({ ok: true });
     }
+    // Delete account: removes this person's own data. Needs the owner token, the word DELETE, and for email accounts the password.
+    // Does NOT touch cards other people saved of you (their own records), or Cloudflare's short-lived backups/caches.
+    if (p === "/api/account" && req.method === "DELETE") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      if (!body || body.confirm !== "DELETE") return j({ error: "Type DELETE to confirm" }, 400);
+      const prof = await getJSON(env.KV, "prof/" + owner);
+      const keys = [];
+      if (prof && String(prof.sub || "").startsWith("email:")) {
+        if (await overLimit(env, "login/" + prof.email, 8, 900)) return j({ error: "Too many attempts - wait 15 minutes and try again" }, 429);
+        const rec = await getJSON(env.KV, "auth/e/" + prof.email);
+        const pw = typeof body.password === "string" ? body.password : "";
+        const h = await hashPassword(pw, rec ? rec.salt : b64(new Uint8Array(16)), rec ? rec.iter : PBKDF2_ITER);
+        if (!rec || rec.owner !== owner || !safeEqual(h, rec.hash)) return j({ error: "Password is wrong" }, 401);
+        keys.push("auth/e/" + prof.email);
+      } else if (prof && prof.sub) keys.push("auth/g/" + prof.sub);
+      const slug = await env.KV.get("own/" + owner);
+      const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
+      for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
+      if (slug) keys.push("card/" + slug, "enrich/" + slug);
+      keys.push("ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "own/" + owner);
+      for (const k of keys) await env.KV.delete(k);
+      return j({ deleted: true });
+    }
+
     // Email verification: request a 6-digit code (valid 15 min), then confirm it. Only for email/password accounts.
     if (p === "/api/auth/email/request" && req.method === "POST") {
       const owner = authOwner(req);

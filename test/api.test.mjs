@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { start } from "./serve.mjs";
 // Set TAGG_API to run the same checks against a deployed worker (use a staging worker: it creates accounts).
 const { srv, url, env } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
+if (env) env.SIGNUP_PER_HOUR = "200"; // this test signs up many accounts from one address
 let passed = 0;
 async function call(method, path, body, tok) {
   const r = await fetch(url + path, { method, headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -124,5 +125,24 @@ if (env) {
   const before = sent.length;
   ok("bounced address is suppressed and nothing is sent", (await call("POST", "/api/auth/email/request", {}, bt)).status === 400 && sent.length === before);
 }
+
+// Account deletion.
+const dTok = (await call("POST", "/api/auth/signup", { email: "del@example.com", password: "delete me 123" })).body.ownerToken;
+const dCard = await call("POST", "/api/card", { ownerToken: dTok, card: { name: "Dee", headline: "Gone soon", links: {} } });
+const keepTok = (await call("POST", "/api/auth/signup", { email: "keep@example.com", password: "keep me 1234" })).body.ownerToken;
+const keepCard = await call("POST", "/api/card", { ownerToken: keepTok, card: { name: "Kay", headline: "Stays", links: {} } });
+const save = await call("POST", "/api/connect", { slug: dCard.body.slug, requesterToken: keepTok, event: "test" });
+const del = (b, t = dTok) => call("DELETE", "/api/account", b, t);
+ok("delete needs the confirm word", (await del({ password: "delete me 123" })).status === 400);
+ok("delete needs a signed-in owner", (await del({ confirm: "DELETE", password: "delete me 123" }, "nope-token-nope")).status === 401);
+ok("delete rejects a wrong password", (await del({ confirm: "DELETE", password: "wrong wrong 1" })).status === 401);
+ok("someone else cannot delete your account", (await del({ confirm: "DELETE", password: "delete me 123" }, keepTok)).status === 401);
+ok("card still exists after failed attempts", (await call("GET", "/api/c/" + dCard.body.slug)).status === 200);
+ok("delete with the password works", (await del({ confirm: "DELETE", password: "delete me 123" })).body.deleted === true);
+ok("deleted card is gone", (await call("GET", "/api/c/" + dCard.body.slug)).status === 404);
+ok("deleted owner token no longer works", (await call("GET", "/api/me", null, dTok)).status === 401);
+ok("deleted login no longer works", (await call("POST", "/api/auth/login", { email: "del@example.com", password: "delete me 123" })).status === 401);
+ok("email can sign up again fresh", (await call("POST", "/api/auth/signup", { email: "del@example.com", password: "delete me 123" })).status === 200);
+ok("another account and its card are untouched", (await call("GET", "/api/c/" + keepCard.body.slug)).status === 200 && (await call("GET", "/api/me", null, keepTok)).status === 200);
 srv.close();
 console.log("\n" + passed + " checks passed");
