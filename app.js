@@ -1245,7 +1245,7 @@
       '<div style="height:12px"></div>' +
       '<button class="btn btn-accent" id="go">Ask</button>' +
       '<div id="ans" style="margin-top:18px"></div>' +
-      '<p class="footer-note">To answer, Tagg sends the people you saved (names, headlines, where and when you met, enrichment snippets and your private notes) to Google Gemini. Nobody else sees them.</p>'
+      '<p class="footer-note">To answer, Tagg sends the people you saved (names, headlines, where and when you met, enrichment snippets and your private notes) to Cloudflare Workers AI, which also hosts Tagg. Nobody else sees them.</p>'
     );
     function go() { if (!document.getElementById("q").value.trim()) return; consentThen("ask", "Ask with Cloudflare AI?",
       "To answer, Tagg sends the people you saved to Cloudflare Workers AI (which also hosts Tagg), including names, headlines, where and when you met, public profile snippets and your private notes. Other Tagg users never see your notes.",

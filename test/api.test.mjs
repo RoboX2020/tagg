@@ -235,6 +235,8 @@ if (env) {
   ok("scanners see the confirmed import", (await call("GET", "/api/c/" + slug)).body.enriched.linkedin.companies[0] === "Acme Robotics");
   ok("import can be removed", (await call("DELETE", "/api/import/linkedin", null, aTok)).body.ok === true && ((await call("GET", "/api/c/" + slug)).body.enriched || {}).linkedin === undefined);
   env.APIFY_TOKEN = "mock";
+  ok("link import is off unless explicitly enabled", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok)).status === 503 && apifyCalls === 0);
+  env.APIFY_ENABLED = "1";
   ok("link import needs the own-profile confirmation", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person" }, aTok)).status === 400 && apifyCalls === 0);
   const lk = await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
   ok("link import returns a preview from the provider", lk.status === 200 && lk.body.fields.schools[0] === "Arizona State University" && lk.body.fields.titles[0] === "Lab Assistant" && apifyCalls === 1);

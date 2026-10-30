@@ -695,7 +695,7 @@ export default {
       let data = null, source = "linkedin-pasted-text";
       if (!text && url) {
         if (body.ownProfile !== true) return j({ error: "Confirm that this is your own profile" }, 400);
-        if (!env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead." }, 503);
+        if (env.APIFY_ENABLED !== "1" || !env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead." }, 503);
         if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
         if (await overLimit(env, "liapify/owner/" + owner, 3, 86400)) return j({ error: "You have used today's link imports. Paste your profile text instead." }, 429);
         if (await overLimit(env, "liapify/day/" + new Date().toISOString().slice(0, 10), Number(env.APIFY_DAILY_CAP) || 40, 86400)) return j({ error: "Link import is busy today. Paste your profile text instead." }, 429);
@@ -744,11 +744,11 @@ export default {
       return j({ ok: true });
     }
 
-    // Ask Tagg: answer questions from your saved people via Gemini.
+    // Ask Tagg: answer questions from your saved people via Cloudflare Workers AI (free plan; no paid fallback).
     if (p === "/api/ask" && req.method === "POST") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      if (!env.AI && !env.GEMINI_API_KEY) return j({ error: "ask unavailable" }, 503);
+      if (!env.AI) return j({ error: "ask unavailable" }, 503);
       const body = await req.json().catch(() => null);
       const q = ((body && body.q) || "").slice(0, 500).trim();
       if (!q) return j({ error: "question required" }, 400);
@@ -770,22 +770,6 @@ export default {
             if (txt.trim()) { answer = txt.trim(); break; }
           } catch (e) { lastStatus = 1; }
         }
-      }
-      const models = answer || !env.GEMINI_API_KEY ? [] : ["gemini-2.5-flash", "gemini-2.0-flash"];
-      for (const m of models) {
-        try {
-          const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + m + ":generateContent", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-            body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, maxOutputTokens: 1024, thinkingConfig: { thinkingBudget: 0 } } })
-          });
-          lastStatus = r.status;
-          if (!r.ok) { if (r.status === 400 || r.status === 404) continue; break; }
-          const d = await r.json();
-          const parts = d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts;
-          const txt = parts && parts.map(pp => pp.text || "").join("");
-          if (txt && txt.trim()) { answer = txt.trim(); break; }
-        } catch (e) { /* try the next model */ }
       }
       if (!answer) return j({ error: "ask_failed", upstream: lastStatus }, 502);
       return j({ answer });
