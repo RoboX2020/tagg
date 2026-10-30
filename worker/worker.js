@@ -135,6 +135,25 @@ async function sendMail(env, to, subject, text) {
     body: JSON.stringify({ from: env.MAIL_FROM, to: [to], subject, text }) });
   if (!r.ok) throw new Error("mail provider " + r.status);
 }
+// Hard app-side send caps, counted BEFORE each send (so failed attempts and retries count too). Defaults sit under Resend's free limits
+// (100/day, 3,000/month). A send that would pass a cap is refused, so the app can never ask the provider for more than this.
+async function mailBudgetOk(env, to) {
+  const d = new Date().toISOString();
+  const day = Number(env.MAIL_DAILY_CAP) || 60, month = Number(env.MAIL_MONTHLY_CAP) || 1500;
+  if (await overLimit(env, "mail/day/" + d.slice(0, 10), day, 86400)) return false;
+  if (await overLimit(env, "mail/month/" + d.slice(0, 7), month, 2678400)) return false;
+  if (await overLimit(env, "mail/to/" + to, 5, 86400)) return false;
+  return true;
+}
+// Resend webhook (Svix-signed). Bounces and spam complaints put the address on a suppression list so we never mail it again.
+async function verifyWebhook(env, req, raw) {
+  const sec = env.RESEND_WEBHOOK_SECRET; if (!sec) return false;
+  const id = req.headers.get("svix-id"), ts = req.headers.get("svix-timestamp"), sig = req.headers.get("svix-signature");
+  if (!id || !ts || !sig || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
+  const key = await crypto.subtle.importKey("raw", unb64(sec.replace(/^whsec_/, "")), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const want = b64(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(id + "." + ts + "." + raw)));
+  return sig.split(" ").some(x => safeEqual(x.replace(/^v1,/, ""), want));
+}
 async function codeHash(owner, code) {
   return b64(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(owner + ":" + code)));
 }
@@ -368,6 +387,14 @@ export default {
       return j({ ownerToken: owner, profile: { email, name: (prof && prof.name) || "", picture: "", kind: "email", emailVerified: !!(prof && prof.emailVerified) } });
     }
 
+    if (p === "/api/mail/webhook" && req.method === "POST") {
+      const raw = await req.text();
+      if (!(await verifyWebhook(env, req, raw))) return j({ error: "bad signature" }, 401);
+      let ev = null; try { ev = JSON.parse(raw); } catch (e) {}
+      const to = ev && ev.data && Array.isArray(ev.data.to) ? ev.data.to : [];
+      if (ev && (ev.type === "email.bounced" || ev.type === "email.complained")) for (const a of to) await env.KV.put("suppress/" + normEmail(a), ev.type);
+      return j({ ok: true });
+    }
     // Email verification: request a 6-digit code (valid 15 min), then confirm it. Only for email/password accounts.
     if (p === "/api/auth/email/request" && req.method === "POST") {
       const owner = authOwner(req);
@@ -376,7 +403,9 @@ export default {
       if (!String(prof.sub || "").startsWith("email:")) return j({ error: "This account is already verified by Google" }, 400);
       if (prof.emailVerified === true) return j({ verified: true });
       if (!mailEnabled(env)) return j({ error: "Email verification is not switched on yet" }, 503);
+      if ((await env.KV.get("suppress/" + prof.email)) !== null) return j({ error: "That address cannot receive our email" }, 400);
       if (await overLimit(env, "vreq/" + owner, 3, 3600)) return j({ error: "Too many codes requested - try again in an hour" }, 429);
+      if (!(await mailBudgetOk(env, prof.email))) return j({ error: "Email is busy right now - try again tomorrow" }, 429);
       const code = String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0");
       await env.KV.put("vcode/" + owner, JSON.stringify({ h: await codeHash(owner, code), email: prof.email }), { expirationTtl: 900 });
       try { await sendMail(env, prof.email, "Confirm your Tagg email", "Your Tagg code is " + code + ". It expires in 15 minutes.\nIf you did not create a Tagg account, ignore this email."); }
