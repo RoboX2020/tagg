@@ -571,7 +571,7 @@
   function shell(active, inner) {
     var card = loadCard();
     app.innerHTML =
-      '<div class="topbar"><div class="wordmark"><span class="mark">T</span>Tagg</div>' +
+      '<div class="topbar"><div class="wordmark"><img class="mark" src="icon.svg" alt="" width="30" height="30">Tagg</div>' +
       '<div class="sub">Meet once. Tagg remembers.</div></div>' +
       '<div class="content">' + inner + '</div>' +
       (card ? tabbarHtml(active) : "");
