@@ -471,11 +471,13 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   const gr = async (w) => (await call("GET", "/api/graph", null, w.t)).body;
   const hasC = (g) => g.nodes.some(n => n.name === "Gf Cara");
   const st0 = await call("GET", "/api/graph/sharing", null, A.t);
-  ok("a new owner has sharing on by default, with the notice still pending", st0.body.choice === "preselected-on" && st0.body.needsChoice === true && st0.body.isNew === true && st0.body.effective === true);
+  ok("a new owner is preselected default-on but shares nothing before seeing the disclosure", st0.body.choice === "preselected-on" && st0.body.needsChoice === true && st0.body.isNew === true && st0.body.effective === false);
   ok("sharing endpoints need sign-in and a boolean", (await call("GET", "/api/graph/sharing")).status === 401 && (await call("PUT", "/api/graph/sharing", { on: "yes" }, A.t)).status === 400);
-  // A, B and C are all new accounts: default-on sharing makes the friend-of-friend visible without anyone confirming.
-  const g0 = await gr(A);
-  ok("friend of friend appears for new accounts by default (all-share rule still applies)", hasC(g0));
+  ok("no friend of friend is exposed before the viewer has seen the disclosure", !hasC(await gr(A)));
+  // The disclosure sheet being shown to A, B and C (seen flag) activates the default.
+  const seen = (w) => call("POST", "/api/graph/sharing/seen", {}, w.t);
+  await seen(A); await seen(B); await seen(C);
+  ok("once everyone has seen the disclosure, default-on sharing takes effect", (await call("GET", "/api/graph/sharing", null, A.t)).body.effective === true && hasC(await gr(A)));
   const g1 = await gr(A); const cn = g1.nodes.find(n => n.name === "Gf Cara");
   ok("friend of friend appears when viewer, middle and third person all share", !!cn && cn.type === "friend-of-friend" && !cn.slug && /^f_[0-9a-f]{16}$/.test(cn.id));
   const raw1 = JSON.stringify(g1);

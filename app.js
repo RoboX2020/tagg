@@ -727,6 +727,7 @@
       '<p class="hint">' + (st && st.cohort ? "Your network is already shared with people you are connected with, because this account is part of the test group. Tap Share to confirm, or keep it private." : fresh ? "Sharing is on by default for new accounts - only what is described above, nothing else. Tap Keep it private to turn it off, now or any time in Settings." : "You have not chosen yet, so nothing of yours is shared.") + '</p>' +
       '<button class="btn btn-accent" id="gs-yes">Share my network</button><button class="btn ' + (fresh ? "btn-gray" : "btn-accent") + '" id="gs-no" style="margin-top:8px">Keep it private</button><button class="btn btn-plain" id="gs-later">Decide later</button></div>';
     document.body.appendChild(bg);
+    api("/api/graph/sharing/seen", { method: "POST" }).catch(function () {});
     function set(on) { api("/api/graph/sharing", { method: "PUT", body: { on: on } }).then(function () { bg.remove(); toast(on ? "Network sharing is on" : "Network sharing is off"); if (done) done(); }).catch(function () { toast("Could not save - try again"); }); }
     document.getElementById("gs-yes").addEventListener("click", function () { set(true); });
     document.getElementById("gs-no").addEventListener("click", function () { set(false); });

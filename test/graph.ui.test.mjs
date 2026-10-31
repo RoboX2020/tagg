@@ -21,7 +21,7 @@ const shots = process.env.SHOTS || "";
 try {
   const b = await call("POST", "/api/auth/signup", { email: "gs@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
   await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} } }, b.ownerToken);
-  const st = await call("GET", "/api/graph/sharing", null, b.ownerToken); assert.equal(st.needsChoice, true); assert.equal(st.choice, "preselected-on"); assert.equal(st.effective, true); ok("a new account starts preselected, on by default, with the notice pending");
+  const st = await call("GET", "/api/graph/sharing", null, b.ownerToken); assert.equal(st.needsChoice, true); assert.equal(st.choice, "preselected-on"); assert.equal(st.effective, false); ok("a new account starts preselected but not sharing before the disclosure is shown");
   const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
   await P.evaluateOnNewDocument((api, tok) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "gs@tagg-test.invalid", name: "Bob Li", kind: "email", emailVerified: false }));
@@ -29,6 +29,7 @@ try {
   await P.goto(base + "#/people", { waitUntil: "networkidle0" }); await sleep(1200);
   let t = await P.evaluate(() => document.body.innerText);
   assert.ok(t.includes("Share your network?") && /Never your notes, where you met/.test(t) && t.includes("Keep it private") && t.includes("Decide later")); ok("onboarding notice shows what is and is not shared, with a choice");
+  assert.equal((await call("GET", "/api/graph/sharing", null, b.ownerToken)).effective, true); ok("sharing becomes effective only once the disclosure sheet has been shown");
   if (shots) await P.screenshot({ path: shots + "/graph-notice.png" });
   await P.$eval("#gs-yes", e => e.click()); await sleep(900);
   assert.equal((await call("GET", "/api/graph/sharing", null, b.ownerToken)).choice, "on"); ok("tapping Share records the choice on the server");
