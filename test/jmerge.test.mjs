@@ -4,4 +4,7 @@ const call = async ops => (await (await st.fetch(new Request("http://x", { metho
 await call([{ o: "put", k: "enrich/a", v: JSON.stringify({ linkedin: { t: 1 }, github: { u: "x" } }), ttl: 100 }]);
 await Promise.all([call([{ o: "jmerge", k: "enrich/a", set: { linkedin: { t: 2 } } }]), call([{ o: "jmerge", k: "enrich/a", set: { x: { y: 1 } }, del: ["github"] }])]);
 const [v] = await call([{ o: "get", k: "enrich/a" }]); const o = JSON.parse(v), e = db.prepare("SELECT exp FROM kv").get().exp;
-const ok = o.linkedin.t === 2 && o.x.y === 1 && !o.github && e; console.log(ok ? "jmerge checks passed" : "FAIL " + v); process.exit(ok ? 0 : 1);
+await call([{ o: "put", k: "ppl/t", v: JSON.stringify([{ id: "a" }, { id: "b" }]) }]);
+await Promise.all([call([{ o: "jdel", k: "ppl/t", match: { id: "a" } }]), call([{ o: "jpush", k: "ppl/t", item: { id: "c" }, dedupe: { id: "c" } }]), call([{ o: "jpatch", k: "ppl/t", match: { id: "b" }, patch: { note: "n" } }])]);
+const L = JSON.parse((await call([{ o: "get", k: "ppl/t" }]))[0]); const listOk = L.length === 2 && L.some(x => x.id === "c") && L.find(x => x.id === "b").note === "n" && !L.some(x => x.id === "a");
+const ok = listOk && o.linkedin.t === 2 && o.x.y === 1 && !o.github && e; console.log(ok ? "jmerge checks passed" : "FAIL " + v); process.exit(ok ? 0 : 1);

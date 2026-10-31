@@ -40,6 +40,11 @@ async function saveEnrich(kv, slug, o) {
   if (kv.jmerge) return kv.jmerge("enrich/" + slug, set, del);
   const cur = (await getJSON(kv, "enrich/" + slug)) || {}; Object.assign(cur, set); for (const k of del) delete cur[k]; await kv.put("enrich/" + slug, JSON.stringify(cur));
 }
+async function jdel(kv, key, match) {
+  if (kv.jdel) return kv.jdel(key, match);
+  const arr = (await getJSON(kv, key)) || [], keep = arr.filter(x => !(x && Object.entries(match).every(([f, v]) => x[f] === v)));
+  if (keep.length !== arr.length) await kv.put(key, JSON.stringify(keep)); return { removed: arr.length - keep.length };
+}
 async function getJSON(kv, key) { const v = await kv.get(key); return v ? JSON.parse(v) : null; }
 function cleanCard(c) {
   if (!c || typeof c.name !== "string" || !c.name.trim()) return null;
@@ -726,8 +731,9 @@ const appHandler = {
       const list = await getPeople(env, owner);
       const i = list.findIndex(x => x.id === pm[1]);
       if (i < 0) return j({ error: "not found" }, 404);
-      if (req.method === "DELETE") { list.splice(i, 1); await putPeople(env, owner, list); return j({ ok: true }); }
+      if (req.method === "DELETE") { await jdel(env.KV, "ppl/" + owner, { id: pm[1] }); return j({ ok: true }); }
       const body = await req.json().catch(() => ({}));
+      const before = JSON.parse(JSON.stringify(list[i]));
       if (typeof body.note === "string") list[i].note = body.note.slice(0, 2000);
       if (typeof body.event === "string") list[i].event = body.event.slice(0, 200);
       if (typeof body.placeName === "string") {
@@ -737,7 +743,9 @@ const appHandler = {
       }
       if (body.photo === "") { delete list[i].photo; }
       else if (typeof body.photo === "string" && body.photo.startsWith("data:image/")) list[i].photo = body.photo.slice(0, 420000);
-      await putPeople(env, owner, list);
+      { // Write back only the fields this edit changed, so a simultaneous edit or a newly saved person is not overwritten (atomic on the Durable Object store).
+        const patch = {}; for (const f of new Set([...Object.keys(before), ...Object.keys(list[i])])) if (JSON.stringify(before[f]) !== JSON.stringify(list[i][f])) patch[f] = list[i][f] === undefined ? null : list[i][f];
+        if (Object.keys(patch).length) await jpatch(env.KV, "ppl/" + owner, { id: pm[1] }, patch); }
       return j({ ok: true, person: gatePerson(list[i], (await profileStatus(env, owner)).complete) });
     }
 

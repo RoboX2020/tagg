@@ -30,6 +30,13 @@ export class Store {
         if (n) this.sql.exec("UPDATE kv SET v=? WHERE k=?", JSON.stringify(arr), op.k);
         out.push({ patched: n });
       }
+      else if (op.o === "jdel") {
+        // Atomic removal of the list elements that match, leaving elements other requests added a moment ago.
+        const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let arr = []; try { arr = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : []; } catch (e) {}
+        const keep = arr.filter(x => !(x && Object.entries(op.match || {}).every(([f, v]) => x[f] === v)));
+        if (keep.length !== arr.length) this.sql.exec("UPDATE kv SET v=? WHERE k=?", JSON.stringify(keep), op.k);
+        out.push({ removed: arr.length - keep.length });
+      }
       else if (op.o === "jmerge") {
         // Atomic object edit: set or remove only the named top-level fields, leaving fields other requests wrote a moment ago untouched.
         const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let o = {}; try { o = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : {}; } catch (e) {}
@@ -64,5 +71,6 @@ export class BatchedKV {
   async jpush(k, item, opts = {}) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpush", k, item, dedupe: opts.dedupe, cap: opts.cap, ttl: opts.ttl }]); const out = await this._send(ops); return out[out.length - 1]; }
   async jpatch(k, match, patch) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpatch", k, match, patch }]); const out = await this._send(ops); return out[out.length - 1]; }
   async jmerge(k, set, del) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jmerge", k, set, del }]); const out = await this._send(ops); return out[out.length - 1]; }
+  async jdel(k, match) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jdel", k, match }]); const out = await this._send(ops); return out[out.length - 1]; }
   async flush() { if (this.buf.length) await this._send(this.buf.splice(0)); }
 }
