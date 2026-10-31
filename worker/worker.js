@@ -300,6 +300,18 @@ async function fofFor(env, viewer) {
   }
   return { nodes: [...nodes.values()], edges };
 }
+// Shared eligibility for an intro: the target must be a friend-of-friend of the requester under the SAME rule the Map uses (fofFor), reached through this via person.
+// Returns the via person's owner token, or null. Never says which condition failed.
+async function introVia(env, viewer, viaPersonId, targetSlug) {
+  try {
+    const mine = await getPeople(env, viewer), via = mine.find(x => x.id === viaPersonId && x.slug); if (!via) return null;
+    const viaRec = await getJSON(env.KV, "card/" + via.slug); if (!viaRec || !viaRec.ownerToken || (await env.KV.get("own/" + viaRec.ownerToken)) === null) return null;
+    const tRec = await getJSON(env.KV, "card/" + targetSlug); if (!tRec || !tRec.ownerToken || tRec.ownerToken === viewer) return null;
+    const fof = await fofFor(env, viewer), nid = await opaqueId(tRec.ownerToken);
+    if (!fof.nodes.some(n => n.id === nid) || !fof.edges.some(e => e.from === via.id && e.to === nid)) return null;
+    return viaRec.ownerToken;
+  } catch (e) { return null; }
+}
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
 
@@ -1260,18 +1272,34 @@ const appHandler = {
       if (!mySlug) return j({ error: "unauthorized" }, 401);
       const body = await req.json().catch(() => null);
       if (!body || typeof body.viaPersonId !== "string" || typeof body.targetSlug !== "string") return j({ error: "viaPersonId and targetSlug required" }, 400);
-      if (await overLimit(env, "intro/" + owner, 5, 86400)) return j({ error: "Too many intro requests today" }, 429);
+      if (await overLimit(env, "intro/" + owner, 30, 86400)) return j({ error: "Too many intro requests today" }, 429);
       if (!(await profileStatus(env, owner)).complete) return j({ error: "Complete your profile first" }, 403);
-      const mine = await getPeople(env, owner), via = mine.find(x => x.id === body.viaPersonId && x.slug);
-      if (!via) return j({ error: "That person is not in your saved list" }, 404);
-      const viaRec = await getJSON(env.KV, "card/" + via.slug), viaOwner = viaRec && viaRec.ownerToken && (await env.KV.get("own/" + viaRec.ownerToken)) !== null ? viaRec.ownerToken : null;
-      if (!viaOwner) return j({ error: "That person cannot receive intro requests" }, 400);
-      const theirs = await getPeople(env, viaOwner);
-      if (!theirs.some(x => x.slug === mySlug)) return j({ error: "You need to be saved by that person first" }, 403);
-      if (!theirs.some(x => x.slug === body.targetSlug) || body.targetSlug === mySlug) return j({ error: "That person is not someone they have saved" }, 404);
+      // One answer for every reason a via or target is unavailable, so the response never reveals whether a hidden person exists or shares.
+      const NA = () => j({ error: "Not available" }, 404);
+      const viaOwner = await introVia(env, owner, body.viaPersonId, body.targetSlug);
+      if (!viaOwner) return NA();
+      const pairKey = "intrp/" + mySlug + "/" + body.targetSlug;
+      if ((await env.KV.get(pairKey)) !== null) return j({ ok: true, duplicate: true });
       const note = typeof body.note === "string" ? body.note.slice(0, 500) : "";
       const r = await jpush(env.KV, "intr/" + viaOwner, { id: "i_" + rand(10), requesterSlug: mySlug, targetSlug: body.targetSlug, note, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { requesterSlug: mySlug, targetSlug: body.targetSlug, status: "pending" } });
+      await env.KV.put(pairKey, "1", { expirationTtl: 604800 });
       return j({ ok: true, duplicate: !!r.dup });
+    }
+    if (p === "/api/intros" && req.method === "GET") {
+      // The middle person reads their own list. Each entry is re-checked now, so a revoked opt-out, deleted save or changed connection hides it at once.
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const all = (await getJSON(env.KV, "intr/" + owner)) || [], out = [];
+      for (const it of all.slice(0, 20)) {
+        if (it.status !== "pending") continue;
+        const rr = await getJSON(env.KV, "card/" + it.requesterSlug); if (!rr || !rr.ownerToken) continue;
+        const mySlug = await env.KV.get("own/" + owner);
+        const viaPerson = (await getPeople(env, rr.ownerToken)).find(x => x.slug === mySlug);
+        if (!viaPerson || (await introVia(env, rr.ownerToken, viaPerson.id, it.targetSlug)) !== owner) continue;
+        const tr = await getJSON(env.KV, "card/" + it.targetSlug);
+        out.push({ id: it.id, at: it.at, note: it.note, requester: { name: rr.card && rr.card.name }, target: { name: tr && tr.card && tr.card.name } });
+      }
+      return j({ intros: out });
     }
     if (p === "/api/inbox/respond" && req.method === "POST") {
       const owner = authOwner(req);
