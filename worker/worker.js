@@ -66,7 +66,7 @@ function asNames(x, max) {
   return out;
 }
 // URL-only import through Apify (the user's hackathon promo credits, free plan, hard monthly cap, no card). Used only when the
-// signed-in owner types their own LinkedIn URL and confirms it is their own profile. Hard per-run charge cap; per-owner and global daily caps.
+// signed-in owner types their own LinkedIn URL and confirms it is their own profile. Hard per-run charge cap and a per-owner hourly abuse limit. No discretionary daily usage caps (owner decision); the account's own monthly hard limit and no card on file are the spend stop.
 async function importViaApify(env, url) {
   const r = await fetch("https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items?maxTotalChargeUsd=0.01&timeout=60", {
     method: "POST", headers: { "Authorization": "Bearer " + env.APIFY_TOKEN, "Content-Type": "application/json" },
@@ -849,8 +849,6 @@ export default {
         if (body.ownProfile !== true) return j({ error: "Confirm that this is your own profile" }, 400);
         if (env.APIFY_ENABLED !== "1" || !env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead." }, 503);
         if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
-        if (await overLimit(env, "liapify/owner/" + owner, 3, 86400)) return j({ error: "You have used today's link imports. Paste your profile text instead." }, 429);
-        if (await overLimit(env, "liapify/day/" + new Date().toISOString().slice(0, 10), Number(env.APIFY_DAILY_CAP) || 40, 86400)) return j({ error: "Link import is busy today. Paste your profile text instead." }, 429);
         let res = null; try { res = await importViaApify(env, url); } catch (e) { res = { unavailable: "network" }; }
         if (res && res.unavailable !== undefined) return j({ error: "Could not read that profile right now. Paste your profile text instead.", reason: res.unavailable }, 503);
         if (!res) return j({ error: "Could not read that profile. Is it public? You can paste your profile text instead." }, 422);

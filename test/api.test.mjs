@@ -242,8 +242,10 @@ if (env) {
   ok("link import returns a preview from the provider", lk.status === 200 && lk.body.fields.schools[0] === "Arizona State University" && lk.body.fields.titles[0] === "Lab Assistant" && apifyCalls === 1);
   const lc = await call("POST", "/api/import/linkedin/confirm", { previewId: lk.body.previewId, fields: lk.body.fields }, aTok);
   ok("link import is stored with its own provenance only after confirm", lc.body.linkedin.source === "linkedin-link-import");
-  await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok); await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
-  ok("link imports are capped per person per day", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok)).status === 429);
+  for (let i = 0; i < 3; i++) await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
+  ok("link imports have no daily cap, only the hourly abuse limit", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok)).status === 200);
+  let ab; for (let i = 0; i < 4; i++) ab = await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
+  ok("link imports hit the hourly abuse limit", ab.status === 429);
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;
