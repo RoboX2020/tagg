@@ -455,9 +455,10 @@
     if (c.phone) out += '<a class="chip" href="tel:' + esc(c.phone) + '">Call</a>';
     return out;
   }
-  function cardHtml(c) {
+  function cardHtml(c, photoUrl) {
     return '<div class="taggcard">' +
       '<div class="tc-mark">Tagg</div>' +
+      (photoUrl ? '<img class="avatar-img tc-photo" src="' + esc(photoUrl) + '" alt="" style="width:72px;height:72px;margin-bottom:10px" onerror="this.remove()">' : '') +
       '<div class="tc-name">' + esc(c.name) + '</div>' +
       (c.headline ? '<div class="tc-head">' + esc(c.headline) + '</div>' : '') +
       '<div class="tc-links">' + chipsHtml(c) + '</div>' +
@@ -1091,14 +1092,14 @@
         sessionStorage.setItem("tagg.pinged." + id, "1");
         fetch(API + "/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: id }) }).catch(function () {});
       }
-      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function () {
+      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified, d.photo ? API + "/api/photo/" + id + "?v=" + encodeURIComponent((d.enriched && d.enriched.linkedin && d.enriched.linkedin.importedAt) || "1") : ""); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function () {
         shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       });
       return;
     }
     renderScanned(decodePayload(id), null, null);
   }
-  function renderScanned(c, slug, enriched, verified) {
+  function renderScanned(c, slug, enriched, verified, photoUrl) {
     if (!c) {
       shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       return;
@@ -1147,7 +1148,7 @@
       (slug ? (signedIn
         ? '<button class="btn btn-accent" id="connect-top">Connect with ' + first + '</button><p class="fineprint" style="margin:6px 0 12px;text-align:center">Your Tagg card goes with it. A nearby place name is suggested from your location (sent to Tagg and OpenStreetMap, not tied to your name).</p>'
         : '<button class="btn btn-accent" id="connect-top">Create your Tagg to connect</button><div style="height:10px"></div>') : '') +
-      cardHtml(c) + enrichHtml({ enriched: enriched, card: c, slug: slug }) +
+      cardHtml(c, photoUrl) + enrichHtml({ enriched: enriched, card: c, slug: slug }) +
       '<div style="height:18px"></div>' +
       '<div id="connectzone">' +
       (signedIn

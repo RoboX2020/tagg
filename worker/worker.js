@@ -50,6 +50,8 @@ function asNames(x, max) {
 // URL-only import through Apify (the user's hackathon promo credits, free plan, hard monthly cap, no card). Used only when the
 // signed-in owner types their own LinkedIn URL and confirms it is their own profile. Hard per-run charge cap and a per-owner hourly abuse limit. No discretionary daily usage caps (owner decision); the account's own monthly hard limit and no card on file are the spend stop.
 async function importViaApify(env, url) {
+  // Kill switch: while KV key cfg/apify-paused exists, no request goes to Apify (manual paste still works).
+  if ((await env.KV.get("cfg/apify-paused")) !== null) return { unavailable: "paused" };
   const r = await fetch("https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items?maxTotalChargeUsd=0.01&timeout=60", {
     method: "POST", headers: { "Authorization": "Bearer " + env.APIFY_TOKEN, "Content-Type": "application/json" },
     body: JSON.stringify({ profileScraperMode: "Profile details no email ($4 per 1k)", queries: [url] }), signal: AbortSignal.timeout(70000) });
@@ -452,9 +454,11 @@ export default {
       const viewer = authOwner(req);
       let full = !!(viewer && rec.ownerToken && viewer === rec.ownerToken);
       if (!full && viewer && (await env.KV.get("own/" + viewer)) !== null) full = (await profileStatus(env, viewer)).complete;
-      if (!full) return j({ slug: rec.slug, locked: true, card: { name: (rec.card && rec.card.name) || "", headline: (rec.card && rec.card.headline) || "", email: "", phone: "", links: {} }, enriched: null, verified: await isVerified(env, rec.ownerToken) });
+      const enr0 = await getJSON(env.KV, "enrich/" + cm[1]);
+      const hasPhoto = !!(enr0 && enr0.linkedin && enr0.linkedin.hasPhoto && (await env.KV.get("photo/" + cm[1])) !== null);
+      if (!full) return j({ slug: rec.slug, locked: true, photo: hasPhoto, card: { name: (rec.card && rec.card.name) || "", headline: (rec.card && rec.card.headline) || "", email: "", phone: "", links: {} }, enriched: null, verified: await isVerified(env, rec.ownerToken) });
       const enriched = await getJSON(env.KV, "enrich/" + cm[1]);
-      return j({ slug: rec.slug, card: rec.card, enriched: enriched || null, verified: await isVerified(env, rec.ownerToken) });
+      return j({ slug: rec.slug, photo: hasPhoto, card: rec.card, enriched: enriched || null, verified: await isVerified(env, rec.ownerToken) });
     }
 
     // Scanner met a card owner.
@@ -1016,7 +1020,7 @@ export default {
       if ((existing.linkedin && existing.linkedin.url === url) || (existing.linkedinRemoved && existing.linkedinRemoved.url === url)) return j({ error: "That link was already imported. Use Import again if you want to read it again.", code: "same-link" }, 409);
       if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
       let res = null; try { res = await importViaApify(env, url); } catch (e) { res = { unavailable: "network" }; }
-      if (res && res.unavailable !== undefined) return j({ error: "Could not read that profile right now. Your link is saved. You can paste your profile text instead.", code: "unavailable" }, 503);
+      if (res && res.unavailable !== undefined) return j({ error: res.unavailable === "paused" ? "LinkedIn link import is paused for now. Your link is saved. You can paste your profile text instead." : "Could not read that profile right now. Your link is saved. You can paste your profile text instead.", code: "unavailable" }, 503);
       if (!res) return j({ error: "Could not read that profile. Is it public? Your link is saved. You can paste your profile text instead.", code: "unreadable" }, 422);
       const now = new Date().toISOString();
       let hasPhoto = false;

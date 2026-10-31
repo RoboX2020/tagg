@@ -25,14 +25,18 @@ try {
   await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML student", detail: "Studies ML", links: {} } }, b.ownerToken);
   const mkPage = async (tok, email, name, w, h) => { const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: w, height: h, deviceScaleFactor: 1, isMobile: w < 600, hasTouch: w < 600 }); P.on("pageerror", e => console.log("PAGEERROR", e.message));
     await P.evaluateOnNewDocument((api, tok, email, name) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email, name, kind: "email", emailVerified: false })); localStorage.setItem("tagg.card.v1", JSON.stringify({ name, headline: "Engineer", detail: "Builds things", links: {} })); localStorage.setItem("tagg.slug.v1", "mine"); }, API_URL, tok, email, name); return P; };
-  await api.env.KV.put("enrich/" + card.slug, JSON.stringify({ linkedin: { headline: "Maker", titles: ["Engineer"], companies: ["Acme"], schools: ["ASU"], about: "I build robots. ".repeat(20), experience: [{ title: "Engineer", company: "Acme", period: "2024 - Present", place: "Tempe", text: "Built things." }, { title: "Intern", company: "Beta", period: "2023", place: "", text: "" }], education: [{ school: "ASU", degree: "BS, Robotics", period: "2022 - 2026" }], skills: ["Python", "Robotics"], importedAt: new Date().toISOString() } }));
+  await api.env.KV.put("enrich/" + card.slug, JSON.stringify({ linkedin: { headline: "Maker", titles: ["Engineer"], companies: ["Acme"], schools: ["ASU"], about: "I build robots. ".repeat(20), experience: [{ title: "Engineer", company: "Acme", period: "2024 - Present", place: "Tempe", text: "Built things." }, { title: "Intern", company: "Beta", period: "2023", place: "", text: "" }], education: [{ school: "ASU", degree: "BS, Robotics", period: "2022 - 2026" }], skills: ["Python", "Robotics"], hasPhoto: true, importedAt: new Date().toISOString() } }));
+  if (process.env.PHOTO) await api.env.KV.put("photo/" + card.slug, JSON.stringify({ ct: "image/jpeg", b64: fs.readFileSync(process.env.PHOTO).toString("base64"), at: new Date().toISOString(), source: "linkedin" }));
   const B = await mkPage(b.ownerToken, "cb@tagg-test.invalid", "Bob Li", 390, 844);
   await B.goto(base + "#/c/" + card.slug, { waitUntil: "networkidle0" }); await sleep(1500);
   const st = await B.evaluate(() => { const r = document.querySelector("[data-rm]"), b = document.querySelector("[data-rmbtn]"); return r && b ? { h: r.getBoundingClientRect().height, btn: b.textContent, vis: b.getBoundingClientRect().height > 0, txt: r.innerText } : null; });
   assert.ok(st && st.h <= 151 && st.btn === "Read more" && st.vis); ok("mobile starts collapsed with Read more: " + st.h);
   assert.ok(/Experience/.test(st.txt) && /Skills/.test(st.txt) && /Present/.test(st.txt)); ok("rich LinkedIn sections are in the page text");
   if (shots) await B.screenshot({ path: shots + "/readmore-closed.png" });
-  await B.click("[data-rmbtn]"); await sleep(300);
+  const ph = await B.evaluate(() => { const i = document.querySelector(".tc-photo"); return i ? { w: i.naturalWidth, h: i.naturalHeight, shown: i.getBoundingClientRect().height } : null; });
+  assert.ok(ph && ph.w > 0 && ph.shown > 50, "photo img loaded"); ok("scanned page renders the photo (decoded " + ph.w + "x" + ph.h + ")");
+  if (process.env.PHOTO && shots) { await B.evaluate(() => window.scrollTo(0, 0)); await B.screenshot({ path: shots + "/photo-render.png" }); }
+  await B.evaluate(() => document.querySelector("[data-rmbtn]").scrollIntoView({ block: "center" })); await sleep(200); await B.click("[data-rmbtn]"); await sleep(300);
   const op = await B.evaluate(() => ({ h: document.querySelector("[data-rm]").getBoundingClientRect().height, t: document.querySelector("[data-rmbtn]").textContent }));
   assert.ok(op.h > 200 && op.t === "Show less"); ok("Read more expands in place: " + op.h);
   await B.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)); await sleep(400);
@@ -46,5 +50,5 @@ try {
   const dk = await D.evaluate(() => ({ h: document.querySelector("[data-rm]").getBoundingClientRect().height, bh: document.querySelector("[data-rmbtn]").getBoundingClientRect().height }));
   assert.ok(dk.h > 200 && dk.bh === 0); ok("desktop shows everything, no button: " + JSON.stringify(dk));
   console.log("\nRich UI checks passed:", n);
-} catch (e) { console.error("FAIL", e.message); process.exitCode = 1; }
+} catch (e) { console.error("FAIL", e.stack.split("\n").slice(0,3).join(" | ")); process.exitCode = 1; }
 await browser.close(); api.srv.close(); web.close(); process.exit(process.exitCode || 0);
