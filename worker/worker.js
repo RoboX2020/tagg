@@ -379,6 +379,7 @@ function notifyCopy(type, name) {
     text: "Hi " + n.split(" ")[0] + ",\n\nYour Tagg card is ready. Show your QR code when you meet someone, and Tagg keeps the time you met and anything you choose to add.\n\nOpen your card: " + NOTIFY_SITE + "card" + NOTIFY_FOOT };
   if (type === "request") return { title: "Connection request", line: n + " wants to connect.", subject: n + " wants to connect on Tagg",
     text: n + " sent you a connection request on Tagg.\n\nOpen Tagg to review it. You choose whether to accept.\n\nReview request: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
+  if (type === "network") return { title: "Your network opened up", line: "People you may know through your connections are now visible. Open Map or People.", subject: "", text: "" };
   if (type === "scan") return { title: "Your card was opened", line: "Someone opened your Tagg card.", subject: "Someone opened your Tagg card",
     text: "Someone opened your Tagg card, for example after scanning your QR code.\n\nTagg cannot tell who it was. If they choose to connect, you will see a request in the app.\n\nOpen Tagg: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
   return { title: "Connected", line: n + " accepted your request.", subject: "You are now connected with " + n,
@@ -389,11 +390,12 @@ async function notify(env, owner, type, evId, name) {
     if (!owner || (await env.KV.get("cfg/notify")) !== "on") return { skipped: "off" };
     // The scan alert is its own switch (cfg/notify-scan) because its wording is separate.
     if (type === "scan" && (await env.KV.get("cfg/notify-scan")) !== "on") return { skipped: "scan-off" };
+    if (type === "network" && (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "net-off" };
     const id = type + ":" + evId, c = notifyCopy(type, name), out = {};
     const list = (await getJSON(env.KV, "nt/" + owner)) || [];
     if (!list.some(x => x.id === id)) { list.unshift({ id, type, title: c.title, line: c.line, at: new Date().toISOString(), read: false }); await env.KV.put("nt/" + owner, JSON.stringify(list.slice(0, 30))); out.inapp = true; }
     const prefs = (await getJSON(env.KV, "npf/" + owner)) || {};
-    if (prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
+    if (type !== "network" && prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
       const prof = await getJSON(env.KV, "prof/" + owner);
       const to = prof && normEmail(prof.email);
       if (to && (await env.KV.get("suppress/" + to)) === null && (await env.KV.get("nd/email/" + id)) === null) {
@@ -405,7 +407,7 @@ async function notify(env, owner, type, evId, name) {
       const subs = (await getJSON(env.KV, "ps/" + owner)) || [];
       if (subs.length) {
         await env.KV.put("nd/push/" + id, "1", { expirationTtl: 2592000 });
-        const keep = [], pay = { title: c.title, body: c.line, url: NOTIFY_SITE + (type === "request" || type === "connected" || type === "scan" ? "people" : "card"), tag: type };
+        const keep = [], pay = { title: c.title, body: c.line, url: NOTIFY_SITE + (type === "request" || type === "connected" || type === "scan" || type === "network" ? "people" : "card"), tag: type };
         for (const sb of subs) { let r = "fail"; try { r = await sendPush(env, sb, pay); } catch (e) {} if (r !== "gone") keep.push(sb); if (r === "ok") out.push = (out.push || 0) + 1; }
         if (keep.length !== subs.length) await env.KV.put("ps/" + owner, JSON.stringify(keep));
       }
@@ -522,7 +524,34 @@ export class RateLimiter {
   }
 }
 
+// First-access alert: when a person's shared network goes from empty to at least one visible person (same fofFor rule the Map and People use,
+// so nothing new is disclosed), tell that person once, in-app and push only, no email, no names. A stored count per person is the baseline:
+// a person already seeing people when first checked is baselined silently. At most once per 24 hours per person.
+async function networkFirstAccessSweep(env) {
+  if ((await env.KV.get("cfg/notify")) !== "on" || (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "off" };
+  const l = await env.KV.list({ prefix: "gsh/", limit: 100 });
+  let notified = 0, checked = 0;
+  for (const k of l.keys) {
+    const owner = k.name.slice(4);
+    try {
+      if (!(await gshareOn(env, owner))) continue;
+      checked++;
+      const n = (await fofFor(env, owner)).nodes.length, prev = await env.KV.get("net/n/" + owner);
+      if (prev === null) { await env.KV.put("net/n/" + owner, String(n)); continue; }
+      if (Number(prev) === 0 && n > 0 && (await env.KV.get("nd/net/" + owner)) === null) {
+        await env.KV.put("nd/net/" + owner, "1", { expirationTtl: 86400 });
+        await notify(env, owner, "network", "n" + Math.floor(Date.now() / 86400000), "");
+        notified++;
+      }
+      if (String(n) !== prev) await env.KV.put("net/n/" + owner, String(n));
+    } catch (e) {}
+  }
+  return { checked, notified };
+}
+
+export { networkFirstAccessSweep };
 export default {
+  async scheduled(event, env, ctx) { ctx.waitUntil(networkFirstAccessSweep(env)); },
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const p = url.pathname;
