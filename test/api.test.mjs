@@ -530,5 +530,41 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   ok("an unknown token is treated as anonymous", bad.body.locked === true && leak(bad.body).length === 0);
 }
 
+{
+  const realFetch3 = globalThis.fetch; let nomCalls = 0, lastUA = "";
+  globalThis.fetch = async (u, init) => {
+    if (!String(u).startsWith("https://nominatim.openstreetmap.org/reverse")) return realFetch3(u, init);
+    nomCalls++; lastUA = (init && init.headers && init.headers["User-Agent"]) || "";
+    const q = new URL(u).searchParams;
+    const body = q.get("lat").startsWith("33.41") ? { name: "Memorial Union", category: "amenity", type: "university", address: { amenity: "Memorial Union", city: "Tempe", state: "Arizona" } }
+      : { name: "Mill Avenue", category: "highway", type: "residential", address: { road: "Mill Avenue", city: "Tempe", state: "Arizona" } };
+    return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const bad = await call("GET", "/api/place?lat=x&lon=1");
+  ok("place lookup rejects bad coordinates", bad.status === 400);
+  const a1 = await call("GET", "/api/place?lat=33.41744&lon=-111.93469");
+  ok("place lookup returns a named venue with OpenStreetMap as the source", a1.status === 200 && a1.body.place === "Memorial Union" && a1.body.poi === true && a1.body.source === "OpenStreetMap" && a1.body.label === "Tempe, Arizona");
+  ok("place lookup sends a real User-Agent", /Tagg/.test(lastUA));
+  const a2 = await call("GET", "/api/place?lat=33.417441&lon=-111.934689");
+  ok("nearby repeat is served from cache without another upstream call", a2.body.cached === true && nomCalls === 1);
+  const busy = await call("GET", "/api/place?lat=41.5&lon=-100.5");
+  ok("a second upstream lookup within 2 seconds is refused instead of bursting", busy.status === 429 && nomCalls === 1);
+  await env.KV.delete("place/last");
+  const r1 = await call("GET", "/api/place?lat=40.00001&lon=-100.5");
+  ok("a road is not presented as a venue", r1.body.poi === false && r1.body.place === "Mill Avenue");
+  const ot3 = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const cc = await call("POST", "/api/card", { ownerToken: ot3, card: { name: "Pl Owner", headline: "Maker", detail: "Building", links: {} } }, ot3);
+  const viewer = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const sv = await call("POST", "/api/people", { slug: cc.body.slug, location: { lat: 33.41744, lon: -111.93469, place: "Memorial Union", label: "Tempe, Arizona", placeSource: "OpenStreetMap", acc: 12 } }, viewer);
+  ok("saved meeting keeps the OpenStreetMap place as a guess with accuracy", sv.status < 300);
+  const lst = (await call("GET", "/api/people", null, viewer)).body.people;
+  const pid = lst[0] && lst[0].id;
+  ok("stored place is marked as a guess", lst[0] && lst[0].location && lst[0].location.guess === true && lst[0].location.placeSource === "OpenStreetMap");
+  const ed = await call("PUT", "/api/people/" + pid, { placeName: "Coffee with Sam" }, viewer);
+  const lst2 = (await call("GET", "/api/people", null, viewer)).body.people;
+  ok("owner can edit the place, which is then marked as typed by them", lst2[0].location.place === "Coffee with Sam" && lst2[0].location.guess === false && lst2[0].location.placeSource === "you" && lst2[0].location.lat === 33.41744);
+  globalThis.fetch = realFetch3;
+}
+
 srv.close();
 console.log("\n" + passed + " checks passed");

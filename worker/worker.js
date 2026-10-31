@@ -341,6 +341,8 @@ function cleanLocation(l) {
   const acc = has && typeof l.acc === "number" && isFinite(l.acc) && l.acc >= 0 && l.acc <= 100000 ? Math.round(l.acc) : null;
   const at = has && typeof l.at === "string" && !isNaN(Date.parse(l.at)) ? new Date(l.at).toISOString() : null;
   const out = { lat: has ? lat : null, lon: has ? lon : null, label, place };
+  // Where the place name came from. "OpenStreetMap" names are a nearby guess, not a confirmed venue; "you" means the owner typed it.
+  if (place && (l.placeSource === "OpenStreetMap" || l.placeSource === "you")) { out.placeSource = l.placeSource; out.guess = l.placeSource === "OpenStreetMap" && l.guess !== false; }
   if (acc !== null) out.acc = acc;
   if (at !== null) out.at = at;
   return out;
@@ -511,6 +513,11 @@ export default {
       const body = await req.json().catch(() => ({}));
       if (typeof body.note === "string") list[i].note = body.note.slice(0, 2000);
       if (typeof body.event === "string") list[i].event = body.event.slice(0, 200);
+      if (typeof body.placeName === "string") {
+        const nm = body.placeName.trim().slice(0, 160), cur = list[i].location || { lat: null, lon: null, label: "" };
+        list[i].location = nm ? { ...cur, place: nm, placeSource: "you", guess: false } : { ...cur, place: "", placeSource: undefined, guess: undefined };
+        if (!nm && cur.lat == null && !cur.label) list[i].location = null;
+      }
       if (body.photo === "") { delete list[i].photo; }
       else if (typeof body.photo === "string" && body.photo.startsWith("data:image/")) list[i].photo = body.photo.slice(0, 420000);
       await putPeople(env, owner, list);
@@ -1160,6 +1167,38 @@ export default {
       }
       await putPeople(env, body.ownerToken, list);
       return j({ ok: true, count: list.length });
+    }
+
+    // Nearby place name from OpenStreetMap Nominatim (free, no key). Server side so the request carries a proper User-Agent,
+    // is cached by rounded coordinates, and stays under Nominatim's 1 request per second policy. The result is a nearby
+    // guess: the app labels it "Near ..." and lets the owner edit it. Coordinates are not stored here, only the cached name.
+    if (p === "/api/place" && req.method === "GET") {
+      const u = new URL(req.url), lat = parseFloat(u.searchParams.get("lat")), lon = parseFloat(u.searchParams.get("lon"));
+      if (!isFinite(lat) || !isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return j({ error: "lat and lon required" }, 400);
+      const ip = req.headers.get("CF-Connecting-IP") || "x";
+      if (await overLimit(env, "place/ip/" + ip, 40, 3600)) return j({ error: "Too many lookups" }, 429);
+      const ck = "place/" + lat.toFixed(4) + "," + lon.toFixed(4);
+      const hit = await getJSON(env.KV, ck);
+      if (hit) return j({ ...hit, cached: true });
+      // Nominatim allows at most 1 request per second in total. KV has no atomic counter, so this is a best-effort pacing gate: a
+      // lookup is refused if another one went upstream in the last 2 seconds, and at most 20 go upstream per minute overall.
+      // Nothing else calls this: only the one-time lookup when a meeting is saved, never typing or autocomplete.
+      const last = parseInt(await env.KV.get("place/last") || "0", 10);
+      if (Date.now() - last < 2000 || await overLimit(env, "place/global", 20, 60)) return j({ error: "Place lookup is busy, the place name can be added by hand", retry: true }, 429);
+      await env.KV.put("place/last", String(Date.now()), { expirationTtl: 60 });
+      let d = null;
+      try {
+        const r = await fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=" + lat.toFixed(5) + "&lon=" + lon.toFixed(5), { headers: { "User-Agent": "Tagg/1.0 (https://robox2020.github.io/tagg/; github.com/RoboX2020/tagg)", "Accept-Language": "en" } });
+        if (r.ok) d = await r.json();
+      } catch (e) { d = null; }
+      if (!d || d.error) return j({ place: "", label: "", kind: "", poi: false, source: "OpenStreetMap" });
+      const a = d.address || {};
+      const road = ["highway", "place", "boundary", "landuse"].includes(d.category);
+      const place = road ? (a.road || "") : (d.name || a.amenity || a.building || a.tourism || a.leisure || a.shop || a.road || "");
+      const label = [a.city || a.town || a.village || a.suburb || a.county || "", a.state || ""].filter(Boolean).join(", ");
+      const out = { place: String(place).slice(0, 160), label: label.slice(0, 160), kind: String(d.type || "").slice(0, 40), poi: !road && !!d.name, source: "OpenStreetMap" };
+      await env.KV.put(ck, JSON.stringify(out), { expirationTtl: 2592000 });
+      return j(out);
     }
 
     // Graph export: nodes + met edges.

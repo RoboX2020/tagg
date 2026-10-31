@@ -321,13 +321,12 @@
         var t = setTimeout(function () { if (ctl) ctl.abort(); finish(); }, 5000);
         var finished = false;
         function finish() { if (finished) return; finished = true; clearTimeout(t); onStatus("named", loc); resolve({ ok: true, loc: loc }); }
-        // Free OpenStreetMap Nominatim reverse lookup; zoom 18 gives the nearest venue, building or street.
-        fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=" + loc.lat + "&lon=" + loc.lon, ctl ? { signal: ctl.signal } : undefined)
+        // Nearby place name from the Tagg server (free OpenStreetMap lookup, cached, rate limited). It is a nearby guess, not a confirmed venue.
+        fetch(API + "/api/place?lat=" + loc.lat + "&lon=" + loc.lon, ctl ? { signal: ctl.signal } : undefined)
           .then(function (r) { return r.json(); })
           .then(function (d) {
-            var a = d.address || {};
-            loc.place = d.name || a.amenity || a.building || a.tourism || a.leisure || a.shop || a.road || "";
-            loc.label = [a.city || a.town || a.village || a.suburb || a.county || "", a.state || ""].filter(Boolean).join(", ") || (d.display_name || "").split(",").slice(0, 2).join(",");
+            loc.place = d.place || ""; loc.label = d.label || "";
+            if (loc.place) { loc.placeSource = "OpenStreetMap"; loc.guess = true; }
             finish();
           }).catch(finish);
       }, function (err) {
@@ -349,8 +348,8 @@
     var retry = ' <a href="#" data-locretry="1">Try again</a>';
     if (kind === "asking") return "Finding your location. Allow access if your phone asks.";
     if (kind === "found" || kind === "named") {
-      var nm = loc && [loc.place, loc.label].filter(Boolean).join(", ");
-      return "Location ready" + (nm ? ": " + esc(nm) : (kind === "found" ? ". Looking up the place name..." : ". Place name not available, the pin is saved.")) +
+      var nm = loc && [loc.place ? (loc.guess ? "Near " + loc.place : loc.place) : "", loc.label].filter(Boolean).join(", ");
+      return "Location ready" + (nm ? ": " + esc(nm) + (loc.guess ? ' <span style="color:var(--text-3)">(from OpenStreetMap, may not be the exact place)</span>' : "") : (kind === "found" ? ". Looking up the place name..." : ". Place name not available, the pin is saved.")) +
         '<br><a href="' + mapsUrl(loc) + '" target="_blank" rel="noopener">Open in Google Maps</a> <span style="color:var(--text-3)">(' + loc.lat + ", " + loc.lon + ")</span>" + (fixNote(loc) ? '<br><span style="color:var(--text-3)">' + esc(fixNote(loc)) + "</span>" : "");
     }
     if (kind === "denied") return "Location is blocked for this site. On iPhone: Settings, Privacy and Security, Location Services, Safari Websites, set to While Using. Then" + retry + "." ;
@@ -1433,6 +1432,19 @@
     }
     var vcfBtn = document.getElementById("vcf"); if (vcfBtn) vcfBtn.addEventListener("click", function () { downloadVcf(p); });
     if (p.locked && ownerToken()) api("/api/people/" + id).then(function (d) { if (d && d.person && !d.person.locked) { var all = loadPeople(); for (var k = 0; k < all.length; k++) if (all[k].id === id) all[k] = d.person; savePeople(all); if (location.hash === "#/p/" + id) renderPerson(id); } }).catch(function () {});
+    var pe = document.getElementById("place-edit");
+    if (pe) pe.addEventListener("click", function (e) {
+      e.preventDefault();
+      var cur = (p.location && p.location.place) || "";
+      var nv = window.prompt("Where did you meet? Leave empty to remove the place name.", cur);
+      if (nv === null) return;
+      nv = nv.trim().slice(0, 160);
+      var loc2 = Object.assign({}, p.location || {});
+      if (nv) { loc2.place = nv; loc2.placeSource = "you"; loc2.guess = false; } else { loc2.place = ""; delete loc2.placeSource; delete loc2.guess; }
+      p.location = loc2;
+      persistPerson(p, { placeName: nv });
+      toast("Place updated"); renderPerson(id);
+    });
     document.getElementById("savenote").addEventListener("click", function () {
       p.note = document.getElementById("note").value;
       persistPerson(p, { note: p.note });
@@ -1475,8 +1487,10 @@
   function whereMeta(loc, mapLink) {
     if (!loc || (loc.lat == null && !loc.label && !loc.place)) return "";
     var parts = [];
-    var name = [loc.place, loc.label].filter(Boolean).join(" - ");
+    var name = [loc.place ? (loc.guess ? "Near " + loc.place : loc.place) : "", loc.label].filter(Boolean).join(" - ");
     if (name) parts.push(esc(name));
+    if (loc.guess) parts.push('<span style="color:var(--text-2);font-size:12px">Place name from OpenStreetMap, may not be exact. <a href="#" id="place-edit">Edit</a></span>');
+    else if (loc.lat != null) parts.push('<span style="color:var(--text-2);font-size:12px"><a href="#" id="place-edit">' + (loc.place ? "Edit place" : "Add place name") + '</a></span>');
     if (loc.lat != null && loc.lon != null) {
       var sv = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + loc.lat + "," + loc.lon;
       parts.push('<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open in Google Maps</a> · <a href="' + sv + '" target="_blank" rel="noopener">Place image</a></span>');
