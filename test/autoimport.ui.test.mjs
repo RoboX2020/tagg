@@ -37,23 +37,23 @@ try {
   await P.click("#ai-own"); assert.equal(await P.$eval("#ai-yes", e => e.disabled), false);
   P.on("response", async r => { if (r.url().includes("/auto") && r.request().method()==="POST") console.log("AUTO", r.status(), (await r.text()).slice(0,200)); }); await P.click("#ai-yes"); await waitText(P, "Imported from LinkedIn"); assert.equal(apifyCalls, 1);
   const tt = await text(P); assert.ok(tt.includes("Arizona State University") && tt.includes("Lab Assistant")); ok("after accepting, details fill in and show on the edit page");
-  const pub = await call("GET", "/api/c/" + card.slug); assert.equal(pub.enriched.linkedin.source, "linkedin-link-import"); assert.equal(pub.enriched.linkedin.autoImported, true); ok("stored on the shared card with provenance");
+  const pub = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.equal(pub.enriched.linkedin.source, "linkedin-link-import"); assert.equal(pub.enriched.linkedin.autoImported, true); ok("stored on the shared card with provenance");
   if (shots) { await P.evaluate(() => document.getElementById("liimport").scrollIntoView()); await sleep(300); await P.screenshot({ path: shots + "/auto-2-filled.png" }); }
   await P.click("#li-edit"); await waitText(P, "Cleared details stay cleared"); await P.$eval("#li-location", e => e.value = ""); 
   if (shots) await P.screenshot({ path: shots + "/auto-3-edit.png" });
   await P.click("#li-add"); await sleep(800);
-  const pub2 = await call("GET", "/api/c/" + card.slug); assert.equal(pub2.enriched.linkedin.location, ""); assert.ok(pub2.enriched.linkedin.suppressed.includes("location")); ok("owner edit saved; cleared field recorded as cleared");
-  await P.click("#li-remove"); await sleep(700); const pub3 = await call("GET", "/api/c/" + card.slug); assert.ok(!pub3.enriched || !pub3.enriched.linkedin); ok("owner can remove imported details");
+  const pub2 = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.equal(pub2.enriched.linkedin.location, ""); assert.ok(pub2.enriched.linkedin.suppressed.includes("location")); ok("owner edit saved; cleared field recorded as cleared");
+  await P.click("#li-remove"); await sleep(700); const pub3 = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.ok(!pub3.enriched || !pub3.enriched.linkedin); ok("owner can remove imported details");
   // GitHub: a new link is saved without any import or notice; details stored earlier keep their edit and remove controls.
   await sleep(4000); await P.type("#f-github", "github.com/sam-gh"); await P.click("#save"); await sleep(2500);
   assert.ok(!(await text(P)).includes("Fill your card from GitHub?")); assert.equal(ghCalls, 0);
-  const cg = await call("GET", "/api/c/" + card.slug); assert.ok(cg.card.links.github.includes("sam-gh")); ok("a new GitHub link is saved with no import, no notice and no GitHub request");
+  const cg = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.ok(cg.card.links.github.includes("sam-gh")); ok("a new GitHub link is saved with no import, no notice and no GitHub request");
   const ek = "enrich/" + card.slug; const er = JSON.parse((await api.env.KV.get(ek)) || "{}"); er.github = { login: "sam-gh", name: "Sam Rivera", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, repos: 7, avatar: null, source: "github-public-api", url: "https://github.com/sam-gh", importedAt: new Date().toISOString() }; await api.env.KV.put(ek, JSON.stringify(er));
   await P.goto(base + "#/"); await sleep(300); await P.goto(base + "#/edit"); await waitText(P, "Imported from GitHub");
   ok("details stored earlier still show on the edit page with edit and remove");
   await P.$eval("#gh-edit", e => e.click()); await P.$eval("#gh-bio", e => e.value = ""); await P.click("#gh-save"); await sleep(800);
-  const gp = await call("GET", "/api/c/" + card.slug); assert.equal(gp.enriched.github.bio, null); assert.ok(gp.enriched.github.suppressed.includes("bio")); ok("GitHub edit saved, cleared field stays cleared");
-  await P.click("#gh-remove"); await sleep(800); const gp2 = await call("GET", "/api/c/" + card.slug); assert.ok(!gp2.enriched || !gp2.enriched.github); ok("GitHub details removed");
+  const gp = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.equal(gp.enriched.github.bio, null); assert.ok(gp.enriched.github.suppressed.includes("bio")); ok("GitHub edit saved, cleared field stays cleared");
+  await P.click("#gh-remove"); await sleep(800); const gp2 = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.ok(!gp2.enriched || !gp2.enriched.github); ok("GitHub details removed");
   // Saving again with the same link must not ask or re-import.
   await P.click("#save"); await sleep(800);
   assert.ok(!(await text(P)).includes("Fill your card from LinkedIn?") && apifyCalls === 1); ok("saving again with the same link neither asks nor re-imports");

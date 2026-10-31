@@ -86,9 +86,9 @@ try {
   const rv = await A.evaluate(() => ({ c: document.getElementById("li-companies").value, s: document.getElementById("li-schools").value }));
   assert.equal(rv.c, "Acme Robotics"); assert.equal(rv.s, "Arizona State University"); ok("review shows only values found in the pasted text");
   await A.$eval("#li-headline", e => e.scrollIntoView({ block: "start" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-li-review.png" });
-  assert.equal((await fetch(API_URL + "/api/c/" + slug).then(r => r.json())).enriched?.linkedin, undefined); ok("nothing is stored before the owner confirms");
+  assert.equal((await fetch(API_URL + "/api/c/" + slug, { headers: { Authorization: "Bearer " + await A.evaluate(() => localStorage.getItem("tagg.owner.v1")) } }).then(r => r.json())).enriched?.linkedin, undefined); ok("nothing is stored before the owner confirms");
   await A.$eval("#li-add", e => e.click()); await waitText(A, "Imported from LinkedIn", 8000); await sleep(300);
-  const li = (await fetch(API_URL + "/api/c/" + slug).then(r => r.json())).enriched.linkedin;
+  const li = (await fetch(API_URL + "/api/c/" + slug, { headers: { Authorization: "Bearer " + await A.evaluate(() => localStorage.getItem("tagg.owner.v1")) } }).then(r => r.json())).enriched.linkedin;
   assert.equal(li.school, "Arizona State University"); assert.equal(li.source, "linkedin-pasted-text"); ok("confirmed import stored with provenance");
   await A.$eval("#liimport", e => e.scrollIntoView({ block: "center" })); await sleep(300); await A.screenshot({ path: "/tmp/work/shot-li-done.png" });
   await A.goto(base + "#/"); await sleep(300);

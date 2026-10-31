@@ -421,6 +421,12 @@ export default {
     if (cm && req.method === "GET") {
       const rec = await getJSON(env.KV, "card/" + cm[1]);
       if (!rec) return j({ error: "not found" }, 404);
+      // QR gate: the owner and scanners with a complete profile get the full card. Everyone else (including anonymous
+      // guests) gets a minimal preview: name and headline only. Links, contact, detail and imports are not in the response.
+      const viewer = authOwner(req);
+      let full = !!(viewer && rec.ownerToken && viewer === rec.ownerToken);
+      if (!full && viewer && (await env.KV.get("own/" + viewer)) !== null) full = (await profileStatus(env, viewer)).complete;
+      if (!full) return j({ slug: rec.slug, locked: true, card: { name: (rec.card && rec.card.name) || "", headline: (rec.card && rec.card.headline) || "", email: "", phone: "", links: {} }, enriched: null, verified: await isVerified(env, rec.ownerToken) });
       const enriched = await getJSON(env.KV, "enrich/" + cm[1]);
       return j({ slug: rec.slug, card: rec.card, enriched: enriched || null, verified: await isVerified(env, rec.ownerToken) });
     }

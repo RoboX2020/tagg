@@ -89,6 +89,7 @@ ok("old password no longer works", (await call("POST", "/api/auth/login", { emai
 ok("new password works", (await call("POST", "/api/auth/login", { email: "alice@example.com", password: "brand new pass" })).status === 200);
 ok("old recovery code is dead", (await call("POST", "/api/auth/reset", { email: "alice@example.com", recoveryCode: rc, newPassword: "another one 1" })).status === 401);
 // Verification flag: email accounts are never marked verified.
+const scanTok = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: scanTok, card: { name: "Scan Viewer", headline: "Viewer", detail: "Complete profile for scanning", links: {} } }, scanTok);
 ok("email-account card is flagged unverified", (await call("GET", "/api/c/" + slug)).body.verified === false);
 // Exact limiter: 30 parallel wrong guesses must let through at most 8 (the limit), even under concurrency.
 const burst = await Promise.all(Array.from({ length: 30 }, (_, i) => call("POST", "/api/auth/login", { email: "burst@example.com", password: "guess-" + i })));
@@ -240,13 +241,13 @@ if (env) {
   ok("values found in the text are kept", pv.body.fields.companies.includes("Acme Robotics") && pv.body.fields.schools.includes("Arizona State University") && pv.body.fields.titles.includes("Software Engineering Intern"));
   ok("values not in the text are dropped", !pv.body.fields.companies.includes("Google") && !pv.body.fields.schools.includes("Stanford University") && !pv.body.fields.titles.includes("CEO"));
   ok("linkedin.com is never fetched", linkedinCalls === 0 && geminiCalls === 1);
-  ok("nothing is saved before confirm", ((await call("GET", "/api/c/" + slug)).body.enriched || {}).linkedin === undefined);
+  ok("nothing is saved before confirm", ((await call("GET", "/api/c/" + slug, null, scanTok)).body.enriched || {}).linkedin === undefined);
   ok("another owner cannot confirm my preview", (await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: pv.body.fields }, bTok)).status === 410);
   const cf = await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: { ...pv.body.fields, schools: ["Arizona State University"] } }, aTok);
   ok("confirm stores the reviewed fields with provenance", cf.status === 200 && cf.body.linkedin.source === "linkedin-pasted-text" && cf.body.linkedin.confirmedAt && cf.body.linkedin.school === "Arizona State University");
   ok("a preview works once", (await call("POST", "/api/import/linkedin/confirm", { previewId: pv.body.previewId, fields: pv.body.fields }, aTok)).status === 410);
-  ok("scanners see the confirmed import", (await call("GET", "/api/c/" + slug)).body.enriched.linkedin.companies[0] === "Acme Robotics");
-  ok("import can be removed", (await call("DELETE", "/api/import/linkedin", null, aTok)).body.ok === true && ((await call("GET", "/api/c/" + slug)).body.enriched || {}).linkedin === undefined);
+  ok("scanners see the confirmed import", (await call("GET", "/api/c/" + slug, null, scanTok)).body.enriched.linkedin.companies[0] === "Acme Robotics");
+  ok("import can be removed", (await call("DELETE", "/api/import/linkedin", null, aTok)).body.ok === true && ((await call("GET", "/api/c/" + slug, null, scanTok)).body.enriched || {}).linkedin === undefined);
   env.APIFY_TOKEN = "mock";
   ok("link import is off unless explicitly enabled", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok)).status === 503 && apifyCalls === 0);
   env.APIFY_ENABLED = "1";
@@ -276,11 +277,11 @@ if (env) {
   const gTok = (await call("POST", "/api/owner", {})).body.ownerToken; const gc = await call("POST", "/api/card", { ownerToken: gTok, card: { name: "Gh Person", headline: "h", links: {} } }, gTok);
   await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/gh-person", ownProfile: true, disclosure: "linkedin-auto-v1" }, gTok);
   await call("POST", "/api/card", { ownerToken: gTok, card: { name: "Gh Person", headline: "h", links: { github: "https://github.com/octocat" } } }, gTok); await new Promise(r => setTimeout(r, 200));
-  const gp = await call("GET", "/api/c/" + gc.body.slug);
+  const gp = await call("GET", "/api/c/" + gc.body.slug, null, scanTok);
   ok("saving a card with a GitHub link keeps confirmed LinkedIn details", gp.body.enriched && gp.body.enriched.linkedin && gp.body.enriched.linkedin.schools[0] === "Arizona State University");
   // GitHub informed import.
   const hTok = (await call("POST", "/api/owner", {})).body.ownerToken; const hc = await call("POST", "/api/card", { ownerToken: hTok, card: { name: "Hub Person", headline: "h", links: { github: "https://github.com/hub-person" } } }, hTok);
-  await new Promise(r => setTimeout(r, 100)); ok("saving a card with a GitHub link reads nothing by itself", ghCalls === 0 && !((await call("GET", "/api/c/" + hc.body.slug)).body.enriched));
+  await new Promise(r => setTimeout(r, 100)); ok("saving a card with a GitHub link reads nothing by itself", ghCalls === 0 && !((await call("GET", "/api/c/" + hc.body.slug, null, scanTok)).body.enriched));
   const gh = { url: "github.com/hub-person", ownProfile: true, disclosure: "github-auto-v1" };
   ok("github import needs the notice", (await call("POST", "/api/import/github/auto", { url: gh.url, ownProfile: true }, hTok)).status === 400 && ghCalls === 0);
   ok("github import needs sign in", (await call("POST", "/api/import/github/auto", gh)).status === 401);
@@ -305,7 +306,7 @@ if (env) {
   const pr = await fetch(url + "/api/photo/" + pc.body.slug);
   ok("v2 notice copies the picture and Tagg serves it", v2.status === 200 && v2.body.linkedin.hasPhoto === true && pr.status === 200 && pr.headers.get("content-type") === "image/jpeg" && (await pr.arrayBuffer()).byteLength === 8);
   ok("photo response never leaks the provider url", !JSON.stringify(v2.body).includes("licdn"));
-  ok("owner can remove only the photo", (await call("DELETE", "/api/profile-photo", null, pTok)).status === 200 && (await fetch(url + "/api/photo/" + pc.body.slug)).status === 404 && (await call("GET", "/api/c/" + pc.body.slug)).body.enriched.linkedin.schools.length > 0);
+  ok("owner can remove only the photo", (await call("DELETE", "/api/profile-photo", null, pTok)).status === 200 && (await fetch(url + "/api/photo/" + pc.body.slug)).status === 404 && (await call("GET", "/api/c/" + pc.body.slug, null, scanTok)).body.enriched.linkedin.schools.length > 0);
   for (const [label, pu, pcase] of [["off-host picture URL", "https://evil.example/pic.jpg", ""], ["oversize picture", "", "big"], ["non-image picture", "", "html"]]) {
     globalThis.__picUrl = pu || undefined; globalThis.__picCase = pcase;
     const nt = (await call("POST", "/api/owner", {})).body.ownerToken; const nc = await call("POST", "/api/card", { ownerToken: nt, card: { name: "Neg Pic", headline: "h", links: {} } }, nt);
@@ -508,6 +509,25 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   await sh(A, false);
   ok("opting out of the cohort default takes effect at once", !hasC(await gr(A)));
   env.AI = undefined;
+}
+
+// ---- QR gate: public card is a minimal preview unless the viewer is the owner or has a complete profile ----
+{
+  const ot = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const oc = await call("POST", "/api/card", { ownerToken: ot, card: { name: "Qr Owner", headline: "Maker", detail: "QRsecretdetail", email: "qr-owner@secret.invalid", phone: "+1 555 0177", links: { github: "https://github.com/qr-secret-handle" } } }, ot);
+  await env.KV.put("enrich/" + oc.body.slug, JSON.stringify({ linkedin: { titles: ["QR Title"], companies: ["QR Co"], schools: [], importedAt: new Date().toISOString() } }));
+  const leak = (b) => ["qr-owner@secret", "555 0177", "QRsecretdetail", "qr-secret-handle", "QR Co", "QR Title"].filter(x => JSON.stringify(b).includes(x));
+  const anon = await call("GET", "/api/c/" + oc.body.slug);
+  ok("anonymous scan gets name and headline only, with no hidden fields anywhere in the response", anon.status === 200 && anon.body.locked === true && anon.body.card.name === "Qr Owner" && anon.body.card.headline === "Maker" && leak(anon.body).length === 0 && anon.body.enriched === null);
+  const inc = (await call("POST", "/api/owner", {})).body.ownerToken; globalThis.__rawCards = true; await call("POST", "/api/card", { ownerToken: inc, card: { name: "Half Viewer", headline: "h", links: {} } }, inc); globalThis.__rawCards = false;
+  const half = await call("GET", "/api/c/" + oc.body.slug, null, inc);
+  ok("a scanner with an incomplete profile also gets the preview only", half.body.locked === true && leak(half.body).length === 0);
+  const full = await call("GET", "/api/c/" + oc.body.slug, null, scanTok);
+  ok("a scanner with a complete profile gets the full card", !full.body.locked && full.body.card.email === "qr-owner@secret.invalid" && full.body.enriched.linkedin.companies[0] === "QR Co");
+  const own = await call("GET", "/api/c/" + oc.body.slug, null, ot);
+  ok("the owner always gets their own full card", !own.body.locked && own.body.card.detail === "QRsecretdetail");
+  const bad = await call("GET", "/api/c/" + oc.body.slug, null, "not-a-real-token-123456");
+  ok("an unknown token is treated as anonymous", bad.body.locked === true && leak(bad.body).length === 0);
 }
 
 srv.close();

@@ -1044,6 +1044,15 @@
   }
 
   /* ================= scanned card ================= */
+  function scanLockNote(c) {
+    var first = esc((c.name || "").split(" ")[0] || "this person");
+    var el = document.createElement("section"); el.className = "linksec lockedsec";
+    el.innerHTML = '<div class="lshead"><div class="lstitle"><i class="lsdot"></i>Complete your profile to see ' + first + "'s links and contact</div></div>" +
+      '<div class="lockbars" aria-hidden="true"><i></i><i></i><i></i></div>' +
+      '<div class="lsline lsmute">You can still send a connection request. Add your name, a headline and one line about what you do, then their shared details unlock.</div>';
+    var h = document.querySelector("h1.largetitle");
+    if (h && h.parentNode) h.parentNode.insertBefore(el, h.nextSibling);
+  }
   function renderScannedRoute(id) {
     if (/^[a-z0-9]{6,10}$/.test(id)) {
       shell(null, '<div class="empty"><div class="t">Pulling up their card...</div><div class="d">One second.</div></div>');
@@ -1052,7 +1061,7 @@
         sessionStorage.setItem("tagg.pinged." + id, "1");
         fetch(API + "/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: id }) }).catch(function () {});
       }
-      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified); }).catch(function () {
+      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function () {
         shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
       });
       return;
