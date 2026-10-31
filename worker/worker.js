@@ -58,7 +58,12 @@ async function importViaApify(env, url) {
   const x = Array.isArray(items) ? items[0] : null;
   if (!x || x.error || (!x.experience && !x.education && !x.headline)) return null;
   const uniq = (arr, n) => asNames(arr.filter(Boolean), n);
+  const per = (o) => { const p = o && (o.duration || o.period || o.dateRange); if (typeof p === "string") return clip(p, 60); const s = o && o.startDate && (o.startDate.text || o.startDate.year), e = o && o.endDate && (o.endDate.text || o.endDate.year); return clip([s, e || (s ? "Present" : "")].filter(Boolean).join(" - "), 60); };
+  const experience = (Array.isArray(x.experience) ? x.experience : []).filter(e => e && (e.position || e.companyName)).slice(0, 8).map(e => ({ title: clip(e.position, 120), company: clip(e.companyName, 120), period: per(e), place: clip(e.location, 80), text: clip(e.description, 400) }));
+  const education = (Array.isArray(x.education) ? x.education : []).filter(e => e && e.schoolName).slice(0, 5).map(e => ({ school: clip(e.schoolName, 120), degree: clip([e.degree, e.fieldOfStudy].filter(Boolean).join(", "), 140), period: per(e) }));
+  const skills = asNames((Array.isArray(x.skills) ? x.skills : []).map(s => typeof s === "string" ? s : s && s.name), 12);
   return {
+    about: clip(x.about || x.summary, 1200), experience, education, skills,
     headline: clip(x.headline, 300),
     titles: uniq((x.experience || []).map(e => e && e.position), 5),
     companies: uniq((x.experience || []).map(e => e && e.companyName), 6),
@@ -1016,7 +1021,7 @@ export default {
       const now = new Date().toISOString();
       let hasPhoto = false;
       if (body.disclosure === "linkedin-auto-v2" && res.photoUrl) { const ph = await fetchPhoto(res.photoUrl); if (ph) { await env.KV.put("photo/" + slug, JSON.stringify({ ct: ph.ct, b64: ph.b64, at: now, source: "linkedin" })); hasPhoto = true; } }
-      existing.linkedin = Object.assign({ headline: res.headline, titles: res.titles, companies: res.companies, schools: res.schools, location: res.location },
+      existing.linkedin = Object.assign({ about: res.about || "", experience: res.experience || [], education: res.education || [], skills: res.skills || [], headline: res.headline, titles: res.titles, companies: res.companies, schools: res.schools, location: res.location },
         { source: "linkedin-link-import", url, importedAt: now, confirmedAt: now, autoImported: true, disclosure: body.disclosure, hasPhoto,
           company: res.companies[0] || null, title: res.titles[0] || null, school: res.schools[0] || null });
       delete existing.linkedinRemoved;

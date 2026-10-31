@@ -1338,8 +1338,17 @@
     if (c.detail) out += box("About", "", '<div class="resline" style="font-weight:400">' + esc(c.detail) + '</div>');
     if (li) {
       var roles = list(li.titles, li.title), cos = list(li.companies, li.company), schools = list(li.schools, li.school);
+      var rich = (li.experience || []).length || (li.education || []).length || li.about || (li.skills || []).length;
+      if (rich) {
+        var rm = '';
+        if (li.about) rm += box("About", "LinkedIn", '<div class="resline" style="font-weight:400;white-space:pre-line">' + esc(li.about) + '</div>');
+        if ((li.experience || []).length) rm += box("Experience", "LinkedIn", li.experience.map(function (e) { return '<div class="resline">' + esc(e.title || e.company) + '</div><div class="resline sub">' + esc([e.title ? e.company : "", e.period, e.place].filter(Boolean).join(" · ")) + '</div>' + (e.text ? '<div class="resline sub" style="font-weight:400">' + esc(e.text) + '</div>' : ""); }).join(""));
+        if ((li.education || []).length) rm += box("Education", "LinkedIn", li.education.map(function (e) { return '<div class="resline">' + esc(e.school) + '</div><div class="resline sub">' + esc([e.degree, e.period].filter(Boolean).join(" · ")) + '</div>'; }).join(""));
+        if ((li.skills || []).length) rm += box("Skills", "LinkedIn", '<div class="resline sub">' + li.skills.map(esc).join(" · ") + '</div>');
+        out += '<div class="readmore" data-rm>' + rm + '</div><button class="btn btn-tinted readmore-btn" type="button" data-rmbtn aria-expanded="false">Read more</button>';
+      } else
       if (roles.length || cos.length) out += box("Work", "LinkedIn", roles.map(function (r) { return '<div class="resline">' + esc(r) + '</div>'; }).join("") + cos.map(function (r) { return '<div class="resline sub">' + esc(r) + '</div>'; }).join(""));
-      if (schools.length) out += box("Education", "LinkedIn", schools.map(function (r) { return '<div class="resline">' + esc(r) + '</div>'; }).join(""));
+      if (!rich && schools.length) out += box("Education", "LinkedIn", schools.map(function (r) { return '<div class="resline">' + esc(r) + '</div>'; }).join(""));
     }
     var links = "";
     LINK_DEFS.forEach(function (kd) {
@@ -1358,6 +1367,10 @@
     return out + links;
   }
   /* X's own timeline widget (platform.twitter.com/widgets.js) renders inside the page; it is only loaded when a profile has an X link. */
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("[data-rmbtn]"); if (!b) return;
+    var box = b.previousElementSibling, open = box.classList.toggle("open"); b.setAttribute("aria-expanded", open ? "true" : "false"); b.textContent = open ? "Show less" : "Read more";
+  });
   function mountEmbeds() {
     var hs = document.querySelectorAll(".xembed[data-xh]");
     if (!hs.length) return;
