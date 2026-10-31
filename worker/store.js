@@ -15,6 +15,10 @@ export class Store {
     const now = Date.now(), out = [];
     for (const op of ops) {
       if (op.o === "put") { this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, exp=excluded.exp", op.k, op.v, op.ttl ? now + op.ttl * 1000 : null); out.push(null); }
+      // Migration-only ops (used by worker/migrate-worker.js): write with an absolute expiry, count live rows, read a page of live rows after a key.
+      else if (op.o === "putabs") { if (op.exp && op.exp <= now) { out.push(false); } else { this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, exp=excluded.exp", op.k, op.v, op.exp || null); out.push(true); } }
+      else if (op.o === "count") { out.push(Number([...this.sql.exec("SELECT COUNT(*) AS n FROM kv WHERE exp IS NULL OR exp > ?", now)][0].n)); }
+      else if (op.o === "page") { out.push([...this.sql.exec("SELECT k, v, exp FROM kv WHERE k > ? AND (exp IS NULL OR exp > ?) ORDER BY k LIMIT ?", String(op.after || ""), now, Math.min(Number(op.limit) || 50, 200))].map(r => ({ k: r.k, v: r.v, exp: r.exp || null }))); }
       else if (op.o === "del") { this.sql.exec("DELETE FROM kv WHERE k=?", op.k); out.push(null); }
       else if (op.o === "get") { const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; out.push(r && (!r.exp || r.exp > now) ? r.v : null); }
       else if (op.o === "jpush") {
