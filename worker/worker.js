@@ -255,8 +255,9 @@ async function getPeopleFor(env, owner) {
 // State per owner: absent = never chosen (existing users: nothing shared). New owners start {on:true, ack:false, isNew:true}: the
 // onboarding notice is shown with sharing preselected, and nothing is shared until they confirm (ack) or opt out in Settings.
 async function gshareState(env, owner) { return await getJSON(env.KV, "gsh/" + owner); }
-async function gshareOn(env, owner) { const g = await gshareState(env, owner); return !!(g && g.on === true && (g.ack === true || g.cohort === true)); }
-async function markNewOwner(env, owner) { await env.KV.put("gsh/" + owner, JSON.stringify({ on: true, ack: false, isNew: true })); }
+// Sharing is effective when the owner confirmed (ack), is in the test cohort, or has a new account where sharing is on by default.\n// (dflt). Existing accounts without dflt keep the old confirm-first behavior; an explicit off always wins.
+async function gshareOn(env, owner) { const g = await gshareState(env, owner); return !!(g && g.on === true && (g.ack === true || g.cohort === true || g.dflt === true)); }
+async function markNewOwner(env, owner) { await env.KV.put("gsh/" + owner, JSON.stringify({ on: true, ack: false, isNew: true, dflt: true })); }
 async function opaqueId(owner) { const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("gfof|" + owner)); return "f_" + [...new Uint8Array(h)].slice(0, 8).map(b => b.toString(16).padStart(2, "0")).join(""); }
 // Friends of friends for `viewer`. A person shows up only when ALL hold: the viewer shares and has a complete profile; the
 // middle person shares and has saved the viewer back (mutual, so the viewer is inside their permissioned audience); the third
@@ -276,14 +277,14 @@ async function fofFor(env, viewer) {
   const nodes = new Map(), edges = [], need = new Set(), pend = [];
   mids.forEach((mid, i) => {
     const g = midRaw[2 * i] && JSON.parse(midRaw[2 * i]);
-    if (!(g && g.on === true && (g.ack === true || g.cohort === true))) return;
+    if (!(g && g.on === true && (g.ack === true || g.cohort === true || g.dflt === true))) return;
     const theirs = midRaw[2 * i + 1] ? JSON.parse(midRaw[2 * i + 1]) : [];
     if (!theirs.some(t => t.slug && t.slug === viewerSlug)) return;
     const list = theirs.slice(0, 100).filter(t => t.slug); list.forEach(t => need.add("card/" + t.slug)); pend.push({ mid, list });
   });
   const cardRaw = await getMany(env.KV, [...need]), cardOf = new Map([...need].map((k, i) => [k, cardRaw[i] ? JSON.parse(cardRaw[i]) : null]));
   const owners = new Set(); for (const { list } of pend) for (const t of list) { const rec = cardOf.get("card/" + t.slug); if (rec && rec.ownerToken) owners.add(rec.ownerToken); }
-  const ownerArr = [...owners], gRaw = await getMany(env.KV, ownerArr.map(o => "gsh/" + o)), shares = new Map(ownerArr.map((o, i) => { const g = gRaw[i] && JSON.parse(gRaw[i]); return [o, !!(g && g.on === true && (g.ack === true || g.cohort === true))]; }));
+  const ownerArr = [...owners], gRaw = await getMany(env.KV, ownerArr.map(o => "gsh/" + o)), shares = new Map(ownerArr.map((o, i) => { const g = gRaw[i] && JSON.parse(gRaw[i]); return [o, !!(g && g.on === true && (g.ack === true || g.cohort === true || g.dflt === true))]; }));
   for (const { mid, list } of pend) {
     const mx = direct.get(mid);
     for (const t of list) {
@@ -1644,11 +1645,11 @@ const appHandler = {
       if (req.method === "PUT") {
         const b = await req.json().catch(() => null);
         if (!b || typeof b.on !== "boolean") return j({ error: "on must be true or false" }, 400);
-        g = { on: b.on, ack: true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort), at: new Date().toISOString() };
+        g = { on: b.on, ack: true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort), dflt: false, at: new Date().toISOString() };
         await env.KV.put("gsh/" + owner, JSON.stringify(g));
       }
       const st = await profileStatus(env, owner);
-      return j({ choice: !g ? "unset" : (g.ack ? (g.on ? "on" : "off") : (g.cohort ? "on-until-you-choose" : "preselected-on")), needsChoice: !g || g.ack !== true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort && g.ack !== true), profileComplete: st.complete });
+      return j({ choice: !g ? "unset" : (g.ack ? (g.on ? "on" : "off") : (g.cohort ? "on-until-you-choose" : "preselected-on")), effective: await gshareOn(env, owner), needsChoice: !g || g.ack !== true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort && g.ack !== true), profileComplete: st.complete });
     }
 
     return j({ error: "not found" }, 404);

@@ -36,11 +36,11 @@ try {
   assert.ok(/Share your network\?/.test(t)); ok("an unchosen user with a filled profile gets the share choice sheet");
   await P.click("#gs-later"); await sleep(2000);
   t = await P.evaluate(() => (document.getElementById("netpeople") || {}).innerText || "");
-  assert.ok(/not sharing your network yet/.test(t) && await P.$("#gs-open")); ok("after Decide later, the People tab says why nothing shows and offers Share my network");
+  assert.ok(/No one to show yet/.test(t) && /you, your connection and that person all share/.test(t)); ok("after Decide later, default-on sharing is active and the People tab explains the all-share rule");
   if (shots) { await P.evaluate(() => document.getElementById("netpeople").scrollIntoView()); await P.screenshot({ path: shots + "/net-empty.png" }); }
-  await P.click("#gs-open"); await sleep(500); await P.click("#gs-yes"); await sleep(1500);
-  t = await P.evaluate(() => (document.getElementById("netpeople") || {}).innerText || "");
-  assert.ok(/No one to show yet/.test(t) && /you, your connection and that person all share/.test(t)); ok("once sharing is on and nobody else shares, it explains the all-share rule");
+  await P.goto(base + "#/settings", { waitUntil: "networkidle0" }); await sleep(1500);
+  t = await P.evaluate(() => document.body.innerText);
+  assert.ok(/Currently on by default/.test(t)); ok("Settings tells a default-on account it is on and can be turned off any time");
   const M = await mk(a.ownerToken, false); await M.goto(base + "#/map", { waitUntil: "networkidle0" }); await sleep(3000);
   let mt = await M.evaluate(() => (document.querySelector(".graphwrap + .hint") || {}).innerText || "");
   assert.ok(/No one to show yet/.test(mt)); ok("Map explains the all-share rule when sharing is on and nobody else shares");

@@ -724,7 +724,7 @@
     var bg = document.createElement("div"); bg.className = "sheet-bg"; bg.id = "gs-sheet";
     var fresh = st && (st.isNew || st.cohort);
     bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Share your network?</h3><p class="hint">' + esc(GS_TEXT) + '</p>' +
-      '<p class="hint">' + (st && st.cohort ? "Your network is already shared with people you are connected with, because this account is part of the test group. Tap Share to confirm, or keep it private." : fresh ? "Sharing is selected for new accounts. Tap Share to confirm, or keep it private." : "You have not chosen yet, so nothing of yours is shared.") + '</p>' +
+      '<p class="hint">' + (st && st.cohort ? "Your network is already shared with people you are connected with, because this account is part of the test group. Tap Share to confirm, or keep it private." : fresh ? "Sharing is on by default for new accounts - only what is described above, nothing else. Tap Keep it private to turn it off, now or any time in Settings." : "You have not chosen yet, so nothing of yours is shared.") + '</p>' +
       '<button class="btn btn-accent" id="gs-yes">Share my network</button><button class="btn ' + (fresh ? "btn-gray" : "btn-accent") + '" id="gs-no" style="margin-top:8px">Keep it private</button><button class="btn btn-plain" id="gs-later">Decide later</button></div>';
     document.body.appendChild(bg);
     function set(on) { api("/api/graph/sharing", { method: "PUT", body: { on: on } }).then(function () { bg.remove(); toast(on ? "Network sharing is on" : "Network sharing is off"); if (done) done(); }).catch(function () { toast("Could not save - try again"); }); }
@@ -734,7 +734,7 @@
   }
   function networkWhy(st) {
     if (!st.profileComplete) return { msg: "Fill in a few more details on your card (a headline, a short description, a link or a photo) to use network sharing. Until then you will not see people your connections know. <a href=\"#/edit\" style=\"color:var(--accent);font-weight:600\">Edit my card</a>", share: false };
-    if (st.choice !== "on" && st.choice !== "on-until-you-choose") return { msg: st.choice === "off" ? "Network sharing is off, so you do not see people your connections know. Turn it on in Settings." : "You are not sharing your network yet, so you do not see people your connections know.", share: st.choice !== "off" };
+    if (st.choice !== "on" && st.choice !== "on-until-you-choose" && !(st.choice === "preselected-on" && st.effective)) return { msg: st.choice === "off" ? "Network sharing is off, so you do not see people your connections know. Turn it on in Settings." : "You are not sharing your network yet, so you do not see people your connections know.", share: st.choice !== "off" };
     return { msg: "No one to show yet. Someone appears here only when you, your connection and that person all share their network, and you and your connection have saved each other.", share: false };
   }
   function mountNetworkPeople(box) {
@@ -763,8 +763,8 @@
     api("/api/graph/sharing").then(function (st) {
       var c = st.choice;
       box.innerHTML = '<div style="font-weight:600">Network sharing</div><div class="fineprint" style="margin:6px 0 10px">' + esc(GS_TEXT) + '</div>' +
-        '<div class="fineprint" style="margin:0 0 8px">' + (c === "on" ? "Currently on." : c === "on-until-you-choose" ? "Currently on for this test account. Choose below to confirm or turn it off." : c === "off" ? "Currently off." : "You have not chosen yet. Nothing is shared.") + '</div>' +
-        '<div class="themeseg"><button id="gs-on"' + (c === "on" || c === "on-until-you-choose" ? ' class="on"' : "") + '>Share</button><button id="gs-off"' + (c === "off" ? ' class="on"' : "") + '>Keep private</button></div>';
+        '<div class="fineprint" style="margin:0 0 8px">' + (c === "on" ? "Currently on." : c === "on-until-you-choose" ? "Currently on for this test account. Choose below to confirm or turn it off." : c === "off" ? "Currently off." : (st.effective ? "Currently on by default for new accounts. Turn it off any time." : "You have not chosen yet. Nothing is shared.")) + '</div>' +
+        '<div class="themeseg"><button id="gs-on"' + (c === "on" || c === "on-until-you-choose" || (c === "preselected-on" && st.effective) ? ' class="on"' : "") + '>Share</button><button id="gs-off"' + (c === "off" ? ' class="on"' : "") + '>Keep private</button></div>';
       function set(on) { api("/api/graph/sharing", { method: "PUT", body: { on: on } }).then(function () { toast(on ? "Network sharing is on" : "Network sharing is off"); mountNetworkSettings(box); }).catch(function () { toast("Could not save - try again"); }); }
       document.getElementById("gs-on").addEventListener("click", function () { set(true); });
       document.getElementById("gs-off").addEventListener("click", function () { set(false); });

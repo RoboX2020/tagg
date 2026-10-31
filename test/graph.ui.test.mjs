@@ -21,7 +21,7 @@ const shots = process.env.SHOTS || "";
 try {
   const b = await call("POST", "/api/auth/signup", { email: "gs@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
   await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} } }, b.ownerToken);
-  const st = await call("GET", "/api/graph/sharing", null, b.ownerToken); assert.equal(st.needsChoice, true); assert.equal(st.choice, "preselected-on"); ok("a new account starts preselected but unconfirmed");
+  const st = await call("GET", "/api/graph/sharing", null, b.ownerToken); assert.equal(st.needsChoice, true); assert.equal(st.choice, "preselected-on"); assert.equal(st.effective, true); ok("a new account starts preselected, on by default, with the notice pending");
   const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
   await P.evaluateOnNewDocument((api, tok) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "gs@tagg-test.invalid", name: "Bob Li", kind: "email", emailVerified: false }));
