@@ -26,13 +26,13 @@ try {
     github: { login: "alex-sample", name: "Alex Sample", bio: "Builds robot arms", company: "Sample University", location: "Tempe", followers: 12, repos: 9, avatar: null, source: "github-public-api", url: "https://github.com/alex-sample" } }));
   await api.env.KV.put("photo/" + card.slug, JSON.stringify({ ct: "image/png", b64: png(160, 160).toString("base64"), at: now, source: "linkedin" }));
   const b = await call("POST", "/api/auth/signup", { email: "pb@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
-  await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML", links: {} } });
+  await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} } }, b.ownerToken);
   await call("POST", "/api/people", { slug: card.slug, event: "Sample Hack", note: "SECRET-NOTE-xyz", location: { lat: 33.42551, lon: -111.94, label: "Tempe, Arizona", place: "Test Venue", acc: 12.4, at: "2026-10-30T18:00:00.000Z" } }, b.ownerToken);
   const saved = (await call("GET", "/api/people", null, b.ownerToken)).people[0];
   const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
   await P.evaluateOnNewDocument((api, tok) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "pb@tagg-test.invalid", name: "Bob Li", kind: "email", emailVerified: false }));
-    localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Bob Li", headline: "ML", links: {} })); localStorage.setItem("tagg.slug.v1", "bobli"); }, API_URL, b.ownerToken);
+    localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} })); localStorage.setItem("tagg.slug.v1", "bobli"); }, API_URL, b.ownerToken);
   await P.goto(base + "#/people", { waitUntil: "networkidle0" }); await sleep(800);
   await P.goto(base + "#/p/" + saved.id, { waitUntil: "networkidle0" }); await sleep(1500);
   const secs = await P.$$eval(".linksec .lstitle", els => els.map(e => e.textContent));

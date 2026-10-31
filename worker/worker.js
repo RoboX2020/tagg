@@ -20,7 +20,7 @@ function cleanCard(c) {
   if (!c || typeof c.name !== "string" || !c.name.trim()) return null;
   const links = {}; if (c.links && typeof c.links === "object") for (const k of ["linkedin","github","x","instagram","website"]) { if (typeof c.links[k] === "string" && c.links[k]) links[k] = c.links[k].slice(0, 300); }
   return {
-    name: c.name.slice(0, 120), headline: (c.headline || "").slice(0, 200),
+    name: c.name.slice(0, 120), headline: (c.headline || "").slice(0, 200), detail: (typeof c.detail === "string" ? c.detail : "").trim().slice(0, 160),
     email: (c.email || "").slice(0, 200), phone: (c.phone || "").slice(0, 40), links,
   };
 }
@@ -126,7 +126,7 @@ const MCP_TOOLS = [
 ];
 async function mcpCall(env, owner, scope, name, args) {
   const withNotes = scope === "people+notes";
-  const people = await getPeople(env, owner);
+  const people = await getPeopleFor(env, owner);
   if (name === "search_people") {
     const terms = String((args && args.query) || "").toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter(t => t.length > 1).slice(0, 12);
     if (!terms.length) return { people: [] };
@@ -175,6 +175,34 @@ function askSuggestions(question, people) {
   return out.slice(0, 8);
 }
 async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + owner)) || []; }
+// Profile completion gate. A viewer unlocks other people's shared details by completing their own profile: name, a short headline and one
+// useful detail (what they study, where they work or a project). Phone, photo and social accounts are never required. A LinkedIn import
+// the owner already made also counts as the detail. Until then the SERVER withholds the other person's details: the saved record only
+// carries what the viewer already knows from meeting them (name, headline, event, time, place, their own note and selfie).
+async function profileStatus(env, owner) {
+  const slug = await env.KV.get("own/" + owner);
+  const rec = slug ? await getJSON(env.KV, "card/" + slug) : null;
+  const c = rec && rec.card;
+  const en = slug ? await getJSON(env.KV, "enrich/" + slug) : null;
+  const li = en && en.linkedin;
+  const hasDetail = !!(c && c.detail && c.detail.trim().length >= 3) || !!(li && ((li.titles || []).length || (li.companies || []).length || (li.schools || []).length));
+  const missing = [];
+  if (!c || !c.name || c.name.trim().length < 1) missing.push("name");
+  if (!c || !c.headline || c.headline.trim().length < 3) missing.push("headline");
+  if (!hasDetail) missing.push("detail");
+  return { complete: missing.length === 0, missing };
+}
+function gatePerson(x, complete) {
+  if (complete) return x;
+  const o = { id: x.id, card: { name: x.card.name, headline: x.card.headline || "", email: "", phone: "", links: {} }, metAt: x.metAt, event: x.event, location: x.location || null, note: x.note || "", enriched: null, slug: null, locked: true };
+  if (x.photo) o.photo = x.photo;
+  if (x.savedPrivately) o.savedPrivately = true;
+  return o;
+}
+async function getPeopleFor(env, owner) {
+  const st = await profileStatus(env, owner);
+  return (await getPeople(env, owner)).map(x => gatePerson(x, st.complete));
+}
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
 
@@ -393,7 +421,14 @@ export default {
     if (p === "/api/people" && req.method === "GET") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      return j({ people: await getPeople(env, owner) });
+      const st = await profileStatus(env, owner);
+      return j({ people: (await getPeople(env, owner)).map(x => gatePerson(x, st.complete)), profile: st });
+    }
+
+    if (p === "/api/profile/status" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      return j(await profileStatus(env, owner));
     }
 
     // Update/delete a person (note).
@@ -409,15 +444,16 @@ export default {
       const i = list.findIndex(x => x.id === pm[1]);
       if (i < 0) return j({ error: "not found" }, 404);
       const person = list[i];
-      if (!person.slug) return j({ person, cardStatus: "saved" });
+      const st = await profileStatus(env, owner);
+      if (!person.slug) return j({ person: gatePerson(person, st.complete), cardStatus: "saved", profile: st });
       const rec = await getJSON(env.KV, "card/" + person.slug);
       if (!rec) {
         const stripped = { ...person, card: { name: person.card.name, headline: "", email: "", phone: "", links: {} }, enriched: null };
-        return j({ person: stripped, cardStatus: "removed" });
+        return j({ person: gatePerson(stripped, st.complete), cardStatus: "removed", profile: st });
       }
       const fresh = { ...person, card: rec.card, enriched: (await getJSON(env.KV, "enrich/" + person.slug)) || null };
       if (JSON.stringify(fresh.card) !== JSON.stringify(person.card) || JSON.stringify(fresh.enriched) !== JSON.stringify(person.enriched || null)) { list[i] = fresh; await putPeople(env, owner, list); }
-      return j({ person: fresh, cardStatus: "live", checkedAt: new Date().toISOString() });
+      return j({ person: gatePerson(fresh, st.complete), cardStatus: st.complete ? "live" : "locked", checkedAt: new Date().toISOString(), profile: st });
     }
     if (pm && (req.method === "PUT" || req.method === "DELETE")) {
       const owner = authOwner(req);
@@ -432,7 +468,7 @@ export default {
       if (body.photo === "") { delete list[i].photo; }
       else if (typeof body.photo === "string" && body.photo.startsWith("data:image/")) list[i].photo = body.photo.slice(0, 420000);
       await putPeople(env, owner, list);
-      return j({ ok: true, person: list[i] });
+      return j({ ok: true, person: gatePerson(list[i], (await profileStatus(env, owner)).complete) });
     }
 
     // Email + password sign-up (free, no email service: addresses are not verified, so no email-based recovery yet).
@@ -633,7 +669,7 @@ export default {
         list.unshift(person);
         await putPeople(env, owner, list);
       }
-      return j({ person });
+      return j({ person: gatePerson(person, (await profileStatus(env, owner)).complete) });
     }
 
     // Email verification: request a 6-digit code (valid 15 min), then confirm it. Only for email/password accounts.
@@ -1023,7 +1059,7 @@ export default {
       const body = await req.json().catch(() => null);
       const q = ((body && body.q) || "").slice(0, 500).trim();
       if (!q) return j({ error: "question required" }, 400);
-      const people = (await getPeople(env, owner)).slice(0, 60).map(x => ({
+      const people = (await getPeopleFor(env, owner)).slice(0, 60).map(x => ({
         name: x.card.name, headline: x.card.headline || null, links: Object.keys(x.card.links || {}),
         event: x.event || null, metAt: x.metAt, where: (x.location && x.location.label) || null,
         note: x.note || null,
@@ -1032,7 +1068,7 @@ export default {
       }));
       const hist = (body && Array.isArray(body.history) ? body.history : []).slice(-6).filter(h => h && (h.r === "me" || h.r === "tagg") && typeof h.t === "string").map(h => (h.r === "me" ? "USER: " : "TAGG: ") + h.t.slice(0, 500)).join("\n");
       const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + (hist ? "\n\nEARLIER IN THIS CONVERSATION (use it to resolve words like she, he, they, that person, and who else):\n" + hist : "") + "\n\nQUESTION: " + q;
-      const sug = askSuggestions(q, await getPeople(env, owner));
+      const sug = askSuggestions(q, await getPeopleFor(env, owner));
       if (sug.length) {
         const byHeard = {}; for (const s of sug) (byHeard[s.heard] = byHeard[s.heard] || []).push(s);
         const text = Object.keys(byHeard).map(h => "I found nothing in your saved people for \"" + h + "\". " + (byHeard[h].length > 1 ? "Similar words in your records: " : "A similar word in your records: ") + byHeard[h].map(s => s.meant + " (" + s.people.map(p => p.name).join(", ") + ")").join("; ") + ". This is a suggestion, not a confirmed match.").join("\n");
@@ -1080,7 +1116,7 @@ export default {
     if (p === "/api/graph" && req.method === "GET") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      const people = await getPeople(env, owner);
+      const people = await getPeopleFor(env, owner);
       const nodes = [{ id: "me", type: "self", name: "You" }];
       const edges = [];
       for (const x of people) { nodes.push({ id: x.id, type: "person", name: x.card.name, slug: x.slug || null }); edges.push({ from: "me", to: x.id, kind: "met", at: x.metAt, event: x.event || null }); }

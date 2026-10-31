@@ -30,7 +30,7 @@ try {
   const a = await call("POST", "/api/auth/signup", { email: "a@tagg-test.invalid", password: "alice-secret-1", name: "Alice Ng" });
   const card = await call("POST", "/api/card", { ownerToken: a.ownerToken, card: { name: "Alice Ng", headline: "Robotics", links: {} } });
   const b = await call("POST", "/api/auth/signup", { email: "b@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
-  await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML", links: {} } });
+  await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} } });
   await call("POST", "/api/people", { slug: card.slug, event: "Cal Hacks", note: "private note xyz" }, b.ownerToken);
   const savedAlice = (await call("GET", "/api/people", null, b.ownerToken)).people[0];
   await api.env.KV.put("enrich/" + card.slug, JSON.stringify({ linkedin: { headline: "Robotics Lead", titles: ["Engineer"], companies: ["Acme Robotics"], schools: ["Stanford"], location: "Palo Alto", source: "linkedin-pasted-text", confirmedAt: new Date().toISOString() } }));
@@ -39,7 +39,7 @@ try {
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
   await P.evaluateOnNewDocument((api, tok, prof) => {
     localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify(prof));
-    localStorage.setItem("tagg.consent.ask", "1"); localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Bob Li", headline: "ML", links: {} })); localStorage.setItem("tagg.slug.v1", "bobli");
+    localStorage.setItem("tagg.consent.ask", "1"); localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} })); localStorage.setItem("tagg.slug.v1", "bobli");
     window.__spoken = [];
     window.SpeechSynthesisUtterance = function (t) { this.text = t; };
     Object.defineProperty(window, "speechSynthesis", { value: { speak: u => window.__spoken.push(u.text), cancel() {} }, configurable: true });

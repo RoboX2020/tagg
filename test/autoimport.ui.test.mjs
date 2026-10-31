@@ -21,12 +21,12 @@ async function call(method, p, body, tok) { const r = await realFetch(API_URL + 
 const shots = process.env.SHOTS || "";
 try {
   const b = await call("POST", "/api/auth/signup", { email: "ai@tagg-test.invalid", password: "auto-secret-12", name: "Sam Rivera" });
-  const card = await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Sam Rivera", headline: "", links: {} } }, b.ownerToken);
+  const card = await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Sam Rivera", headline: "Robotics student", detail: "Builds robots", links: {} } }, b.ownerToken);
   const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
   await P.evaluateOnNewDocument((api, tok, slug) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.slug.v1", slug);
     localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "ai@tagg-test.invalid", name: "Sam Rivera", kind: "email", emailVerified: false }));
-    localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Sam Rivera", headline: "", links: {} })); }, API_URL, b.ownerToken, card.slug);
+    localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Sam Rivera", headline: "Robotics student", detail: "Builds robots", links: {} })); }, API_URL, b.ownerToken, card.slug);
   await P.goto(base + "#/edit", { waitUntil: "networkidle0" }); await sleep(600);
   await P.type("#f-linkedin", "linkedin.com/in/sam-rivera");
   await P.click("#save"); await waitText(P, "Fill your card from LinkedIn?");
@@ -51,7 +51,7 @@ try {
   const ek = "enrich/" + card.slug; const er = JSON.parse((await api.env.KV.get(ek)) || "{}"); er.github = { login: "sam-gh", name: "Sam Rivera", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, repos: 7, avatar: null, source: "github-public-api", url: "https://github.com/sam-gh", importedAt: new Date().toISOString() }; await api.env.KV.put(ek, JSON.stringify(er));
   await P.goto(base + "#/"); await sleep(300); await P.goto(base + "#/edit"); await waitText(P, "Imported from GitHub");
   ok("details stored earlier still show on the edit page with edit and remove");
-  await P.click("#gh-edit"); await P.$eval("#gh-bio", e => e.value = ""); await P.click("#gh-save"); await sleep(800);
+  await P.$eval("#gh-edit", e => e.click()); await P.$eval("#gh-bio", e => e.value = ""); await P.click("#gh-save"); await sleep(800);
   const gp = await call("GET", "/api/c/" + card.slug); assert.equal(gp.enriched.github.bio, null); assert.ok(gp.enriched.github.suppressed.includes("bio")); ok("GitHub edit saved, cleared field stays cleared");
   await P.click("#gh-remove"); await sleep(800); const gp2 = await call("GET", "/api/c/" + card.slug); assert.ok(!gp2.enriched || !gp2.enriched.github); ok("GitHub details removed");
   // Saving again with the same link must not ask or re-import.

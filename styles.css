@@ -346,3 +346,6 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .prow .pv{flex:1;min-width:0;overflow-wrap:anywhere}
 .ghrow{display:flex;gap:12px;align-items:center;margin-bottom:6px}
 .xembed a{color:var(--accent-2);font-weight:600}
+.lockbars{display:grid;gap:8px;margin:6px 0 12px}
+.lockbars i{display:block;height:12px;border-radius:6px;background:var(--sep)}
+.lockbars i:nth-child(2){width:78%}.lockbars i:nth-child(3){width:52%}

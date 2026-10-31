@@ -58,10 +58,12 @@
     if (!locals.length || !ownerToken()) return Promise.resolve();
     return api("/api/migrate", { method: "POST", body: { ownerToken: ownerToken(), people: locals } }).catch(function () {});
   }
+  var PROFILE_STATUS = null;
   function syncPeople() {
     if (!ownerToken()) return Promise.resolve(loadPeople());
     return api("/api/people").then(function (d) {
       var list = d.people || [];
+      PROFILE_STATUS = d.profile || null;
       savePeople(list);
       return list;
     }).catch(function () { return loadPeople(); });
@@ -941,6 +943,7 @@
       '<p class="lead">This is what people see when they scan your code.</p>' +
       '<div class="field"><label>Name</label><input class="input" id="f-name" placeholder="Prajval Arora" value="' + esc(c.name) + '"></div>' +
       '<div class="field"><label>Headline</label><input class="input" id="f-head" placeholder="Robotics engineering at ASU" value="' + esc(c.headline) + '"></div>' +
+      '<div class="field"><label>What you study, work on or build</label><input class="input" id="f-detail" maxlength="160" placeholder="Robotics at ASU, lab assistant" value="' + esc(c.detail || "") + '"><div class="fineprint" style="margin:6px 2px 0">Name, headline and this line complete your profile and unlock the details of people you meet. Phone, photo and social accounts are optional.</div></div>' +
       '<div class="field"><label>LinkedIn</label><input class="input" id="f-linkedin" placeholder="username or URL" value="' + esc(c.links.linkedin || "") + '"></div>' +
       '<div id="liimport"></div>' +
       '<div class="field"><label>GitHub</label><input class="input" id="f-github" placeholder="username or URL" value="' + esc(c.links.github || "") + '"></div>' +
@@ -958,7 +961,7 @@
     );
     function collect() {
       return {
-        name: v("f-name"), headline: v("f-head"),
+        name: v("f-name"), headline: v("f-head"), detail: v("f-detail"),
         email: v("f-email"), phone: v("f-phone"),
         links: {
           linkedin: normUrl("linkedin", v("f-linkedin")),
@@ -1241,6 +1244,7 @@
         (tag ? '<span class="lstag">' + tag + '</span>' : "") + (href ? '<a class="chip" href="' + esc(href) + '" target="_blank" rel="noopener">Open</a>' : "") + '</div>' + (body || "") + '</section>';
     }
     var out = "";
+    if (c.detail) out += box("About", "", '<div class="resline" style="font-weight:400">' + esc(c.detail) + '</div>');
     if (li) {
       var roles = list(li.titles, li.title), cos = list(li.companies, li.company), schools = list(li.schools, li.school);
       if (roles.length || cos.length) out += box("Work", "LinkedIn", roles.map(function (r) { return '<div class="resline">' + esc(r) + '</div>'; }).join("") + cos.map(function (r) { return '<div class="resline sub">' + esc(r) + '</div>'; }).join(""));
@@ -1295,6 +1299,20 @@
       '<a class="btn btn-accent" id="websearch-go" href="https://www.google.com/search?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener" style="margin-top:8px">Search Google</a>' +
       '<div class="fineprint" style="margin:8px 0 0">Opens Google. Results may include other people with the same name.</div></section>';
   }
+  function missingLabels(st) {
+    var m = (st && st.missing) || ["detail"], out = [];
+    if (m.indexOf("name") >= 0) out.push("your name");
+    if (m.indexOf("headline") >= 0) out.push("a short headline");
+    if (m.indexOf("detail") >= 0) out.push("one line about what you study, work on or build");
+    return out;
+  }
+  function lockedHtml(p) {
+    var first = esc((p.card.name || "").split(" ")[0] || "This person");
+    return '<section class="linksec lockedsec"><div class="lshead"><div class="lstitle"><i class="lsdot"></i>Complete your profile to see ' + first + "'s details</div></div>" +
+      '<div class="lockbars" aria-hidden="true"><i></i><i></i><i></i></div>' +
+      '<div class="lsline lsmute">Add ' + missingLabels(PROFILE_STATUS).map(esc).join(", ") + '. Phone, photo and social accounts are not needed. As soon as you save, their shared details unlock.</div>' +
+      '<a class="btn btn-accent" href="#/edit" style="margin-top:10px">Complete my profile</a></section>';
+  }
   function renderPerson(id) {
     var people = loadPeople();
     var p = null;
@@ -1316,10 +1334,10 @@
       '</div>' +
       '<div class="fineprint" id="cardstate" style="margin:10px 0 4px"></div>' +
       ((p.card.email || p.card.phone) ? '<div class="tc-links" style="margin:6px 0 4px">' + (p.card.email ? '<a class="chip" href="mailto:' + esc(p.card.email) + '">Email</a>' : "") + (p.card.phone ? '<a class="chip" href="tel:' + esc(p.card.phone) + '">Call</a>' : "") + '</div>' : "") +
-      (enrichHtml(p) || '<section class="linksec"><div class="lsline lsmute">No links shared</div></section>') +
-      searchHtml(p) +
+      (p.locked ? lockedHtml(p) : (enrichHtml(p) || '<section class="linksec"><div class="lsline lsmute">No links shared</div></section>')) +
+      (p.locked ? "" : searchHtml(p)) +
       '<div style="height:12px"></div>' +
-      '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>' +
+      (p.locked ? "" : '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>') +
       '<h2 class="section">Why keep in touch</h2>' +
       '<div class="answer">' + esc(whyTalk(me, p.card, p.event)) + '</div>' +
       '<h2 class="section">Your note <span class="soon">private to you</span></h2>' +
@@ -1362,7 +1380,8 @@
         if (hold) hold.textContent = "Showing the copy saved on " + fmtDate(p.metAt) + ". Could not check for updates right now.";
       });
     }
-    document.getElementById("vcf").addEventListener("click", function () { downloadVcf(p); });
+    var vcfBtn = document.getElementById("vcf"); if (vcfBtn) vcfBtn.addEventListener("click", function () { downloadVcf(p); });
+    if (p.locked && ownerToken()) api("/api/people/" + id).then(function (d) { if (d && d.person && !d.person.locked) { var all = loadPeople(); for (var k = 0; k < all.length; k++) if (all[k].id === id) all[k] = d.person; savePeople(all); if (location.hash === "#/p/" + id) renderPerson(id); } }).catch(function () {});
     document.getElementById("savenote").addEventListener("click", function () {
       p.note = document.getElementById("note").value;
       persistPerson(p, { note: p.note });
@@ -1430,6 +1449,7 @@
           '<div class="detail" style="white-space:normal">' + esc([r.event || (r.location && r.location.label) || "", fmtDate(r.at)].filter(Boolean).join(" · ")) + (r.contact ? " · " + esc(r.contact) : "") + (r.hasCard ? " · has a Tagg card" : "") + (r.verified ? " · Google-verified" : " · unverified identity") + '</div></div></div>' +
           '<div class="row" style="gap:8px;border-bottom:none;padding-top:0"><button class="btn btn-accent small" data-acc="' + r.id + '" style="flex:1">Connect back</button><button class="btn btn-gray small" data-dec="' + r.id + '" style="flex:1">Not now</button></div>';
       }).join("") + '</div>' : "") +
+      (people.some(function (p) { return p.locked; }) ? '<a class="scanbanner" href="#/edit" style="text-decoration:none;color:inherit"><span><b>Complete your profile</b> to see the details people shared with you. It takes one line.</span></a>' : "") +
       (people.length ? '<div class="group">' + people.map(function (p) {
         return '<a class="row" href="#/p/' + p.id + '">' +
           '<div class="avatar">' + esc(initial(p.card.name)) + '</div>' +

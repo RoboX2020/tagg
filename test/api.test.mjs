@@ -5,7 +5,10 @@ import { start } from "./serve.mjs";
 const { srv, url, env } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
 if (env) env.SIGNUP_PER_HOUR = "200"; // this test signs up many accounts from one address
 let passed = 0;
+globalThis.__rawCards = false;
 async function call(method, path, body, tok) {
+  // Test cards are complete profiles by default (name, headline, one detail) so the profile gate does not hide data in unrelated tests.
+  if (path === "/api/card" && body && body.card && !globalThis.__rawCards) { body = { ...body, card: { ...body.card } }; if (!body.card.detail) body.card.detail = "Test detail"; if (!body.card.headline || body.card.headline.length < 3) body.card.headline = "Test headline"; }
   const r = await fetch(url + path, { method, headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: body ? JSON.stringify(body) : undefined });
   return { status: r.status, body: await r.json() };
 }
@@ -405,5 +408,57 @@ ok("another user cannot revoke Bob's token", (await call("DELETE", "/api/tokens/
 ok("owner can revoke a token", (await call("DELETE", "/api/tokens/" + t1.body.id, null, bTok)).body.revoked === true);
 ok("a revoked token stops working immediately", (await rpc(t1.body.token, "tools/list")).status === 401);
 ok("MCP notifications get 202", (await (async () => { const r = await fetch(url + "/api/mcp", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + t2.body.token }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) }); return r.status; })()) === 202);
+// ---- Profile completion gate: incomplete viewers get the server to withhold other people's details ----
+{
+  const SECRET_EMAIL = "gate-alice@secret.invalid", SECRET_PHONE = "+1 555 0100 777", SECRET_DETAIL = "Builds gate-secret-widgets", SECRET_LI = "gate-secret-handle";
+  const gAt = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const gAc = await call("POST", "/api/card", { ownerToken: gAt, card: { name: "Gate Alice", headline: "Robotics lead", detail: SECRET_DETAIL, email: SECRET_EMAIL, phone: SECRET_PHONE, links: { linkedin: "https://linkedin.com/in/" + SECRET_LI, github: "https://github.com/gate-alice" } } }, gAt);
+  await env.KV.put("enrich/" + gAc.body.slug, JSON.stringify({ linkedin: { headline: "x", titles: ["Gate Title"], companies: ["Gate Co"], schools: ["Gate School"], location: "Gate City", importedAt: new Date().toISOString(), hasPhoto: true } }));
+  const gBt = (await call("POST", "/api/owner", {})).body.ownerToken;
+  globalThis.__rawCards = true;
+  await call("POST", "/api/card", { ownerToken: gBt, card: { name: "Gate Bob", headline: "h", links: {} } }, gBt);
+  globalThis.__rawCards = false;
+  const st0 = await call("GET", "/api/profile/status", null, gBt);
+  ok("status says an incomplete profile is missing headline and detail", st0.status === 200 && st0.body.complete === false && st0.body.missing.includes("headline") && st0.body.missing.includes("detail"));
+  ok("status needs sign in", (await call("GET", "/api/profile/status")).status === 401);
+  const sv = await call("POST", "/api/people", { slug: gAc.body.slug, event: "Gate Expo", note: "bob private note", location: { lat: 33.1, lon: -111.9, label: "Gate Place", acc: 9 } }, gBt);
+  const raw = JSON.stringify(sv.body);
+  const leaks = (t) => [SECRET_EMAIL, SECRET_PHONE, SECRET_DETAIL, SECRET_LI, "gate-alice", "Gate Title", "Gate School", gAc.body.slug].filter(x => t.includes(x));
+  ok("save response to an incomplete viewer carries no hidden details", sv.status === 200 && leaks(raw).length === 0 && sv.body.person.locked === true);
+  const lst = await call("GET", "/api/people", null, gBt); const gp = lst.body.people[0];
+  ok("list withholds email, phone, links, detail, imports and the card slug", leaks(JSON.stringify(lst.body.people)).length === 0 && gp.card.name === "Gate Alice" && gp.card.headline === "Robotics lead" && gp.locked === true);
+  ok("who they met and the viewer's own note, event and pin stay visible", gp.event === "Gate Expo" && gp.note === "bob private note" && gp.location.lat === 33.1 && gp.metAt);
+  const one = await call("GET", "/api/people/" + gp.id, null, gBt);
+  ok("opening one person is gated too and never says live", leaks(JSON.stringify(one.body)).length === 0 && one.body.person.locked === true && one.body.cardStatus === "locked");
+  const nt = await call("PUT", "/api/people/" + gp.id, { note: "edited note" }, gBt);
+  ok("editing a note works while locked and still withholds", nt.status === 200 && nt.body.person.note === "edited note" && leaks(JSON.stringify(nt.body)).length === 0);
+  let prompt = ""; env.AI = { run: async (m, a) => { prompt = a.messages[0].content; return { response: "ok" }; } };
+  await call("POST", "/api/ask", { q: "Who did I meet at Gate Expo?" }, gBt);
+  ok("Ask never receives hidden details for locked people", prompt.includes("Gate Alice") && leaks(prompt).length === 0 && !prompt.includes("Gate Co"));
+  const gm = await call("POST", "/api/tokens", { name: "gate agent", scope: "people" }, gBt);
+  const mr = await rpc(gm.body.token, "tools/call", { name: "search_people", arguments: { query: "Gate Alice" } });
+  ok("MCP never returns hidden details for locked people", leaks(JSON.stringify(mr.body)).length === 0 && JSON.stringify(mr.body).includes("Gate Alice"));
+  const gr = await call("GET", "/api/graph", null, gBt);
+  ok("graph export carries no slug for locked people", gr.body.nodes.every(n => !n.slug));
+  // Complete the profile: unlocks immediately, within what Alice shares.
+  await call("POST", "/api/card", { ownerToken: gBt, card: { name: "Gate Bob", headline: "Student", detail: "Studies robotics", links: {} } }, gBt);
+  const st1 = await call("GET", "/api/profile/status", null, gBt);
+  const un = (await call("GET", "/api/people", null, gBt)).body.people[0];
+  ok("saving a complete profile unlocks the details at once", st1.body.complete === true && !un.locked && un.card.email === SECRET_EMAIL && un.card.detail === SECRET_DETAIL && un.card.links.github.includes("gate-alice") && un.enriched.linkedin.companies[0] === "Gate Co");
+  ok("nothing was deleted by locking or unlocking: the stored note is intact", un.note === "edited note");
+  // Alice removes her phone: unlock shows only what she still shares.
+  await call("POST", "/api/card", { ownerToken: gAt, card: { name: "Gate Alice", headline: "Robotics lead", detail: SECRET_DETAIL, email: SECRET_EMAIL, phone: "", links: {} } }, gAt);
+  const un2 = await call("GET", "/api/people/" + un.id, null, gBt);
+  ok("unlocked view follows the subject's current sharing", un2.body.person.card.phone === "" && Object.keys(un2.body.person.card.links).length === 0);
+  // A LinkedIn import counts as the useful detail, so nobody is forced to write one.
+  const gCt = (await call("POST", "/api/owner", {})).body.ownerToken;
+  globalThis.__rawCards = true; const gCc = await call("POST", "/api/card", { ownerToken: gCt, card: { name: "Gate Cara", headline: "Designer", links: {} } }, gCt); globalThis.__rawCards = false;
+  const before = (await call("GET", "/api/profile/status", null, gCt)).body;
+  await env.KV.put("enrich/" + gCc.body.slug, JSON.stringify({ linkedin: { titles: ["Designer"], companies: [], schools: [], importedAt: new Date().toISOString() } }));
+  const after = (await call("GET", "/api/profile/status", null, gCt)).body;
+  ok("an existing LinkedIn import completes the detail", before.complete === false && after.complete === true);
+  env.AI = undefined;
+}
+
 srv.close();
 console.log("\n" + passed + " checks passed");
