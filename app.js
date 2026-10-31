@@ -533,6 +533,14 @@
     return eventName ? "A good contact from " + eventName + " - add a note about what you discussed." : "Add a note about what you discussed.";
   }
 
+  // Imported LinkedIn connections get a truthful summary instead: only what the export file contained,
+  // never "fresh conversation" claims. Topic words come from the imported headline, nothing else.
+  function importWhy(p) {
+    var t = topicsOf((p.card.headline || "") + " " + (p.card.name || ""));
+    var base = "From your own LinkedIn export - Tagg keeps only the name, headline, profile link and Connected On date from that file. Never shown to other Tagg users.";
+    return t.length ? "The headline in your export is about " + t.join(" and ") + ". " + base : base;
+  }
+
   /* ================= icons (inline SVG) ================= */
   var IC = {
     card: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><circle cx="9" cy="11" r="2.2"/><path d="M5.5 16.5c.7-1.6 2-2.4 3.5-2.4s2.8.8 3.5 2.4"/><path d="M15 10h4M15 13.5h4"/></svg>',
@@ -1558,8 +1566,9 @@
       (p.locked ? "" : searchHtml(p)) +
       '<div style="height:12px"></div>' +
       ((p.locked || p.source === "linkedin-export") ? "" : '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>') +
-      '<h2 class="section">Why keep in touch</h2>' +
-      '<div class="answer">' + esc(whyTalk(me, p.card, p.event)) + '</div>' +
+      (p.source === "linkedin-export"
+        ? '<h2 class="section">What Tagg knows</h2><div class="answer">' + esc(importWhy(p)) + '</div>'
+        : '<h2 class="section">Why keep in touch</h2><div class="answer">' + esc(whyTalk(me, p.card, p.event)) + '</div>') +
       '<h2 class="section">Your note <span class="soon">private to you</span></h2>' +
       '<textarea class="input" id="note" placeholder="What did you two talk about?">' + esc(p.note || "") + '</textarea>' +
       '<div style="height:10px"></div>' +
@@ -1757,7 +1766,7 @@
     var people = loadPeople();
     shell("people",
       '<h1 class="largetitle">People</h1>' +
-      '<p class="lead">Everyone you have met through Tagg, newest first.</p>' +
+      '<p class="lead">' + (people.some(function (p) { return p.source === "linkedin-export"; }) ? "People you met through Tagg and connections you imported, newest first." : "Everyone you have met through Tagg, newest first.") + '</p>' +
       '<div style="margin-bottom:12px"><button class="btn btn-gray small" id="li-conn-import">Import LinkedIn connections</button></div>' +
       (INBOX.length ? '<h2 class="section" style="margin-top:6px">Connection requests</h2><div class="group">' + INBOX.map(function (r) {
         return '<div class="row"><div class="avatar">' + esc(initial(r.name || "?")) + '</div>' +
@@ -1921,6 +1930,14 @@
     }
     return scored.slice(0, 4).map(function (s) {
       var p = s.p;
+      if (p.source === "linkedin-export") {
+        return '<div class="answer" style="margin-bottom:12px">' +
+          '<b>' + esc(p.card.name) + '</b> - imported from your LinkedIn export' + (p.connectedOn ? ', connected ' + esc(p.connectedOn) : '') + '.' +
+          (p.card.headline ? ' ' + esc(p.card.headline) + '.' : '') +
+          (p.note ? '<br><span style="color:var(--text-2)">Your note: ' + esc(p.note) + '</span>' : '') +
+          '<div style="margin-top:10px"><a class="btn btn-gray small" href="#/p/' + p.id + '">Open card</a></div>' +
+          '</div>';
+      }
       return '<div class="answer" style="margin-bottom:12px">' +
         'You met <b>' + esc(p.card.name) + '</b>' +
         (p.event ? ' at <b>' + esc(p.event) + '</b>' : '') +

@@ -205,6 +205,28 @@ try {
   await waitText(D, "blocked for this site", 8000);
   assert.ok((await text(D)).includes("Try again")); ok("denied location shows how to fix it and a Try again link");
   await D.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await D.screenshot({ path: "/tmp/work/shot-loc-denied.png" });
+  // LinkedIn connections import (sample identities, local test server only): list copy, escaping, card provenance.
+  await A.evaluate(async () => {
+    const tok = localStorage.getItem("tagg.owner.v1");
+    const r = await fetch(localStorage.getItem("tagg.api") + "/api/import/linkedin-connections", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + tok }, body: JSON.stringify({ connections: [
+      { name: "Maya Chen", headline: "Senior Product Designer at Pixelflow", url: "https://www.linkedin.com/in/mayachen", connectedOn: "12 Mar 2025" },
+      { name: "<img src=x onerror=window.__xss=1> Eve", headline: "ops", url: "", connectedOn: "" }
+    ] }) });
+    if (!r.ok) throw new Error("import failed: " + r.status);
+  });
+  await A.goto(base + "#/people"); await A.reload({ waitUntil: "networkidle0" }); await sleep(2500);
+  const pplTxt = await text(A);
+  assert.ok(pplTxt.includes("People you met through Tagg and connections you imported")); ok("People lead stays truthful once imports are present");
+  assert.ok(pplTxt.includes("Imported from your LinkedIn export")); ok("imported rows are labeled in the list");
+  assert.equal(await A.evaluate(() => window.__xss || null), null); ok("an HTML payload in an imported name renders as inert text, never markup");
+  assert.ok(pplTxt.includes("<img src=x onerror=window.__xss=1> Eve")); ok("the payload name is shown as literal text");
+  await clickText(A, "a.row .title", "Maya Chen");
+  await waitText(A, "From your own LinkedIn export", 10000);
+  const cardTxt = await text(A);
+  assert.ok(/WHAT TAGG KNOWS/i.test(cardTxt)); ok("imported card replaces Why keep in touch with What Tagg knows");
+  assert.ok(cardTxt.includes("12 Mar 2025")); ok("imported card shows Connected On, not a met moment");
+  assert.ok(!cardTxt.includes("still fresh") && !cardTxt.includes("Worth a follow-up")); ok("imported cards carry no fake freshness claims");
+  await A.screenshot({ path: "/tmp/work/shot-import-card.png" });
   await A.goto(base + "#/settings"); await A.reload({ waitUntil: "networkidle0" }); await sleep(1500);
   await A.waitForSelector("#delete-account", { timeout: 15000 });
   await A.$eval("#delete-account", e => e.click()); await sleep(400);

@@ -1314,8 +1314,18 @@ const appHandler = {
       if (!rows || !rows.length) return j({ error: "No connections found in that file" }, 400);
       const now = new Date().toISOString();
       const list = await getPeople(env, owner);
-      const seenUrl = new Set(), seenName = new Set();
-      list.forEach(x => { const u = x.card && x.card.links && x.card.links.linkedin; if (u) seenUrl.add(String(u).toLowerCase()); if (x.card && x.card.name) seenName.add(String(x.card.name).toLowerCase()); });
+      // Dedupe on identity-strong keys only. A LinkedIn profile URL is a strong identifier: URL matches
+      // dedupe against anyone already in the list. A name on its own is NOT one - different people share
+      // names - so an import never merges with a Tagg-met person or another import by name alone.
+      // Rows without a URL dedupe only against earlier no-URL imports, by name + Connected On + headline
+      // together, so re-importing the same export stays idempotent without conflating namesakes.
+      const seenUrl = new Set(), seenNoUrl = new Set();
+      const noUrlKey = (n, c, h) => String(n).toLowerCase() + "|" + (c || "") + "|" + (h || "");
+      list.forEach(x => {
+        const u = x.card && x.card.links && x.card.links.linkedin;
+        if (u) seenUrl.add(String(u).toLowerCase());
+        else if (x.source === "linkedin-export" && x.card) seenNoUrl.add(noUrlKey(x.card.name, x.connectedOn, x.card.headline));
+      });
       let added = 0, skipped = 0;
       const room = Math.max(0, 500 - list.length);
       for (const r of rows) {
@@ -1325,16 +1335,16 @@ const appHandler = {
         const urlIn = typeof (r && r.url) === "string" && r.url.trim() ? r.url.trim() : "";
         const url = urlIn ? (parseLinkedinUrl(urlIn) || "") : "";
         if (urlIn && !url) { skipped++; continue; }
-        if ((url && seenUrl.has(url.toLowerCase())) || seenName.has(name.toLowerCase())) { skipped++; continue; }
         const headline = clip(r && r.headline, 300);
         const connectedOn = clip(r && r.connectedOn, 40);
+        if (url ? seenUrl.has(url.toLowerCase()) : seenNoUrl.has(noUrlKey(name, connectedOn, headline))) { skipped++; continue; }
         list.unshift({ id: "p_" + rand(10), slug: null,
           card: { name, headline, email: "", phone: "", links: url ? { linkedin: url } : {} },
           metAt: "", event: "", location: null, note: "", enriched: null,
           source: "linkedin-export", connectedOn: connectedOn || null, importedAt: now });
         added++;
         if (url) seenUrl.add(url.toLowerCase());
-        seenName.add(name.toLowerCase());
+        else seenNoUrl.add(noUrlKey(name, connectedOn, headline));
       }
       if (added) await putPeople(env, owner, list);
       return j({ ok: true, added, skipped });
