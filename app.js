@@ -913,12 +913,16 @@
     var da = document.getElementById("delete-account"); if (da) da.addEventListener("click", showDeleteAccount);
     var ve = document.getElementById("verify-email"); if (ve) ve.addEventListener("click", showVerifyEmail);
   }
+  function personSub(p) {
+    if (p && p.source === "linkedin-export") return "Imported from your LinkedIn export" + (p.connectedOn ? " - connected " + p.connectedOn : "");
+    return (p.event || "Somewhere") + " \u00b7 " + fmtDate(p.metAt);
+  }
   function recentHtml(people) {
     var rows = people.slice(0, 3).map(function (p) {
       return '<a class="row" href="#/p/' + p.id + '">' +
         '<div class="avatar">' + esc(initial(p.card.name)) + '</div>' +
         '<div class="grow"><div class="title">' + esc(p.card.name) + '</div>' +
-        '<div class="detail">' + esc(p.event || "Somewhere") + " · " + fmtDate(p.metAt) + '</div></div>' +
+        '<div class="detail">' + esc(personSub(p)) + '</div></div>' +
         IC.chev + '</a>';
     }).join("");
     return '<div class="group">' + rows + '</div>' +
@@ -1542,16 +1546,18 @@
       ((p.enriched && p.enriched.linkedin && p.enriched.linkedin.location) ? '<div class="ph-loc">' + esc(p.enriched.linkedin.location) + '</div>' : '') +
       '</div></div>' +
       '<div class="metagrid">' +
-      meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
-      meta("At", p.event || "-") +
-      whereMeta(loc, mapLink) +
+      (p.source === "linkedin-export"
+        ? meta("From", "Your LinkedIn export") + (p.connectedOn ? meta("Connected", esc(p.connectedOn)) : "")
+        : meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
+          meta("At", p.event || "-") +
+          whereMeta(loc, mapLink)) +
       '</div>' +
       '<div class="fineprint" id="cardstate" style="margin:10px 0 4px"></div>' +
       ((p.card.email || p.card.phone) ? '<div class="tc-links" style="margin:6px 0 4px">' + (p.card.email ? '<a class="chip" href="mailto:' + esc(p.card.email) + '">Email</a>' : "") + (p.card.phone ? '<a class="chip" href="tel:' + esc(p.card.phone) + '">Call</a>' : "") + '</div>' : "") +
       (p.locked ? lockedHtml(p) : (enrichHtml(p) || '<section class="linksec"><div class="lsline lsmute">No links shared</div></section>')) +
       (p.locked ? "" : searchHtml(p)) +
       '<div style="height:12px"></div>' +
-      (p.locked ? "" : '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>') +
+      ((p.locked || p.source === "linkedin-export") ? "" : '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>') +
       '<h2 class="section">Why keep in touch</h2>' +
       '<div class="answer">' + esc(whyTalk(me, p.card, p.event)) + '</div>' +
       '<h2 class="section">Your note <span class="soon">private to you</span></h2>' +
@@ -1667,11 +1673,92 @@
   }
 
   /* ================= people list ================= */
+  /* ---- Import LinkedIn connections (the owner's own official LinkedIn data export, connections.csv) ---- */
+  function parseCsvRows(text) {
+    var rows = [], row = [], cell = "", inQ = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text[i];
+      if (inQ) { if (c === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else inQ = false; } else cell += c; }
+      else if (c === '"') inQ = true;
+      else if (c === ",") { row.push(cell); cell = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cell); cell = "";
+        if (row.length > 1 || row[0] !== "") rows.push(row);
+        row = [];
+      } else cell += c;
+    }
+    if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  // LinkedIn's connections.csv may open with a few note lines before the real header.
+  function parseLinkedinConnections(text) {
+    var rows = parseCsvRows(text);
+    var hi = -1;
+    for (var i = 0; i < rows.length; i++) { if (rows[i].some(function (c) { return /^\s*First Name\s*$/i.test(c); })) { hi = i; break; } }
+    if (hi < 0) return null;
+    var head = rows[hi].map(function (c) { return c.trim().toLowerCase(); });
+    function col(n) { return head.indexOf(n); }
+    var cf = col("first name"), cl = col("last name"), cu = col("url"), cc = col("company"), cp = col("position"), co = col("connected on");
+    var out = [];
+    for (var r = hi + 1; r < rows.length && out.length < 500; r++) {
+      var name = ((cf >= 0 ? rows[r][cf] : "") + " " + (cl >= 0 ? rows[r][cl] : "")).trim();
+      if (!name) continue;
+      var headline = [cp >= 0 ? (rows[r][cp] || "").trim() : "", cc >= 0 ? (rows[r][cc] || "").trim() : ""].filter(Boolean).join(" at ");
+      out.push({ name: name, headline: headline, url: cu >= 0 ? (rows[r][cu] || "").trim() : "", connectedOn: co >= 0 ? (rows[r][co] || "").trim() : "" });
+    }
+    return out;
+  }
+  function showLiConnImport() {
+    var inp = document.createElement("input");
+    inp.type = "file"; inp.accept = ".csv,text/csv";
+    inp.addEventListener("change", function () {
+      var f = inp.files && inp.files[0];
+      if (!f) return;
+      if (f.size > 3 * 1024 * 1024) { toast("That file is too large - export only Connections from LinkedIn"); return; }
+      var rd = new FileReader();
+      rd.onload = function () {
+        var rows = parseLinkedinConnections(String(rd.result || ""));
+        if (!rows) { toast("That does not look like LinkedIn's connections.csv"); return; }
+        if (!rows.length) { toast("No connections found in that file"); return; }
+        showLiConnPreview(rows);
+      };
+      rd.readAsText(f);
+    });
+    inp.click();
+  }
+  function showLiConnPreview(rows) {
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Import ' + rows.length + ' LinkedIn connection' + (rows.length > 1 ? "s" : "") + '</h3>' +
+      '<p class="hint">From your own LinkedIn data export. Only names, headlines, profile links and the Connected On date are kept - email addresses are not imported. These are saved as people you know from LinkedIn, separate from moments you saved in Tagg, and they are never shown to other Tagg users.</p>' +
+      '<div class="group" style="max-height:180px;overflow:auto">' + rows.slice(0, 8).map(function (r) {
+        return '<div class="row"><div class="avatar">' + esc(initial(r.name)) + '</div><div class="grow"><div class="title">' + esc(r.name) + '</div><div class="detail">' + esc(r.headline || "LinkedIn connection") + '</div></div></div>';
+      }).join("") + (rows.length > 8 ? '<div class="row"><div class="grow"><div class="detail">and ' + (rows.length - 8) + ' more</div></div></div>' : "") + '</div>' +
+      '<p class="hint" id="li-err" style="color:var(--accent)"></p>' +
+      '<button class="btn btn-accent" id="li-go">Import ' + rows.length + '</button>' +
+      '<button class="btn btn-gray" id="li-cancel">Cancel</button></div>';
+    document.body.appendChild(bg);
+    bg.querySelector("#li-cancel").addEventListener("click", function () { bg.remove(); });
+    bg.querySelector("#li-go").addEventListener("click", function () {
+      var btn = bg.querySelector("#li-go"); btn.disabled = true; btn.textContent = "Importing...";
+      api("/api/import/linkedin-connections", { method: "POST", body: { connections: rows } }).then(function (d) {
+        bg.remove();
+        toast("Imported " + d.added + " connection" + (d.added === 1 ? "" : "s") + (d.skipped ? " - " + d.skipped + " already in Tagg" : ""));
+        syncPeople().then(function () { route(); });
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = "Import " + rows.length;
+        bg.querySelector("#li-err").textContent = (e && e.message) || "Import failed - try again";
+      });
+    });
+  }
+
   function renderPeople() {
     var people = loadPeople();
     shell("people",
       '<h1 class="largetitle">People</h1>' +
       '<p class="lead">Everyone you have met through Tagg, newest first.</p>' +
+      '<div style="margin-bottom:12px"><button class="btn btn-gray small" id="li-conn-import">Import LinkedIn connections</button></div>' +
       (INBOX.length ? '<h2 class="section" style="margin-top:6px">Connection requests</h2><div class="group">' + INBOX.map(function (r) {
         return '<div class="row"><div class="avatar">' + esc(initial(r.name || "?")) + '</div>' +
           '<div class="grow"><div class="title">' + esc(r.name || "Someone") + '</div>' +
@@ -1683,7 +1770,7 @@
         return '<a class="row" href="#/p/' + p.id + '">' +
           '<div class="avatar">' + esc(initial(p.card.name)) + '</div>' +
           '<div class="grow"><div class="title">' + esc(p.card.name) + '</div>' +
-          '<div class="detail">' + esc(p.event || "Somewhere") + " · " + fmtDate(p.metAt) + '</div></div>' +
+          '<div class="detail">' + esc(personSub(p)) + '</div></div>' +
           IC.chev + '</a>';
       }).join("") + '</div>' :
       '<div class="empty"><div class="glyph">' + IC.people + '</div><div class="t">No one here yet</div><div class="d">Show your Tagg code next time you meet someone - they will appear here with when and where.</div></div>') +
@@ -1691,6 +1778,7 @@
       (people.length ? '<div style="height:14px"></div><a class="btn btn-tinted" href="#/ask">Ask about the people you met</a>' : '<div style="height:14px"></div><a class="btn btn-accent" href="#/">Show my Tagg code</a>')
     );
     mountNetworkPeople(document.getElementById("netpeople"));
+    var lci = document.getElementById("li-conn-import"); if (lci) lci.addEventListener("click", showLiConnImport);
     Array.prototype.forEach.call(document.querySelectorAll("[data-acc]"), function (b) {
       b.addEventListener("click", function () { respond(b.getAttribute("data-acc"), true, b); });
     });
@@ -1850,7 +1938,7 @@
     var people = loadPeople();
     shell("map",
       '<h1 class="largetitle">Your map</h1>' +
-      '<p class="lead">Everyone you have met. Drag a person to move them, drag the background to pan, pinch or scroll to zoom, tap to open a card. Orange lines join people you met at the same event.</p>' +
+      '<p class="lead">Everyone you have met. Drag a person to move them, drag the background to pan, pinch or scroll to zoom, tap to open a card. Dotted gray lines group people you met at the same event - that does not mean they know each other. Dashed orange lines and hollow nodes are people your connections know, shown only with their consent.</p>' +
       (people.length ?
         '<div class="graphwrap" style="position:relative"><canvas id="graph"></canvas>' +
         '<div class="graphctl"><button id="g-in" aria-label="Zoom in">+</button><button id="g-out" aria-label="Zoom out">\u2212</button><button id="g-reset" aria-label="Reset view">Reset</button></div></div>' +
@@ -1859,7 +1947,7 @@
     );
     if (!people.length) return;
     // Interactive graph: nodes settle with a small physics model. Drag a node to move it, drag the background to pan,
-    // pinch / scroll / +- to zoom. People who met at the same event are linked. Tap a node (without dragging) to open it.
+    // pinch / scroll / +- to zoom. People you met at the same event are grouped with a dotted gray line (grouping only, not evidence they know each other). Tap a node (without dragging) to open it.
     var cv = document.getElementById("graph");
     var W = cv.parentElement.clientWidth - 20, H = (window.innerWidth >= 900) ? Math.min(620, Math.max(420, Math.round(W * 0.62))) : Math.min(520, Math.max(340, Math.round(W * 1.15)));
     var dpr = window.devicePixelRatio || 1;
@@ -1869,7 +1957,7 @@
     var font = getComputedStyle(document.body).fontFamily;
     var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     var cs = getComputedStyle(document.documentElement);
-    var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim();
+    var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim(), mapSoft = cs.getPropertyValue("--text-3").trim();
     var me = loadCard();
     var R0 = Math.min(W, H) / 2 - 56;
     var nodes = [{ you: true, x: 0, y: 0, vx: 0, vy: 0, r: 26, label: "You", init: me ? initial(me.name) : "Y", fixed: false }];
@@ -1881,7 +1969,8 @@
     for (var i = 1; i < nodes.length; i++) links.push({ a: 0, b: i, k: 0.02, len: R0 * 0.75, soft: false });
     for (var i = 1; i < nodes.length; i++) for (var j = i + 1; j < nodes.length; j++) {
       var ea = (nodes[i].p.event || "").trim().toLowerCase(), eb = (nodes[j].p.event || "").trim().toLowerCase();
-      if (ea && ea === eb) links.push({ a: i, b: j, k: 0.012, len: 70, soft: true });
+      // Same-event grouping only: a shared event label is not evidence the two people know each other.
+      if (ea && ea === eb) links.push({ a: i, b: j, k: 0.05, len: 60, soft: true });
     }
     var view = { x: W / 2, y: H / 2, k: 1 };
     var energy = 1, raf = 0, drag = null, pan = null, pinch = null, moved = false;
@@ -1909,7 +1998,7 @@
       g.save(); g.translate(view.x, view.y); g.scale(view.k, view.k);
       links.forEach(function (l) {
         var A = nodes[l.a], B = nodes[l.b]; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y);
-        g.strokeStyle = l.soft ? "rgba(217,115,61,0.55)" : mapLine; g.lineWidth = (l.soft ? 1.6 : 1) / view.k; g.setLineDash(l.dashed ? [5 / view.k, 4 / view.k] : []); g.stroke(); g.setLineDash([]);
+        g.strokeStyle = l.soft ? mapSoft : mapLine; g.lineWidth = (l.soft ? 0.8 : 1) / view.k; g.setLineDash(l.dashed ? [5 / view.k, 4 / view.k] : (l.soft ? [1.2 / view.k, 3.2 / view.k] : [])); g.stroke(); g.setLineDash([]);
       });
       nodes.forEach(function (n) {
         g.beginPath(); g.arc(n.x, n.y, n.r, 0, 7);

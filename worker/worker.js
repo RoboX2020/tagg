@@ -1296,6 +1296,47 @@ const appHandler = {
       return j({ ok: true, status: "accepted", personId: op.id });
     }
 
+    // LinkedIn CONNECTIONS import: the owner's own official LinkedIn data export (connections.csv), uploaded by
+    // them. Adds those people to the owner's private people list with provenance "linkedin-export". They are NOT
+    // Tagg-verified connections: no slug, no shared card, no meeting moment. They never enter the network graph
+    // (fofFor needs an ownerToken) and are never shown to other users. Email addresses in the export are dropped
+    // on purpose: name, headline, profile link and the "Connected On" date are enough.
+    if (p === "/api/import/linkedin-connections" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      if (await overLimit(env, "liconnect/" + owner, 4, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+      const body = await req.json().catch(() => null);
+      const rows = body && Array.isArray(body.connections) ? body.connections.slice(0, 600) : null;
+      if (!rows || !rows.length) return j({ error: "No connections found in that file" }, 400);
+      const now = new Date().toISOString();
+      const list = await getPeople(env, owner);
+      const seenUrl = new Set(), seenName = new Set();
+      list.forEach(x => { const u = x.card && x.card.links && x.card.links.linkedin; if (u) seenUrl.add(String(u).toLowerCase()); if (x.card && x.card.name) seenName.add(String(x.card.name).toLowerCase()); });
+      let added = 0, skipped = 0;
+      const room = Math.max(0, 500 - list.length);
+      for (const r of rows) {
+        if (added >= room) break;
+        const name = clip(r && r.name, 120);
+        if (!name) { skipped++; continue; }
+        const urlIn = typeof (r && r.url) === "string" && r.url.trim() ? r.url.trim() : "";
+        const url = urlIn ? (parseLinkedinUrl(urlIn) || "") : "";
+        if (urlIn && !url) { skipped++; continue; }
+        if ((url && seenUrl.has(url.toLowerCase())) || seenName.has(name.toLowerCase())) { skipped++; continue; }
+        const headline = clip(r && r.headline, 300);
+        const connectedOn = clip(r && r.connectedOn, 40);
+        list.unshift({ id: "p_" + rand(10), slug: null,
+          card: { name, headline, email: "", phone: "", links: url ? { linkedin: url } : {} },
+          metAt: "", event: "", location: null, note: "", enriched: null,
+          source: "linkedin-export", connectedOn: connectedOn || null, importedAt: now });
+        added++;
+        if (url) seenUrl.add(url.toLowerCase());
+        seenName.add(name.toLowerCase());
+      }
+      if (added) await putPeople(env, owner, list);
+      return j({ ok: true, added, skipped });
+    }
+
     // LinkedIn import, step 1: read the public page of the URL the owner typed and return a PREVIEW. Nothing is saved yet.
     if (p === "/api/import/linkedin" && req.method === "POST") {
       const owner = authOwner(req);
