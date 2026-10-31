@@ -209,10 +209,10 @@ if (env) {
   let geminiCalls = 0, linkedinCalls = 0, apifyCalls = 0, ghCalls = 0;
   globalThis.fetch = async (u, init) => {
     const us = String(u);
-    if (us.includes("api.apify.com")) { apifyCalls++; if (init && init.method === "POST") return new Response(JSON.stringify([{ headline: "Student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], profilePicture: { url: "https://media.licdn.com/dms/image/test.jpg" }, location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); }
+    if (us.includes("api.apify.com")) { apifyCalls++; if (init && init.method === "POST") return new Response(JSON.stringify([{ headline: "Student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], profilePicture: { url: globalThis.__picUrl || "https://media.licdn.com/dms/image/test.jpg" }, location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); }
     if (us.includes("api.github.com/users/")) { ghCalls++; const h = us.split("/users/")[1]; if (h === "nobody-here") return new Response("{}", { status: 404 }); if (h === "limited-user") return new Response("{}", { status: 403 }); if (h === "down-user") throw new Error("net");
       return new Response(JSON.stringify({ login: h, name: "Gh Person", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, public_repos: 7, avatar_url: "https://avatars.githubusercontent.com/u/1", blog: "" }), { status: 200 }); }
-    if (us.includes("media.licdn.com")) return new Response(new Uint8Array([255, 216, 255, 224, 0, 16, 74, 70]), { status: 200, headers: { "content-type": "image/jpeg" } });
+    if (us.includes("media.licdn.com")) { if (globalThis.__picCase === "big") return new Response(new Uint8Array(500000), { status: 200, headers: { "content-type": "image/jpeg" } }); if (globalThis.__picCase === "html") return new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }); return new Response(new Uint8Array([255, 216, 255, 224, 0, 16, 74, 70]), { status: 200, headers: { "content-type": "image/jpeg" } }); }
     if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
     return realFetch2(u, init);
   };
@@ -296,6 +296,13 @@ if (env) {
   ok("v2 notice copies the picture and Tagg serves it", v2.status === 200 && v2.body.linkedin.hasPhoto === true && pr.status === 200 && pr.headers.get("content-type") === "image/jpeg" && (await pr.arrayBuffer()).byteLength === 8);
   ok("photo response never leaks the provider url", !JSON.stringify(v2.body).includes("licdn"));
   ok("owner can remove only the photo", (await call("DELETE", "/api/profile-photo", null, pTok)).status === 200 && (await fetch(url + "/api/photo/" + pc.body.slug)).status === 404 && (await call("GET", "/api/c/" + pc.body.slug)).body.enriched.linkedin.schools.length > 0);
+  for (const [label, pu, pcase] of [["off-host picture URL", "https://evil.example/pic.jpg", ""], ["oversize picture", "", "big"], ["non-image picture", "", "html"]]) {
+    globalThis.__picUrl = pu || undefined; globalThis.__picCase = pcase;
+    const nt = (await call("POST", "/api/owner", {})).body.ownerToken; const nc = await call("POST", "/api/card", { ownerToken: nt, card: { name: "Neg Pic", headline: "h", links: {} } }, nt);
+    const nr = await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/neg-" + pcase + (pu ? "host" : ""), ownProfile: true, disclosure: "linkedin-auto-v2" }, nt);
+    ok(label + ": details import, no picture stored", nr.status === 200 && nr.body.linkedin.hasPhoto === false && (await fetch(url + "/api/photo/" + nc.body.slug)).status === 404);
+  }
+  globalThis.__picUrl = undefined; globalThis.__picCase = "";
   ok("photo removal needs sign in", (await call("DELETE", "/api/profile-photo")).status === 401);
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);

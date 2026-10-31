@@ -64,9 +64,9 @@ try {
   await P.click(".sugg"); await sleep(800);
   assert.ok((await P.$$eval(".bubble.me", e => e.map(x => x.textContent))).some(s => /HACKS/.test(s))); ok("tapping the suggestion asks the corrected question visibly");
   // A friend added LinkedIn details after Bob saved them: opening the person shows them (older records included).
-  await P.goto(base + "#/people"); await sleep(1500); await P.goto(base + "#/p/" + savedAlice.id); await waitText(P, "ADDED FROM LINKEDIN", 8000);
+  await P.goto(base + "#/people"); await sleep(1500); await P.goto(base + "#/p/" + savedAlice.id); await waitText(P, "Education", 8000);
   assert.ok((await text(P)).includes("Stanford") && (await P.$eval("#note", e => e.value)) === "private note xyz"); ok("details added by the friend after saving appear on open, with Bob's private note kept");
-  assert.ok((await text(P)).toLowerCase().includes("has not verified")); ok("the refreshed details are labelled not verified by Tagg");
+  assert.ok(!/has not verified/i.test(await text(P))); ok("the refreshed details show as Work and Education without the repeated disclaimer");
   await waitText(P, "checked just now", 5000); ok("the page says when the shared profile was checked");
   // Settings tab
   await P.goto(base + "#/settings"); await sleep(600);

@@ -977,7 +977,6 @@
       var prevLinks = (loadCard() || { links: {} }).links || {};
       var changed = [];
       if (c.links.linkedin && c.links.linkedin !== (prevLinks.linkedin || "")) changed.push("linkedin");
-      if (c.links.github && c.links.github !== (prevLinks.github || "")) changed.push("github");
       if (changed.length) { askAutoImport(c, changed); return; }
       saveCard(c);
       lastSync = 0;
@@ -1215,51 +1214,67 @@
     var m = String(u).replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
     return m.length > 42 ? m.slice(0, 41) + "..." : m;
   }
+  /* Profile layout: resume sections from what the owner imported from LinkedIn (Work, Education), then one bordered section per shared link.
+     GitHub, X and Instagram are shown as embeds or previews of the real profile, not as copied fields. */
+  function handleOf(k, u) {
+    var m = String(u || "").replace(/^https?:\/\/(www\.)?/i, "").split(/[?#]/)[0].split("/").filter(Boolean);
+    if (k === "x") m = String(u || "").replace(/^https?:\/\/(www\.)?(x|twitter)\.com\//i, "").split(/[?#]/)[0].split("/").filter(Boolean), m = m.length ? [m[0]] : [];
+    else m = m.slice(1, 2);
+    var h = m[0] || "";
+    return /^[A-Za-z0-9_.-]{1,40}$/.test(h) ? h : "";
+  }
   function enrichHtml(p) {
-    var en = p.enriched || {}, li = en.linkedin, g = en.github, c = p.card || { links: {} };
-    function lst(x) { return (x || []).filter(Boolean).map(esc).join(", "); }
-    function row(label, val) { return val ? '<div class="prow"><span class="pl">' + label + '</span><span class="pv">' + val + '</span></div>' : ""; }
-    function sec(title, sub, body, href) {
-      return '<section class="linksec"><div class="lshead"><div><div class="lstitle">' + title + '</div>' + (sub ? '<div class="lssub">' + sub + '</div>' : "") + '</div>' +
-        (href ? '<a class="chip" href="' + esc(href) + '" target="_blank" rel="noopener">Open</a>' : "") + '</div>' + (body || "") + '</section>';
+    var en = p.enriched || {}, li = en.linkedin, c = p.card || { links: {} }, lk = c.links || {};
+    function list(x, one) { var a = (x || []).filter(Boolean); if (!a.length && one) a = [one]; return a; }
+    function box(title, tag, body, href) {
+      return '<section class="linksec"><div class="lshead"><div class="lstitle"><i class="lsdot"></i>' + title + '</div>' +
+        (tag ? '<span class="lstag">' + tag + '</span>' : "") + (href ? '<a class="chip" href="' + esc(href) + '" target="_blank" rel="noopener">Open</a>' : "") + '</div>' + (body || "") + '</section>';
     }
     var out = "";
-    var lk = c.links || {};
+    if (li) {
+      var roles = list(li.titles, li.title), cos = list(li.companies, li.company), schools = list(li.schools, li.school);
+      if (roles.length || cos.length) out += box("Work", "LinkedIn", roles.map(function (r) { return '<div class="resline">' + esc(r) + '</div>'; }).join("") + cos.map(function (r) { return '<div class="resline sub">' + esc(r) + '</div>'; }).join(""));
+      if (schools.length) out += box("Education", "LinkedIn", schools.map(function (r) { return '<div class="resline">' + esc(r) + '</div>'; }).join(""));
+    }
+    var links = "";
     LINK_DEFS.forEach(function (kd) {
       var k = kd[0], u = lk[k];
       if (!u) return;
-      var body = "";
-      if (k === "linkedin" && li) {
-        body = (li.headline ? '<div class="lsline" style="font-weight:600">' + esc(li.headline) + '</div>' : "") +
-          row("Roles", lst(li.titles) || esc(li.title || "")) + row("Work", lst(li.companies) || esc(li.company || "")) + row("School", lst(li.schools) || esc(li.school || "")) + row("Place", esc(li.location || "")) +
-          '<div class="fineprint" style="margin:8px 0 0">Entered by the card owner. Tagg has not verified it.</div>';
-      } else if (k === "linkedin") {
-        body = '<div class="lsline lsmute">No details imported to Tagg. Preview unavailable. Open profile takes you to LinkedIn.</div>';
-      } else if (k === "github" && g) {
-        body = '<div class="ghrow">' + (g.avatar ? '<img class="avatar-img" src="' + esc(g.avatar) + '" alt="" style="width:44px;height:44px">' : "") +
-          '<div><div style="font-weight:600">' + esc(g.name || g.login) + '</div>' + (g.bio ? '<div class="lssub" style="margin-top:2px">' + esc(g.bio) + '</div>' : "") + '</div></div>' +
-          row("Company", esc(g.company || "")) + row("Place", esc(g.location || "")) +
-          row("Public", (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? ", " + g.repos + " repos" : "")) +
-          '<div class="fineprint" style="margin:8px 0 0">Public GitHub details the owner imported. Tagg has not verified them.</div>';
-      } else {
-        body = '<div class="lsline lsmute">' + (k === "website" ? "Opens in your browser." : "Opens on " + esc(kd[1]) + ".") + ' Preview unavailable.</div>';
+      var h = handleOf(k, u), body = "";
+      if (k === "github" && h) {
+        body = '<a class="ghcard" href="' + esc(u) + '" target="_blank" rel="noopener"><img class="avatar-img" src="https://github.com/' + encodeURIComponent(h) + '.png?size=96" alt="" style="width:48px;height:48px"><div><div style="font-weight:600">' + esc(h) + '</div><div class="lssub">github.com/' + esc(h) + '</div></div></a>';
+      } else if (k === "instagram" && h) {
+        body = '<iframe class="embedframe" title="Instagram profile" loading="lazy" src="https://www.instagram.com/' + encodeURIComponent(h) + '/embed" height="390" scrolling="no" allowtransparency="true"></iframe>';
+      } else if (k === "x" && h) {
+        body = '<div class="xembed" data-xh="' + esc(h) + '"></div>';
       }
-      out += sec(esc(kd[1]), esc(linkLabel(k, u)), body, u);
+      links += box(esc(kd[1]), "", body, u);
     });
-    // GitHub details stored from an earlier import for a person whose card no longer lists the link.
-    if (g && !lk.github) out += sec("GitHub", "", '<div class="lsline">' + esc(g.name || g.login) + (g.bio ? " - " + esc(g.bio) : "") + '</div>', "");
-    return out;
+    return out + links;
   }
-  /* Contextual web search: built from shared fields only, sent to Google only when the viewer taps. Results are Google's and are not confirmed to be this person. */
+  /* X's own timeline widget (platform.twitter.com/widgets.js) renders inside the page; it is only loaded when a profile has an X link. */
+  function mountEmbeds() {
+    var hs = document.querySelectorAll(".xembed[data-xh]");
+    if (!hs.length) return;
+    hs.forEach(function (el) {
+      var a = document.createElement("a"); a.className = "twitter-timeline"; a.setAttribute("data-height", "460"); a.setAttribute("data-dnt", "true");
+      a.setAttribute("data-theme", document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light");
+      a.href = "https://twitter.com/" + encodeURIComponent(el.getAttribute("data-xh")) + "?ref_src=twsrc%5Etfw"; a.textContent = "Posts by @" + el.getAttribute("data-xh");
+      el.appendChild(a);
+    });
+    if (window.twttr && window.twttr.widgets) { window.twttr.widgets.load(); return; }
+    var sc = document.createElement("script"); sc.async = true; sc.src = "https://platform.twitter.com/widgets.js"; document.body.appendChild(sc);
+  }
+  /* Contextual web search: built from shared fields only, sent to Google only when the viewer taps. */
   function searchHtml(p) {
     var li = p.enriched && p.enriched.linkedin, c = p.card, parts = [c.name];
     var ctx = (li && ((li.companies && li.companies[0]) || li.company || (li.schools && li.schools[0]) || li.school)) || (c.headline || "");
     if (ctx) parts.push(ctx);
     var q = parts.join(" ").slice(0, 120);
-    return '<section class="linksec"><div class="lshead"><div><div class="lstitle">Search the web</div><div class="lssub">Google results for this name and context</div></div></div>' +
+    return '<section class="linksec"><div class="lshead"><div class="lstitle"><i class="lsdot"></i>Search the web</div></div>' +
       '<input class="input" id="websearch-q" value="' + esc(q) + '" aria-label="Search query">' +
-      '<a class="btn btn-gray" id="websearch-go" href="https://www.google.com/search?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener" style="margin-top:8px">Search Google</a>' +
-      '<div class="fineprint" style="margin:8px 0 0">Opens Google in a new tab. Nothing is sent until you tap. Results come from Google and may be about someone else with the same name; they are not confirmed to be this person. Your notes and meeting place are never used.</div></section>';
+      '<a class="btn btn-accent" id="websearch-go" href="https://www.google.com/search?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener" style="margin-top:8px">Search Google</a>' +
+      '<div class="fineprint" style="margin:8px 0 0">Opens Google. Results may include other people with the same name.</div></section>';
   }
   function renderPerson(id) {
     var people = loadPeople();
@@ -1270,10 +1285,10 @@
     var loc = p.location || (p.place ? { lat: p.place.lat, lon: p.place.lng, label: "" } : null);
     var mapLink = loc && loc.lat != null ? mapsUrl(loc) : null;
     shell("people",
-      '<div style="display:flex;align-items:center;gap:16px;margin:6px 0 14px">' +
-      avatarHtml(p, 76) +
-      '<div><h1 class="largetitle" style="font-size:26px;margin:0">' + esc(p.card.name) + '</h1>' +
-      (p.card.headline ? '<div style="color:var(--text-2);font-size:14px;margin-top:2px">' + esc(p.card.headline) + '</div>' : '') +
+      '<div class="profhero">' + avatarHtml(p, 84) +
+      '<div class="ph-text"><div class="ph-mark">TAGG</div><h1 class="ph-name">' + esc(p.card.name) + '</h1>' +
+      (p.card.headline ? '<div class="ph-head">' + esc(p.card.headline) + '</div>' : '') +
+      ((p.enriched && p.enriched.linkedin && p.enriched.linkedin.location) ? '<div class="ph-loc">' + esc(p.enriched.linkedin.location) + '</div>' : '') +
       '</div></div>' +
       '<div class="metagrid">' +
       meta("Met", fmtDate(p.metAt) + " · " + fmtTime(p.metAt)) +
@@ -1303,6 +1318,7 @@
       '<button class="btn btn-plain" id="del" style="color:#ff6961">Remove from Tagg</button>' +
       '<div style="height:110px" aria-hidden="true"></div>'
     );
+    mountEmbeds();
     var wq = document.getElementById("websearch-q");
     if (wq) wq.addEventListener("input", function () { document.getElementById("websearch-go").href = "https://www.google.com/search?q=" + encodeURIComponent(wq.value.slice(0, 200)); });
     // Refresh the shared card from the server every time this person is opened. Private notes, place and photo stay yours.

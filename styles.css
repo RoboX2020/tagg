@@ -326,7 +326,22 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .tokenbox code{display:block;word-break:break-all;font-size:12.5px;margin:8px 0;user-select:all}
 .btn[disabled]{opacity:.45;cursor:default}
 .avatar-img{border-radius:50%;object-fit:cover;background:var(--card-2);flex:none;display:block}
-.linksec{background:var(--bg-elev);border:1px solid var(--sep);border-radius:20px;padding:16px;margin:12px 0}
+.linksec{background:var(--bg-elev);border:1.5px solid rgba(217,115,61,.5);border-radius:20px;padding:16px;margin:12px 0;box-shadow:0 1px 0 rgba(217,115,61,.12)}
+.lsdot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);margin-right:9px;vertical-align:1px}
+.lstag{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text-3)}
+.resline{font-size:15px;font-weight:600;line-height:1.4;margin:6px 0 0}
+.resline.sub{font-weight:400;color:var(--text-2);font-size:14px;margin-top:2px}
+.ghcard{display:flex;gap:12px;align-items:center;text-decoration:none;color:inherit;padding:10px;border-radius:14px;background:var(--bg);border:1px solid var(--sep)}
+.embedframe{width:100%;border:0;border-radius:14px;background:var(--bg);display:block}
+.xembed{min-height:60px}
+.profhero{display:flex;align-items:center;gap:16px;margin:6px 0 14px;padding:18px;border-radius:24px;background:linear-gradient(145deg,#0a0a0b 0%,#1b1410 100%);border:1.5px solid var(--accent);color:#f5f5f7}
+.profhero .avatar-img,.profhero .avatar{border:2.5px solid var(--accent)}
+.ph-mark{font-size:11px;font-weight:800;letter-spacing:.18em;color:#e5954f}
+.ph-name{font-size:26px;line-height:1.15;margin:3px 0 0;font-weight:700;letter-spacing:-.01em}
+.ph-head{color:#c9c9ce;font-size:14px;margin-top:3px}
+.ph-loc{color:#e5954f;font-size:13px;margin-top:4px}
+.ph-text{min-width:0}
+.metacard{border:1.5px solid rgba(217,115,61,.5)}
 .lshead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
 .lstitle{font-weight:600;font-size:16px}
 .lssub{color:var(--text-2);font-size:13px;word-break:break-all}
@@ -336,3 +351,4 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .prow .pl{color:var(--text-2);width:64px;flex:none}
 .prow .pv{flex:1;min-width:0;overflow-wrap:anywhere}
 .ghrow{display:flex;gap:12px;align-items:center;margin-bottom:6px}
+.xembed a{color:var(--accent-2);font-weight:600}
