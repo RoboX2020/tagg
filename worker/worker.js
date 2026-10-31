@@ -1783,6 +1783,7 @@ async function readBodyCapped(stream, max) {
 // ---- Write freeze for a storage move. While KV key cfg/freeze is "on", EVERY mutation through env.KV (put, delete and the atomic json ops)
 // is refused at the storage layer, whatever route or background task issued it, so reads that write (scan ping, notify dedupe, cleanup) cannot
 // change the data being copied. Rate-limit counters live in the RL Durable Object, not KV, and are not part of the copy.
+// A deploy-time variable FREEZE_WRITES="on" freezes with no KV read at all: it ships atomically with the Worker version, so it has no cache and no propagation lag.
 // The flag is cached per isolate for FREEZE_CACHE_MS; the runbook waits longer than that plus KV propagation before the final snapshot.
 const FREEZE_MUTATORS = new Set(["put", "delete", "jpush", "jpatch", "jdel", "jmerge", "jappend"]);
 class FrozenError extends Error { constructor() { super("frozen"); this.frozen = true; } }
@@ -1794,11 +1795,11 @@ async function isFrozen(kv, ms = 5000) {
   freezeState.at = now; freezeState.on = on; return on;
 }
 function withFreeze(env) {
-  const kv = env.KV, ms = env.FREEZE_CACHE_MS !== undefined && Number(env.FREEZE_CACHE_MS) >= 0 ? Number(env.FREEZE_CACHE_MS) : 5000;
+  const kv = env.KV, forced = env.FREEZE_WRITES === "on", ms = env.FREEZE_CACHE_MS !== undefined && Number(env.FREEZE_CACHE_MS) >= 0 ? Number(env.FREEZE_CACHE_MS) : 5000;
   const proxy = new Proxy(kv, { get(t, prop) {
     const v = t[prop];
     if (typeof v !== "function") return v;
-    if (FREEZE_MUTATORS.has(prop)) return async (...a) => { if (await isFrozen(t, ms)) throw new FrozenError(); return v.apply(t, a); };
+    if (FREEZE_MUTATORS.has(prop)) return async (...a) => { if (forced || await isFrozen(t, ms)) throw new FrozenError(); return v.apply(t, a); };
     return v.bind(t);
   } });
   return { ...env, KV: proxy };

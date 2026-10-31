@@ -10,7 +10,7 @@ Production = worker.js at 7f01a99 (tag deployed-prod) on KV. The DO build (worke
 | DO Store with atomic ops | built, tested (intro-do, fault-do, DO API suite) |
 | Storage-layer write freeze, KV key `cfg/freeze` = "on" | built, tested (API suite, KV and DO mode): refuses put, delete and the atomic json ops from ANY route or background task. 21 routes incl. scan ping, login, connect, respond change no key when frozen; a control shows they do change keys when not frozen |
 | `worker/migrate-worker.js`: separate temporary Worker, copies KV to the Store inside Cloudflare, pages of 50, idempotent, resumable, with verify | built, tested locally (test/migrate.test.mjs, 13 checks) |
-| Encrypted offline safety snapshot via the KV REST API, vault-held key | model tested (test/backup.test.mjs); the operator script is NOT BUILT |
+| Encrypted offline safety snapshot: `tools/kv-snapshot.mjs` (snapshot, verify, digest), KV REST list and bulk get, read-only, AES-256-GCM with scrypt-derived key, authenticated header with count and digest | built, tested against a local mock of the Cloudflare API (test/snapshot.test.mjs, 14 checks: retry on 503, expired skipped, no secrets in output or file, wrong key and tampering rejected, 0 writes). NEVER RUN against live KV |
 | Real Cloudflare rehearsal: synthetic KV namespace (61 keys) to the staging DO through a temporary migration Worker | DONE 2026-10-31: 2 pages, copy 0.44 s and 0.29 s, verify 0.28 s and 0.18 s, 0 mismatches, staging rows 1745 to 1806 (+61), repeat copy idempotent (still 1806), 404 without token, Worker deleted afterwards. Tiny sample: not a volume measurement |
 | Live export or copy | NOT DONE, held for the user's decision |
 
@@ -48,6 +48,28 @@ Not estimated as a promise. What is known: the freeze, the 120 s wait, the doubl
 
 1. The user's cutover decision.
 2. A volume rehearsal (thousands of synthetic keys) to measure copy time; the 61-key run only shows about 0.3 to 0.4 s per page of 50. The rehearsal also found that the DO Store must be deployed with the new migration ops BEFORE the migration Worker runs (an older Store silently skipped them); Store now throws on an unknown op and the migration Worker checks result counts.
-3. Operator snapshot script (KV REST export, encrypted).
+3. Vault-held passphrase access: the vault only copies a secret into the sandbox with `tools vault write-file` after the user allows sandbox use for that item (sandbox_not_allowed returns an approval link). A rehearsal entry "Tagg KV snapshot passphrase (rehearsal)" exists with a vault-generated passphrase and that approval has NOT been requested. The live run needs one user tap of that approval. The key must stay in the vault, not in a temp file kept as a design.
 4. Decision on the KV write budget rule above.
 5. The existing KV lost-update window and 1,000 writes/day signup cap remain until the cutover.
+
+
+## Freeze design: maintenance deploy versus the KV flag (analysis)
+
+A KV flag alone is weak for consistency: other KV locations can lag 60 seconds or more, each isolate caches the flag for 5 s, and identical snapshots only show that nothing changed during one minute. Two stronger options, both built or buildable without touching KV state:
+
+1. Deploy-time variable (BUILT, tested): the app Worker reads `FREEZE_WRITES="on"` from its own bindings. It ships atomically with the Worker version, with no KV read, no cache and no propagation lag. Deploying the same code plus that variable freezes every mutation at the storage layer. In-flight requests of the previous version finish (give them 60 s, the waitUntil and request limits), then no code that can write is left running.
+2. Maintenance Worker (not needed if 1 is used): replace the script with a static 503 page. Safer against a code bug in the guard, but ALL reads stop too (cards unreadable) for the whole window. Option 1 keeps reads up.
+
+Recommendation: use option 1 for the freeze, then the double snapshot (B and B2 one minute apart, identical) as the check, then copy. The snapshot reads go through the KV REST API, which reflects writes already committed; the 60 s wait covers the cache lag of the app's own last reads. This is evidence of quiescence, not a proof of strong consistency, and the runbook says so.
+
+## Quota facts (read from the Cloudflare GraphQL analytics, 2026-10-31 UTC day, production KV namespace)
+
+writes 421, deletes 347, lists 129, reads 4,893 at 9:25 AM Arizona time. The daily window is the UTC day (resets 5 PM Arizona). The 61 rehearsal writes went to a separate throwaway namespace (since deleted) but count against the same account cap, and were not yet visible in that query. So production has used about 421 to 482 of 1,000 writes today. Treat the remaining budget as roughly 500 and verify in the dashboard before any live step.
+
+## Rollback rule and the user-facing tradeoff
+
+Rolling back to KV replays every changed key into KV, one write each, against the 1,000/day Free cap (shared with normal traffic). If that exceeds the budget, the replay stops and the site stays frozen until the cap resets, which can be up to a day. Do not mark the plan ready while this is unapproved. Options for the user, with cost:
+- A. Cut over right after the 5 PM Arizona reset, so the full cap is available during the riskiest first hours, and fix forward on the new store if a problem appears. Cost: none. Risk: a late rollback beyond about 900 changed keys means extended frozen time.
+- B. Workers Paid plan ($5 a month plus usage, from the plan page; verify current KV and DO pricing in the owner docs first) removes the KV write cap, so a rollback never waits for the budget. Needs the user's approval. Not recommended or enabled here.
+- C. Stay on KV and accept the lost-update window and the signup cap. No downtime, no cutover.
+Expected visible downtime for a cutover is minutes of write-refused time (freeze, 60 to 120 s drain, double snapshot, copy at about 0.3 to 0.4 s per 50 keys, verify, deploy), reads stay up. Not a measured guarantee.

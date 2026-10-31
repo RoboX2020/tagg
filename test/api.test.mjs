@@ -885,7 +885,10 @@ if (env) {
   ok("freeze: " + routes.length + " routes (scan ping, login, connect, respond, card save, sharing) changed no key", after === frozenDump);
   ok("freeze: mutating routes answer 503 frozen", codes.filter(c => /^(POST \/api\/owner|POST \/api\/card|PUT)/.test(c)).every(c => c.endsWith(":503")));
   ok("freeze: a card read still works", codes[0].endsWith(":200"));
-  await env.KV.put("cfg/freeze", "off");
+  // deploy-time variable freezes without any KV flag
+  await env.KV.put("cfg/freeze", "off"); env.FREEZE_WRITES = "on"; const forcedBefore = await dump(); const fc = [];
+  for (const [m, p, b, t] of routes) fc.push((await call(m, p, b, t)).status);
+  ok("FREEZE_WRITES=on (deploy variable, KV flag off): same routes change no key", (await dump()) === forcedBefore && fc[0] === 200); delete env.FREEZE_WRITES;
   for (const [m, p, b, t] of routes) await call(m, p, b, t);
   ok("control: the same routes DO change storage when not frozen", (await dump()) !== frozenDump);
   ok("freeze off: writes work again", (await call("POST", "/api/owner", {})).status === 200);
