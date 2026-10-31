@@ -601,6 +601,7 @@
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
     if (h === "#/settings") { refreshSoon(); return renderSettings(); }
     if (h === "#/map") { refreshSoon(); return renderMap(); }
+    if (h === "#/intros") { refreshSoon(); return renderIntros(); }
     refreshSoon();
     return renderHome();
   }
@@ -749,6 +750,53 @@
       });
     }).catch(function () {});
   }
+  /* ================= introductions (shown only when the server has the feature switched on) ================= */
+  function renderIntros() {
+    var card = loadCard();
+    if (!card) { location.hash = "#/"; return; }
+    shell("settings", '<h1 class="largetitle">Introductions</h1><p class="lead">Ask someone you both know to introduce you to a person two steps away. Nothing goes to them until they agree.</p><div id="intro-body"><div class="fineprint">Loading...</div></div><p class="footer-note"><a href="#/settings">Back to Settings</a></p>');
+    var box = document.getElementById("intro-body");
+    api("/api/intro/config").then(function (c) {
+      if (!c.enabled) { box.innerHTML = '<div class="fineprint">Introductions are not available yet.</div>'; return; }
+      return Promise.all([api("/api/intro/consent"), api("/api/intro/candidates"), api("/api/intros"), api("/api/intro-offers")]).then(function (r) { drawIntros(box, r[0], r[1], r[2].intros || [], r[3].offers || []); });
+    }).catch(function () { box.innerHTML = '<div class="fineprint">Could not load. Try again in a moment.</div>'; });
+  }
+  function drawIntros(box, cons, cand, reqs, offers) {
+    function rowBtns(id, a, b) { return '<div class="btnrow" style="margin-top:10px"><button class="btn btn-accent" data-act="' + a[0] + '" data-id="' + id + '">' + a[1] + '</button><button class="btn btn-gray" data-act="' + b[0] + '" data-id="' + id + '">' + b[1] + '</button></div>'; }
+    var h = '<h2 class="section">Being asked for</h2><div class="panel"><div style="font-weight:600">Let friends of friends ask to meet you</div>' +
+      '<div class="fineprint" style="margin:6px 0 10px">If this is on, a person two steps away can see your name, and ask someone you both know to introduce you. They can see your headline only if you allow it below. Photos are not shown. You can turn this off at any time, and open requests disappear at once.</div>' +
+      '<div class="themeseg"><button id="ic-on"' + (cons.on ? ' class="on"' : "") + '>Allow</button><button id="ic-off"' + (!cons.on ? ' class="on"' : "") + '>Not now</button></div>' +
+      (cons.on ? '<label class="fineprint" style="display:flex;gap:8px;align-items:center;margin:12px 0 0"><input type="checkbox" id="ic-head"' + (cons.headline ? " checked" : "") + '> Also show my headline</label>' : "") + '</div>';
+    if (offers.length) h += '<h2 class="section">Introductions for you</h2><div class="group">' + offers.map(function (o) {
+      return '<div class="row" style="display:block"><div class="title" style="white-space:normal">' + esc(o.from.name) + '</div>' + (o.from.headline ? '<div class="detail" style="white-space:normal">' + esc(o.from.headline) + '</div>' : "") +
+        '<div class="detail" style="white-space:normal">Introduced by ' + esc(o.via.name) + '</div>' + (o.note ? '<div class="detail" style="white-space:normal;margin-top:6px">"' + esc(o.note) + '"</div>' : "") +
+        '<div class="fineprint" style="margin:8px 0 0">If you accept, you and ' + esc(o.from.name) + ' are saved in each other\'s people.</div>' + rowBtns(o.id, ["offer-accept", "Accept"], ["offer-decline", "Decline"]) + '</div>'; }).join("") + '</div>';
+    if (reqs.length) h += '<h2 class="section">Asking you to introduce</h2><div class="group">' + reqs.map(function (q) {
+      return '<div class="row" style="display:block"><div class="title" style="white-space:normal">' + esc(q.requester.name) + ' would like to meet ' + esc(q.target.name) + '</div>' + (q.target.headline ? '<div class="detail" style="white-space:normal">' + esc(q.target.headline) + '</div>' : "") +
+        (q.note ? '<div class="detail" style="white-space:normal;margin-top:6px">"' + esc(q.note) + '"</div>' : "") +
+        '<div class="fineprint" style="margin:8px 0 0">If you pass it on, ' + esc(q.target.name) + ' gets to see the request and decide. Nothing else is shared.</div>' + rowBtns(q.id, ["req-forward", "Pass it on"], ["req-decline", "Decline"]) + '</div>'; }).join("") + '</div>';
+    h += '<h2 class="section">Ask for an introduction</h2>';
+    if (cand.needsProfile) h += '<div class="fineprint">Finish your profile first. You need a complete profile to ask for introductions.</div>';
+    else if (!cand.candidates.length) h += '<div class="fineprint">No one is available to ask for right now. People show up here when they are two steps away, share their network, and have allowed introductions.</div>';
+    else h += '<div class="group">' + cand.candidates.map(function (c, i) {
+      return '<div class="row" style="display:block"><div class="title" style="white-space:normal">' + esc(c.name) + '</div>' + (c.headline ? '<div class="detail" style="white-space:normal">' + esc(c.headline) + '</div>' : "") + '<div class="detail" style="white-space:normal">Through ' + esc(c.via.name) + '</div>' +
+        (c.requested ? '<div class="fineprint" style="margin:8px 0 0">Requested</div>' : '<textarea class="field" id="note-' + i + '" maxlength="500" placeholder="Add a short note (optional)" style="margin-top:8px;width:100%;box-sizing:border-box;min-height:64px;font:15px var(--font);padding:10px 12px;border:1px solid var(--line, #d9d9de);border-radius:12px;background:var(--bg-elev);color:inherit;resize:none"></textarea><div class="btnrow" style="margin-top:8px"><button class="btn btn-accent" data-act="ask" data-i="' + i + '">Ask ' + esc(c.via.name) + ' to introduce you</button></div>') + '</div>'; }).join("") + '</div>';
+    box.innerHTML = h;
+    function again() { renderIntros(); }
+    function fail(e) { toast(e && e.error === "Not available" ? "That is no longer available" : "Could not save - try again"); again(); }
+    function setC(on, head) { api("/api/intro/consent", { method: "PUT", body: { on: on, headline: head } }).then(function () { toast(on ? "Introductions are on" : "Introductions are off"); again(); }).catch(fail); }
+    document.getElementById("ic-on").addEventListener("click", function () { setC(true, !!cons.headline); });
+    document.getElementById("ic-off").addEventListener("click", function () { setC(false, false); });
+    var hd = document.getElementById("ic-head"); if (hd) hd.addEventListener("change", function () { setC(true, hd.checked); });
+    Array.prototype.forEach.call(box.querySelectorAll("button[data-act]"), function (b) {
+      b.addEventListener("click", function () {
+        var a = b.getAttribute("data-act"), id = b.getAttribute("data-id"); b.disabled = true;
+        if (a === "ask") { var c = cand.candidates[Number(b.getAttribute("data-i"))], note = document.getElementById("note-" + b.getAttribute("data-i")).value; api("/api/intro", { method: "POST", body: { viaPersonId: c.via.personId, targetRef: c.ref, note: note } }).then(function () { toast("Request saved for " + c.via.name); again(); }).catch(fail); }
+        else if (a === "req-forward" || a === "req-decline") api("/api/intros/respond", { method: "POST", body: { id: id, forward: a === "req-forward" } }).then(function () { toast(a === "req-forward" ? "Passed on" : "Declined"); again(); }).catch(fail);
+        else api("/api/intro-offers/respond", { method: "POST", body: { id: id, accept: a === "offer-accept" } }).then(function () { toast(a === "offer-accept" ? "You are now connected" : "Declined"); again(); }).catch(fail);
+      });
+    });
+  }
   function mountNetworkSettings(box) {
     if (!box) return;
     if (!ownerToken()) { box.innerHTML = '<div class="fineprint" style="margin:0">Sign in to choose network sharing.</div>'; return; }
@@ -859,6 +907,7 @@
     })();
     mountNotifySettings(document.getElementById("notifpanel"));
     mountNetworkSettings(document.getElementById("netpanel"));
+    api("/api/intro/config").then(function (c) { var np = document.getElementById("netpanel"); if (c.enabled && np && ownerToken()) { var a = document.createElement("a"); a.className = "group"; a.href = "#/intros"; a.style.cssText = "display:block;text-decoration:none;color:inherit;margin-top:12px"; a.innerHTML = '<div class="row"><div class="grow"><div class="title">Introductions</div><div class="detail" style="white-space:normal">Ask a mutual connection to introduce you, or choose whether people can ask to meet you.</div></div></div>'; np.parentNode.insertBefore(a, np.nextSibling); } }).catch(function () {});
     (function () {
       var el = document.getElementById("sharedprofile");
       function show(en) {
