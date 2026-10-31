@@ -855,6 +855,18 @@ if (env && !process.env.TAGG_DO) {
   ok("only when the owner ticks private notes does the grant include them", (await call("GET", "/api/tokens", null, ownerA)).body.tokens[0].scope === "people+notes" && /ALICE PRIVATE NOTE/.test(JSON.stringify(nr.body)));
 }
 
+// Write freeze for a storage move
+if (env) {
+  const fz = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const fc = (await call("POST", "/api/card", { ownerToken: fz, card: { name: "Frieda Freeze", headline: "Maker" } })).body;
+  await env.KV.put("cfg/freeze", "on");
+  const w1 = await call("POST", "/api/owner", {}), w2 = await call("POST", "/api/card", { ownerToken: fz, card: { name: "Frieda Changed", headline: "Maker" } });
+  const rd = await call("GET", "/api/c/" + fc.slug, null);
+  ok("freeze on: writes get 503 with a plain message", w1.status === 503 && w2.status === 503 && w1.body.frozen === true && /being moved/.test(w1.body.error));
+  ok("freeze on: reads still work and the card is unchanged", rd.status === 200 && rd.body.card.name === "Frieda Freeze");
+  await env.KV.put("cfg/freeze", "off");
+  ok("freeze off: writes work again", (await call("POST", "/api/owner", {})).status === 200);
+}
 srv.close();
 console.log("\n" + passed + " checks passed");
 

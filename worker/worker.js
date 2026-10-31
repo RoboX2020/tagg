@@ -1786,6 +1786,11 @@ export default {
       // Reject oversized request bodies early (largest legitimate body is a pasted LinkedIn profile or a saved-people migration, well under 256 KB).
       // The Content-Length check alone is not enough: a request without that header (chunked) or with a false one used to bypass the cap.
       // Count the actual bytes from the body stream instead and re-issue the request with the verified body for the handlers below.
+      // Write freeze for a storage move: while cfg/freeze is "on", every request that changes data gets 503 with Retry-After. Reads still work.
+      // GETs that only bump short-lived counters (view ceiling, rate limits) are not frozen; those keys are not migrated.
+      if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS" && (await env.KV.get("cfg/freeze")) === "on") {
+        const fr = withSecurityHeaders(j({ error: "Tagg is being moved to new storage. Try again in a few minutes.", frozen: true }, 503)); fr.headers.set("Retry-After", "120"); return fr;
+      }
       if (req.method !== "GET" && req.method !== "OPTIONS") {
         const tooBig = withSecurityHeaders(j({ error: "That request is too large." }, 413));
         if (Number(req.headers.get("content-length") || 0) > MAX_BODY_BYTES) return tooBig;

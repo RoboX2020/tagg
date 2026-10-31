@@ -1,0 +1,16 @@
+import { start } from "./serve.mjs"; import puppeteer from "puppeteer-core";
+import http from "http"; import fs from "fs"; import path from "path";
+const root = path.resolve("."); const { srv } = await start(8787);
+const web = http.createServer((q, r) => { const f = path.join(root, q.url.split("?")[0] === "/" ? "index.html" : q.url.split("?")[0]); if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); } r.writeHead(200, { "Content-Type": f.endsWith(".js") ? "text/javascript" : f.endsWith(".css") ? "text/css" : "text/html" }); r.end(fs.readFileSync(f)); }).listen(8800);
+const base = "http://localhost:8800/";
+const b = await puppeteer.launch({ executablePath: "/usr/bin/google-chrome", headless: "new", args: ["--no-sandbox"] });
+const P = await b.newPage(); const pend = new Map();
+P.on("request", r => pend.set(r.url(), r.method())); P.on("requestfinished", r => pend.delete(r.url())); P.on("requestfailed", r => pend.delete(r.url()));
+P.on("response", r => console.log(r.status(), r.url().slice(0, 90), r.headers()["cache-control"]));
+const api = "http://localhost:8787"; const j = async (p, b) => (await fetch(api + p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) })).json();
+console.log;const o = (await j("/api/owner", {})).ownerToken; const c = await j("/api/card", { ownerToken: o, card: { name: "Bob Li", headline: "ML", detail: "x", links: {} } });
+console.log("card", JSON.stringify(c).slice(0,120));
+await P.evaluateOnNewDocument((a) => { localStorage.setItem("tagg.api", a); }, api);
+await P.goto(base + "#/c/" + (c.slug||c.card?.slug), { waitUntil: "networkidle0", timeout: 12000 }).catch(e => console.log("goto", e.message.slice(0, 60)));
+console.log("BODY", (await P.evaluate(() => document.body.innerText)).slice(0, 80).replace(/\n/g, " | "));
+await new Promise(r => setTimeout(r, 1000)); console.log("PENDING", [...pend]); await b.close(); srv.close?.(); process.exit(0);
