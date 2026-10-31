@@ -1,7 +1,7 @@
 {
   "name": "Tagg",
   "short_name": "Tagg",
-  "description": "People memory with a personal agent. Meet once, Tagg remembers.",
+  "description": "People memory with a personal agent. Never forget who you met.",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#f4f4f6",

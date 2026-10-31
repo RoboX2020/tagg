@@ -610,7 +610,7 @@
     var card = loadCard();
     app.innerHTML =
       '<div class="topbar"><div class="wordmark"><img class="mark" src="icon.svg" alt="" width="30" height="30">Tagg</div>' +
-      '<div class="sub">Meet once. Tagg remembers.</div>' +
+      '<div class="sub">Never forget who you met.</div>' +
       (card ? '<a class="bell" href="#/notifications" aria-label="Notifications' + (NOTIF_UNREAD ? ', ' + NOTIF_UNREAD + ' unread' : '') + '">' + BELL + (NOTIF_UNREAD ? '<span class="bellbadge">' + (NOTIF_UNREAD > 9 ? "9+" : NOTIF_UNREAD) + '</span>' : '') + '</a>' : '') + '</div>' +
       ((card && INBOX_COUNT && active !== "people") ? '<a class="reqbar" href="#/people"><span><b>' + INBOX_COUNT + (INBOX_COUNT > 1 ? ' connection requests' : ' connection request') + '</b> waiting</span><span class="reqgo">Review</span></a>' : '') +
       '<div class="content">' + inner + '</div>' +
