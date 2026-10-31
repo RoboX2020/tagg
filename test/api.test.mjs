@@ -687,30 +687,37 @@ if (env) {
   await env.KV.delete("cfg/notify");
 }
 
-// ---- Network first-access alert (own switch cfg/notify-net, swept by cron): in-app and push only, no email, no names, once ----
+// ---- Network first-access alert (own switch cfg/notify-net, event-driven): in-app and push only, no email, no names, once ----
 if (env) {
-  const { networkFirstAccessSweep } = await import("../worker/worker.js");
+  const { networkFirstAccessCheck } = await import("../worker/worker.js");
   await env.KV.put("cfg/notify", "on");
   const box = []; env.MAIL_SINK = async (to, subject, text) => { box.push({ to, subject, text }); };
   const mk = async (name, email) => { const o = (await call("POST", "/api/owner", {})).body.ownerToken; await env.KV.put("prof/" + o, JSON.stringify({ email, name, picture: "", sub: "email:" + email, emailVerified: true })); const c = await call("POST", "/api/card", { ownerToken: o, card: { name, headline: "Maker", detail: "Builds things", links: {} } }, o); await env.KV.put("gsh/" + o, JSON.stringify({ on: true, ack: true })); return { o, slug: c.body.slug }; };
   const V = await mk("Net Viewer", "nv@n.invalid"), M = await mk("Net Middle", "nm@n.invalid"), T = await mk("Net Third", "nt@n.invalid");
   const items = async (x) => (await call("GET", "/api/notify", null, x.o)).body.items.filter(i => i.type === "network");
-  await networkFirstAccessSweep(env);
+  await call("POST", "/api/people", { slug: M.slug }, V.o); await call("POST", "/api/people", { slug: V.slug }, M.o); await call("POST", "/api/people", { slug: T.slug }, M.o); await call("POST", "/api/people", { slug: M.slug }, T.o);
+  await networkFirstAccessCheck(env, T.o);
   ok("net alert is OFF without its own switch", (await items(V)).length === 0);
   await env.KV.put("cfg/notify-net", "on");
-  await networkFirstAccessSweep(env); // baseline: nobody sees anyone yet
-  ok("baseline run alerts nobody", (await items(V)).length + (await items(M)).length + (await items(T)).length === 0);
-  await call("POST", "/api/people", { slug: M.slug }, V.o); await call("POST", "/api/people", { slug: V.slug }, M.o);
-  await call("POST", "/api/people", { slug: T.slug }, M.o);
   box.length = 0;
-  await networkFirstAccessSweep(env);
+  await networkFirstAccessCheck(env, T.o);
   const vi = await items(V);
   ok("viewer gets one in-app alert when a shared network first becomes visible", vi.length === 1 && vi[0].title === "Your network opened up" && vi[0].line === "People you may know through your connections are now visible. Open Map or People.");
-  ok("the middle person and the third person are not alerted", (await items(M)).length === 0 && (await items(T)).length === 0);
+  ok("the middle person is not alerted (sees nobody new); the third person is, because the mutual saves make the rule symmetric", (await items(M)).length === 0 && (await items(T)).length === 1);
   ok("the alert sends no email and names no one", box.length === 0 && !/Net (Middle|Third)/.test(JSON.stringify(vi)));
-  await networkFirstAccessSweep(env);
-  ok("a second sweep does not alert again", (await items(V)).length === 1);
+  await networkFirstAccessCheck(env, T.o); await networkFirstAccessCheck(env, V.o);
+  ok("running the check again does not alert twice", (await items(V)).length === 1);
+  const Z = await mk("Net Loner", "nl@n.invalid"); await networkFirstAccessCheck(env, Z.o);
+  ok("someone who sees nobody is not alerted", (await items(Z)).length === 0);
   await env.KV.delete("cfg/notify-net"); await env.KV.delete("cfg/notify"); delete env.MAIL_SINK;
+}
+
+// ---- Free-tier exhaustion: a failing KV write must give a clean readable 503, not a raw platform error ----
+if (env) {
+  const op = env.KV.put; env.KV.put = async () => { throw new Error("KV put() limit exceeded for the day."); };
+  const r = await call("POST", "/api/owner", {});
+  env.KV.put = op;
+  ok("when KV writes run out the API answers 503 with a readable message", r.status === 503 && /busy/i.test(r.body.error) && r.body.busy === true);
 }
 
 // ---- Claude connector OAuth: discovery, DCR, PKCE, approval in the app, refresh rotation, revoke, owner isolation ----

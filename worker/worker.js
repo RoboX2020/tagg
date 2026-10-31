@@ -525,33 +525,30 @@ export class RateLimiter {
 }
 
 // First-access alert: when a person's shared network goes from empty to at least one visible person (same fofFor rule the Map and People use,
-// so nothing new is disclosed), tell that person once, in-app and push only, no email, no names. A stored count per person is the baseline:
-// a person already seeing people when first checked is baselined silently. At most once per 24 hours per person.
-async function networkFirstAccessSweep(env) {
-  if ((await env.KV.get("cfg/notify")) !== "on" || (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "off" };
-  const l = await env.KV.list({ prefix: "gsh/", limit: 100 });
-  let notified = 0, checked = 0;
-  for (const k of l.keys) {
-    const owner = k.name.slice(4);
-    try {
-      if (!(await gshareOn(env, owner))) continue;
-      checked++;
-      const n = (await fofFor(env, owner)).nodes.length, prev = await env.KV.get("net/n/" + owner);
-      if (prev === null) { await env.KV.put("net/n/" + owner, String(n)); continue; }
-      if (Number(prev) === 0 && n > 0 && (await env.KV.get("nd/net/" + owner)) === null) {
-        await env.KV.put("nd/net/" + owner, "1", { expirationTtl: 86400 });
-        await notify(env, owner, "network", "n" + Math.floor(Date.now() / 86400000), "");
-        notified++;
-      }
-      if (String(n) !== prev) await env.KV.put("net/n/" + owner, String(n));
-    } catch (e) {}
-  }
-  return { checked, notified };
+// so nothing new is disclosed), tell that person once, in-app and push only, no email, no names. Event-driven (no polling): it runs after the
+// actions that can open a network (share on, profile saved, request accepted), for the actor and the people around them, within a fixed read budget.
+// A permanent marker net/seen/<owner> means "already told or already seeing people", so each person is alerted at most once.
+async function networkFirstAccessCheck(env, actor) {
+  try {
+    if ((await env.KV.get("cfg/notify")) !== "on" || (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "off" };
+    const cands = [actor], seen = new Set([actor]);
+    const add = async (people, cap) => { let n = 0; for (const x of people) { if (n >= cap || cands.length >= 24) break; if (!x.slug) continue; const rec = await getJSON(env.KV, "card/" + x.slug); const o = rec && rec.ownerToken; if (o && !seen.has(o)) { seen.add(o); cands.push(o); n++; } } };
+    const mids = []; await add((await getPeople(env, actor)).slice(0, 12), 12);
+    for (const m of cands.slice(1, 7)) mids.push(m);
+    for (const m of mids) await add((await getPeople(env, m)).slice(0, 4), 4);
+    let notified = 0, evaluated = 0;
+    for (const v of cands) {
+      if ((await env.KV.get("net/seen/" + v)) !== null) continue;
+      if (!(await gshareOn(env, v)) || evaluated >= 16) continue;
+      evaluated++;
+      if ((await fofFor(env, v)).nodes.length > 0) { await env.KV.put("net/seen/" + v, "1"); await notify(env, v, "network", "n", ""); notified++; }
+    }
+    return { evaluated, notified };
+  } catch (e) { return { error: String(e && e.message || e) }; }
 }
 
-export { networkFirstAccessSweep };
-export default {
-  async scheduled(event, env, ctx) { ctx.waitUntil(networkFirstAccessSweep(env)); },
+export { networkFirstAccessCheck };
+const appHandler = {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
     const p = url.pathname;
@@ -579,6 +576,7 @@ export default {
       const rec = { card, ownerToken: owner, slug, updatedAt: new Date().toISOString(), createdAt: (await getJSON(env.KV, "card/" + slug))?.createdAt || new Date().toISOString() };
       await env.KV.put("card/" + slug, JSON.stringify(rec));
       if (firstCard) await notify(env, owner, "welcome", owner.slice(0, 12), card.name);
+      ctx.waitUntil(networkFirstAccessCheck(env, owner));
       return j({ ownerToken: owner, slug });
     }
 
@@ -973,8 +971,11 @@ export default {
       const rec = await getJSON(env.KV, "card/" + slug);
       if (!rec || !rec.ownerToken) return j({ error: "not found" }, 404);
       const list = ((await getJSON(env.KV, "scn/" + rec.ownerToken)) || []).filter(x => Date.now() - Date.parse(x.at) < 900000);
-      list.unshift({ id: "s_" + rand(8), at: new Date().toISOString() });
-      await env.KV.put("scn/" + rec.ownerToken, JSON.stringify(list.slice(0, 20)), { expirationTtl: 3600 });
+      // Write at most once per 20 seconds per card (KV free tier allows only 1,000 writes a day); a burst of opens is one entry.
+      if (!list.length || Date.now() - Date.parse(list[0].at) > 20000) {
+        list.unshift({ id: "s_" + rand(8), at: new Date().toISOString() });
+        await env.KV.put("scn/" + rec.ownerToken, JSON.stringify(list.slice(0, 20)), { expirationTtl: 3600 });
+      }
       // Optional alert to the card's owner (OFF unless both cfg/notify and cfg/notify-scan are on). At most one per card per 30 minutes,
       // never names anyone, never says they met or have not connected, and not sent when the opener is the owner's own signed-in app.
       if (authOwner(req) !== rec.ownerToken && (await env.KV.get("nd/scan/" + slug)) === null) {
@@ -1244,6 +1245,7 @@ export default {
       rq.status = "accepted"; rq.ownerPersonId = op.id; rq.requesterPersonId = requesterPersonId;
       await env.KV.put("cin/" + owner, JSON.stringify(inbox));
       { const myc = await getJSON(env.KV, "card/" + (await env.KV.get("own/" + owner))); await notify(env, rq.requesterToken, "connected", rq.id, myc && myc.card && myc.card.name); }
+      ctx.waitUntil((async () => { await networkFirstAccessCheck(env, owner); if (rq.requesterToken) await networkFirstAccessCheck(env, rq.requesterToken); })());
       return j({ ok: true, status: "accepted", personId: op.id });
     }
 
@@ -1543,11 +1545,24 @@ export default {
         if (!b || typeof b.on !== "boolean") return j({ error: "on must be true or false" }, 400);
         g = { on: b.on, ack: true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort), at: new Date().toISOString() };
         await env.KV.put("gsh/" + owner, JSON.stringify(g));
+        if (b.on) ctx.waitUntil(networkFirstAccessCheck(env, owner));
       }
       const st = await profileStatus(env, owner);
       return j({ choice: !g ? "unset" : (g.ack ? (g.on ? "on" : "off") : (g.cohort ? "on-until-you-choose" : "preselected-on")), needsChoice: !g || g.ack !== true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort && g.ack !== true), profileComplete: st.complete });
     }
 
     return j({ error: "not found" }, 404);
+  },
+};
+// Any unexpected failure (for example the free daily KV write allowance running out) becomes a clean, readable 503 with CORS headers,
+// not a raw platform error page that the app cannot read.
+export default {
+  async fetch(req, env, ctx) {
+    try { return await appHandler.fetch(req, env, ctx); }
+    catch (e) {
+      const m = String(e && e.message || e);
+      console.log("unhandled", m.slice(0, 200));
+      return j({ error: "Tagg is very busy right now. Please try again in a little while.", busy: /limit|quota|exceeded|KV/i.test(m) }, 503);
+    }
   },
 };
