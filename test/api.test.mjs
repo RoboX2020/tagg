@@ -712,6 +712,22 @@ if (env) {
   await env.KV.delete("cfg/notify-net"); await env.KV.delete("cfg/notify"); delete env.MAIL_SINK;
 }
 
+// ---- ID2 case: a sharing account with a thin profile completes its third section; the alert fires on that save (via the real HTTP path) ----
+if (env) {
+  await env.KV.put("cfg/notify", "on"); await env.KV.put("cfg/notify-net", "on"); globalThis.__rawCards = true;
+  const mk3 = async (name, thin) => { const o = (await call("POST", "/api/owner", {})).body.ownerToken; const c = await call("POST", "/api/card", { ownerToken: o, card: thin ? { name, email: name.toLowerCase().replace(/ /g, "") + "@n.invalid", links: {} } : { name, headline: "Maker", detail: "Builds things", links: {} } }, o); await env.KV.put("gsh/" + o, JSON.stringify({ on: true, ack: true })); return { o, slug: c.body.slug }; };
+  const V2 = await mk3("Thin Viewer", true), M2 = await mk3("Mid Two"), T2 = await mk3("Third Two");
+  await call("POST", "/api/people", { slug: M2.slug }, V2.o); await call("POST", "/api/people", { slug: V2.slug }, M2.o); await call("POST", "/api/people", { slug: T2.slug }, M2.o); await call("POST", "/api/people", { slug: M2.slug }, T2.o);
+  const it2 = async (x) => (await call("GET", "/api/notify", null, x.o)).body.items.filter(i => i.type === "network");
+  ok("a thin profile (2 of 3 sections) sees nothing and is not alerted", (await call("GET", "/api/graph", null, V2.o)).body.nodes.filter(n => n.type === "friend-of-friend").length === 0 && (await it2(V2)).length === 0);
+  await call("POST", "/api/card", { ownerToken: V2.o, card: { name: "Thin Viewer", email: "thinviewer@n.invalid", headline: "Now complete", links: {} } }, V2.o);
+  await new Promise(r => setTimeout(r, 300));
+  ok("completing the third section opens the network and sends exactly one alert", (await call("GET", "/api/graph", null, V2.o)).body.nodes.some(n => n.type === "friend-of-friend") && (await it2(V2)).length === 1);
+  await call("POST", "/api/card", { ownerToken: V2.o, card: { name: "Thin Viewer", email: "thinviewer@n.invalid", headline: "Edited again", links: {} } }, V2.o); await new Promise(r => setTimeout(r, 200));
+  ok("a later edit does not alert again", (await it2(V2)).length === 1);
+  globalThis.__rawCards = false; await env.KV.delete("cfg/notify"); await env.KV.delete("cfg/notify-net");
+}
+
 // ---- Free-tier exhaustion: a failing KV write must give a clean readable 503, not a raw platform error ----
 if (env) {
   const op = env.KV.put; env.KV.put = async () => { throw new Error("KV put() limit exceeded for the day."); };

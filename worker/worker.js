@@ -576,7 +576,6 @@ const appHandler = {
       const rec = { card, ownerToken: owner, slug, updatedAt: new Date().toISOString(), createdAt: (await getJSON(env.KV, "card/" + slug))?.createdAt || new Date().toISOString() };
       await env.KV.put("card/" + slug, JSON.stringify(rec));
       if (firstCard) await notify(env, owner, "welcome", owner.slice(0, 12), card.name);
-      ctx.waitUntil(networkFirstAccessCheck(env, owner));
       return j({ ownerToken: owner, slug });
     }
 
@@ -1545,7 +1544,6 @@ const appHandler = {
         if (!b || typeof b.on !== "boolean") return j({ error: "on must be true or false" }, 400);
         g = { on: b.on, ack: true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort), at: new Date().toISOString() };
         await env.KV.put("gsh/" + owner, JSON.stringify(g));
-        if (b.on) ctx.waitUntil(networkFirstAccessCheck(env, owner));
       }
       const st = await profileStatus(env, owner);
       return j({ choice: !g ? "unset" : (g.ack ? (g.on ? "on" : "off") : (g.cohort ? "on-until-you-choose" : "preselected-on")), needsChoice: !g || g.ack !== true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort && g.ack !== true), profileComplete: st.complete });
@@ -1558,7 +1556,17 @@ const appHandler = {
 // not a raw platform error page that the app cannot read.
 export default {
   async fetch(req, env, ctx) {
-    try { return await appHandler.fetch(req, env, ctx); }
+    try {
+      const res = await appHandler.fetch(req, env, ctx);
+      // Anything that can change who is complete or sharing (card or photo saved, LinkedIn or GitHub import, share on/off, accept) re-checks the first-access alert.
+      if (req.method !== "GET" && req.method !== "OPTIONS" && res.status < 400 && /^\/api\/(card|profile-photo|import\/|graph\/sharing|inbox\/respond)/.test(new URL(req.url).pathname)) {
+        const h = req.headers.get("Authorization") || "", o = h.startsWith("Bearer ") ? h.slice(7) : null;
+        let who = o;
+        if (!who && new URL(req.url).pathname === "/api/card") who = (await res.clone().json().catch(() => null) || {}).ownerToken || null;
+        if (who) ctx.waitUntil(networkFirstAccessCheck(env, who));
+      }
+      return res;
+    }
     catch (e) {
       const m = String(e && e.message || e);
       console.log("unhandled", m.slice(0, 200));
