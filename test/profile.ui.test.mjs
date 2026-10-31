@@ -27,6 +27,7 @@ try {
   await api.env.KV.put("photo/" + card.slug, JSON.stringify({ ct: "image/png", b64: png(160, 160).toString("base64"), at: now, source: "linkedin" }));
   const b = await call("POST", "/api/auth/signup", { email: "pb@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
   await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} } }, b.ownerToken);
+  await call("PUT", "/api/graph/sharing", { on: false }, b.ownerToken);
   await call("POST", "/api/people", { slug: card.slug, event: "Sample Hack", note: "SECRET-NOTE-xyz", location: { lat: 33.42551, lon: -111.94, label: "Tempe, Arizona", place: "Test Venue", acc: 12.4, at: "2026-10-30T18:00:00.000Z" } }, b.ownerToken);
   const saved = (await call("GET", "/api/people", null, b.ownerToken)).people[0];
   const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });

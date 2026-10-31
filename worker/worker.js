@@ -122,6 +122,7 @@ function mcpMatch(x, terms, withNotes) {
 const MCP_TOOLS = [
   { name: "search_people", description: "Search the people this Tagg user has met by name, headline, event, place, or imported work and school details. Read-only.", inputSchema: { type: "object", properties: { query: { type: "string", description: "Words to look for, e.g. a company, school, event or name" } }, required: ["query"] } },
   { name: "get_person", description: "Get one saved person by id (from search_people or list_events).", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
+  { name: "friends_of_friends", description: "Names of people the user's connections know, only where everyone involved shares their network. Names only.", inputSchema: { type: "object", properties: {} } },
   { name: "list_events", description: "List the events where this user met people, with counts.", inputSchema: { type: "object", properties: {} } },
 ];
 async function mcpCall(env, owner, scope, name, args) {
@@ -133,6 +134,7 @@ async function mcpCall(env, owner, scope, name, args) {
     return { people: people.map(x => ({ x, s: mcpMatch(x, terms, withNotes) })).filter(r => r.s > 0).sort((a, b) => b.s - a.s).slice(0, 10).map(r => mcpPerson(r.x, withNotes)) };
   }
   if (name === "get_person") { const x = people.find(q => q.id === (args && args.id)); return x ? mcpPerson(x, withNotes) : { error: "not found" }; }
+  if (name === "friends_of_friends") { const g = await fofFor(env, owner); const nm = new Map(people.map(x => [x.id, x.card.name])), fm = new Map(g.nodes.map(n => [n.id, n.name])); return { friends_of_friends: g.edges.filter(e => fm.has(e.to)).map(e => ({ name: fm.get(e.to), knows: nm.get(e.from) || null })) }; }
   if (name === "list_events") { const m = {}; for (const x of people) { const e = x.event || "(no event)"; m[e] = (m[e] || 0) + 1; } return { events: Object.keys(m).map(e => ({ event: e, people: m[e] })) }; }
   return null;
 }
@@ -202,6 +204,43 @@ function gatePerson(x, complete) {
 async function getPeopleFor(env, owner) {
   const st = await profileStatus(env, owner);
   return (await getPeople(env, owner)).map(x => gatePerson(x, st.complete));
+}
+
+// ---- Graph sharing: consent-based friends-of-friends. Identity and edges only: never notes, places, contact fields or events. ----
+// State per owner: absent = never chosen (existing users: nothing shared). New owners start {on:true, ack:false, isNew:true}: the
+// onboarding notice is shown with sharing preselected, and nothing is shared until they confirm (ack) or opt out in Settings.
+async function gshareState(env, owner) { return await getJSON(env.KV, "gsh/" + owner); }
+async function gshareOn(env, owner) { const g = await gshareState(env, owner); return !!(g && g.on === true && (g.ack === true || g.cohort === true)); }
+async function markNewOwner(env, owner) { await env.KV.put("gsh/" + owner, JSON.stringify({ on: true, ack: false, isNew: true })); }
+async function opaqueId(owner) { const h = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("gfof|" + owner)); return "f_" + [...new Uint8Array(h)].slice(0, 8).map(b => b.toString(16).padStart(2, "0")).join(""); }
+// Friends of friends for `viewer`. A person shows up only when ALL hold: the viewer shares and has a complete profile; the
+// middle person shares and has saved the viewer back (mutual, so the viewer is inside their permissioned audience); the third
+// person shares too (their own consent to be shown). Computed at query time, so revocation, deletion and opt-out apply at once.
+async function fofFor(env, viewer) {
+  const empty = { nodes: [], edges: [] };
+  if (!(await gshareOn(env, viewer))) return empty;
+  if (!(await profileStatus(env, viewer)).complete) return empty;
+  const viewerSlug = await env.KV.get("own/" + viewer);
+  if (!viewerSlug) return empty;
+  const mine = await getPeople(env, viewer), direct = new Map();
+  for (const x of mine.slice(0, 40)) { if (!x.slug) continue; const rec = await getJSON(env.KV, "card/" + x.slug); if (rec && rec.ownerToken && rec.ownerToken !== viewer) direct.set(rec.ownerToken, x); }
+  const nodes = new Map(), edges = [];
+  for (const [mid, mx] of direct) {
+    if (!(await gshareOn(env, mid))) continue;
+    const theirs = await getPeople(env, mid);
+    if (!theirs.some(t => t.slug && t.slug === viewerSlug)) continue;
+    for (const t of theirs.slice(0, 100)) {
+      if (!t.slug) continue;
+      const rec = await getJSON(env.KV, "card/" + t.slug);
+      if (!rec || !rec.ownerToken || rec.ownerToken === viewer || rec.ownerToken === mid) continue;
+      if (direct.has(rec.ownerToken)) { const dx = direct.get(rec.ownerToken); if (await gshareOn(env, rec.ownerToken)) edges.push({ from: mx.id, to: dx.id, kind: "knows" }); continue; }
+      if (!(await gshareOn(env, rec.ownerToken))) continue;
+      const nid = await opaqueId(rec.ownerToken);
+      if (!nodes.has(nid)) nodes.set(nid, { id: nid, type: "friend-of-friend", name: (rec.card && rec.card.name) || "" });
+      edges.push({ from: mx.id, to: nid, kind: "knows" });
+    }
+  }
+  return { nodes: [...nodes.values()], edges };
 }
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
@@ -311,7 +350,7 @@ async function linkIdentity(env, authKey, deviceTok) {
   let linked = await env.KV.get(authKey);
   if (!linked) {
     linked = (deviceTok && (await env.KV.get("own/" + deviceTok)) !== null) ? deviceTok : token();
-    if ((await env.KV.get("own/" + linked)) === null) { await env.KV.put("own/" + linked, ""); await putPeople(env, linked, []); }
+    if ((await env.KV.get("own/" + linked)) === null) { await env.KV.put("own/" + linked, ""); await putPeople(env, linked, []); await markNewOwner(env, linked); }
     await env.KV.put(authKey, linked);
     return linked;
   }
@@ -359,6 +398,7 @@ export default {
       const t = token();
       await env.KV.put("own/" + t, "");
       await putPeople(env, t, []);
+      await markNewOwner(env, t);
       return j({ ownerToken: t });
     }
 
@@ -1066,8 +1106,11 @@ export default {
         about: x.enriched && x.enriched.linkedin ? [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location].filter(v => v && !/: $/.test(v)).join("; ")
           : x.enriched && x.enriched.github ? [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ") : null
       }));
+      const fofG = await fofFor(env, owner);
+      const nameOf = new Map((await getPeopleFor(env, owner)).map(x => [x.id, x.card.name])), fofNm = new Map(fofG.nodes.map(n => [n.id, n.name]));
+      const fofNames = fofG.edges.filter(e => fofNm.has(e.to)).slice(0, 60).map(e => ({ name: fofNm.get(e.to), knows: nameOf.get(e.from) || null }));
       const hist = (body && Array.isArray(body.history) ? body.history : []).slice(-6).filter(h => h && (h.r === "me" || h.r === "tagg") && typeof h.t === "string").map(h => (h.r === "me" ? "USER: " : "TAGG: ") + h.t.slice(0, 500)).join("\n");
-      const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + (hist ? "\n\nEARLIER IN THIS CONVERSATION (use it to resolve words like she, he, they, that person, and who else):\n" + hist : "") + "\n\nQUESTION: " + q;
+      const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + (fofNames.length ? "\n\nFRIENDS OF FRIENDS (names only, shared with consent; say who they know, never invent details): " + JSON.stringify(fofNames) : "") + (hist ? "\n\nEARLIER IN THIS CONVERSATION (use it to resolve words like she, he, they, that person, and who else):\n" + hist : "") + "\n\nQUESTION: " + q;
       const sug = askSuggestions(q, await getPeopleFor(env, owner));
       if (sug.length) {
         const byHeard = {}; for (const s of sug) (byHeard[s.heard] = byHeard[s.heard] || []).push(s);
@@ -1120,7 +1163,21 @@ export default {
       const nodes = [{ id: "me", type: "self", name: "You" }];
       const edges = [];
       for (const x of people) { nodes.push({ id: x.id, type: "person", name: x.card.name, slug: x.slug || null }); edges.push({ from: "me", to: x.id, kind: "met", at: x.metAt, event: x.event || null }); }
-      return j({ nodes, edges });
+      const fof = await fofFor(env, owner);
+      return j({ nodes: nodes.concat(fof.nodes), edges: edges.concat(fof.edges), sharing: (await gshareState(env, owner)) ? { on: await gshareOn(env, owner) } : null });
+    }
+    if (p === "/api/graph/sharing" && (req.method === "GET" || req.method === "PUT")) {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      let g = await gshareState(env, owner);
+      if (req.method === "PUT") {
+        const b = await req.json().catch(() => null);
+        if (!b || typeof b.on !== "boolean") return j({ error: "on must be true or false" }, 400);
+        g = { on: b.on, ack: true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort), at: new Date().toISOString() };
+        await env.KV.put("gsh/" + owner, JSON.stringify(g));
+      }
+      const st = await profileStatus(env, owner);
+      return j({ choice: !g ? "unset" : (g.ack ? (g.on ? "on" : "off") : (g.cohort ? "on-until-you-choose" : "preselected-on")), needsChoice: !g || g.ack !== true, isNew: !!(g && g.isNew), cohort: !!(g && g.cohort && g.ack !== true), profileComplete: st.complete });
     }
 
     return j({ error: "not found" }, 404);

@@ -670,6 +670,46 @@
     if (gsign) mountGoogleButton(gsign);
   }
   /* ================= settings ================= */
+  /* Network sharing (friends of friends): disclosure, choice and Settings opt-out. Enforced on the server. */
+  var GS_SKIP = false;
+  var GS_TEXT = "If you share your network, people you are connected with can see the names of people you are connected with, and you can see theirs. Only names and who knows whom. Never your notes, where you met, or anyone's phone or email. A person only appears if they share too, and you can turn this off any time in Settings.";
+  function openGraphChoice(st, done) {
+    var bg = document.createElement("div"); bg.className = "sheet-bg";
+    var fresh = st && (st.isNew || st.cohort);
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Share your network?</h3><p class="hint">' + esc(GS_TEXT) + '</p>' +
+      '<p class="hint">' + (st && st.cohort ? "Your network is already shared with people you are connected with, because this account is part of the test group. Tap Share to confirm, or keep it private." : fresh ? "Sharing is selected for new accounts. Tap Share to confirm, or keep it private." : "You have not chosen yet, so nothing of yours is shared.") + '</p>' +
+      '<button class="btn btn-accent" id="gs-yes">Share my network</button><button class="btn ' + (fresh ? "btn-gray" : "btn-accent") + '" id="gs-no" style="margin-top:8px">Keep it private</button><button class="btn btn-plain" id="gs-later">Decide later</button></div>';
+    document.body.appendChild(bg);
+    function set(on) { api("/api/graph/sharing", { method: "PUT", body: { on: on } }).then(function () { bg.remove(); toast(on ? "Network sharing is on" : "Network sharing is off"); if (done) done(); }).catch(function () { toast("Could not save - try again"); }); }
+    document.getElementById("gs-yes").addEventListener("click", function () { set(true); });
+    document.getElementById("gs-no").addEventListener("click", function () { set(false); });
+    document.getElementById("gs-later").addEventListener("click", function () { GS_SKIP = true; bg.remove(); });
+  }
+  function mountNetworkPeople(box) {
+    if (!ownerToken() || !box) return;
+    api("/api/graph/sharing").then(function (st) {
+      if (st && st.needsChoice && !GS_SKIP && st.profileComplete) { openGraphChoice(st, function () { mountNetworkPeople(box); }); return; }
+      return api("/api/graph").then(function (g) {
+        var nm = {}; (g.nodes || []).forEach(function (n) { nm[n.id] = n.name; });
+        var rows = (g.edges || []).filter(function (e) { return e.kind === "knows" && nm[e.to] && (g.nodes || []).some(function (n) { return n.id === e.to && n.type === "friend-of-friend"; }); });
+        if (!rows.length) { box.innerHTML = ""; return; }
+        box.innerHTML = '<h2 class="section">People your connections know</h2><div class="group">' + rows.map(function (e) { return '<div class="row"><div class="grow"><div class="title">' + esc(nm[e.to]) + '</div><div class="detail">Knows ' + esc(nm[e.from] || "someone you know") + '</div></div></div>'; }).join("") + '</div><p class="fineprint">Shown because everyone involved shares their network. Names only.</p>';
+      });
+    }).catch(function () {});
+  }
+  function mountNetworkSettings(box) {
+    if (!box) return;
+    if (!ownerToken()) { box.innerHTML = '<div class="fineprint" style="margin:0">Sign in to choose network sharing.</div>'; return; }
+    api("/api/graph/sharing").then(function (st) {
+      var c = st.choice;
+      box.innerHTML = '<div style="font-weight:600">Network sharing</div><div class="fineprint" style="margin:6px 0 10px">' + esc(GS_TEXT) + '</div>' +
+        '<div class="fineprint" style="margin:0 0 8px">' + (c === "on" ? "Currently on." : c === "on-until-you-choose" ? "Currently on for this test account. Choose below to confirm or turn it off." : c === "off" ? "Currently off." : "You have not chosen yet. Nothing is shared.") + '</div>' +
+        '<div class="themeseg"><button id="gs-on"' + (c === "on" || c === "on-until-you-choose" ? ' class="on"' : "") + '>Share</button><button id="gs-off"' + (c === "off" ? ' class="on"' : "") + '>Keep private</button></div>';
+      function set(on) { api("/api/graph/sharing", { method: "PUT", body: { on: on } }).then(function () { toast(on ? "Network sharing is on" : "Network sharing is off"); mountNetworkSettings(box); }).catch(function () { toast("Could not save - try again"); }); }
+      document.getElementById("gs-on").addEventListener("click", function () { set(true); });
+      document.getElementById("gs-off").addEventListener("click", function () { set(false); });
+    }).catch(function () { box.innerHTML = '<div class="fineprint" style="margin:0">Could not load.</div>'; });
+  }
   function renderSettings() {
     var card = loadCard();
     if (!card) { location.hash = "#/"; return; }
@@ -685,6 +725,7 @@
       (!profile() ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">You are not signed in. Go to My Card to sign in and back up your Tagg.</div></div><a class="btn btn-tinted" href="#/" style="width:auto;padding:0 14px">My Card</a></div></div>' : '') +
       '<h2 class="section">What people see</h2>' +
       '<div class="panel" id="sharedprofile"><div class="fineprint" style="margin:0">Loading your shared profile...</div></div>' +
+      '<h2 class="section">Network</h2><div class="panel" id="netpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' +
       '<h2 class="section">Connect your own agent</h2>' + (profile() ? '<div class="panel" id="agentpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' : '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Sign in first, then you can connect an AI agent of your choice.</div></div></div></div>') +
       '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
       '<p class="footer-note"><a href="#/privacy">Privacy</a></p>'
@@ -696,6 +737,7 @@
         b.addEventListener("click", function () { setTheme(b.getAttribute("data-th")); route(); });
       });
     })();
+    mountNetworkSettings(document.getElementById("netpanel"));
     (function () {
       var el = document.getElementById("sharedprofile");
       function show(en) {
@@ -1458,8 +1500,10 @@
           IC.chev + '</a>';
       }).join("") + '</div>' :
       '<div class="empty"><div class="glyph">' + IC.people + '</div><div class="t">No one here yet</div><div class="d">Show your Tagg code next time you meet someone - they will appear here with when and where.</div></div>') +
+      '<div id="netpeople"></div>' +
       (people.length ? '<div style="height:14px"></div><a class="btn btn-tinted" href="#/ask">Ask about the people you met</a>' : '<div style="height:14px"></div><a class="btn btn-accent" href="#/">Show my Tagg code</a>')
     );
+    mountNetworkPeople(document.getElementById("netpeople"));
     Array.prototype.forEach.call(document.querySelectorAll("[data-acc]"), function (b) {
       b.addEventListener("click", function () { respond(b.getAttribute("data-acc"), true, b); });
     });

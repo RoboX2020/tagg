@@ -394,7 +394,7 @@ const tl = await call("GET", "/api/tokens", null, bTok);
 ok("token list never contains the secret", tl.body.tokens.length === 1 && !JSON.stringify(tl.body).includes(t1.body.token));
 const init = await rpc(t1.body.token, "initialize", { protocolVersion: "2025-03-26" });
 ok("MCP initialize works", init.body.result.serverInfo.name === "tagg" && init.body.result.capabilities.tools);
-ok("MCP lists three read-only tools", (await rpc(t1.body.token, "tools/list")).body.result.tools.map(x => x.name).join() === "search_people,get_person,list_events");
+ok("MCP lists four read-only tools", (await rpc(t1.body.token, "tools/list")).body.result.tools.map(x => x.name).join() === "search_people,get_person,friends_of_friends,list_events");
 const sp = await rpc(t1.body.token, "tools/call", { name: "search_people", arguments: { query: "Alice" } });
 const spo = JSON.parse(sp.body.result.content[0].text);
 ok("MCP search finds the saved person without private notes", spo.people.length === 1 && spo.people[0].name === "Alice Ng" && !JSON.stringify(spo).includes("Bob only") && !("privateNote" in spo.people[0]));
@@ -457,6 +457,56 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   await env.KV.put("enrich/" + gCc.body.slug, JSON.stringify({ linkedin: { titles: ["Designer"], companies: [], schools: [], importedAt: new Date().toISOString() } }));
   const after = (await call("GET", "/api/profile/status", null, gCt)).body;
   ok("an existing LinkedIn import completes the detail", before.complete === false && after.complete === true);
+  env.AI = undefined;
+}
+
+// ---- Graph sharing: consent-based friends-of-friends ----
+{
+  const mk = async (name) => { const t = (await call("POST", "/api/owner", {})).body.ownerToken; const c = await call("POST", "/api/card", { ownerToken: t, card: { name, headline: "Engineer", detail: "Builds things", email: name.split(" ")[0].toLowerCase() + "@gf.invalid", links: {} } }, t); return { t, slug: c.body.slug, name }; };
+  const A = await mk("Gf Alice"), B = await mk("Gf Bob"), C = await mk("Gf Cara");
+  const save = (who, other, extra = {}) => call("POST", "/api/people", { slug: other.slug, event: "gf-event", note: "gf-private-note", location: { lat: 1.5, lon: 2.5, label: "gf-place" }, ...extra }, who.t);
+  await save(A, B); await save(B, A); await save(B, C);
+  const sh = (w, on) => call("PUT", "/api/graph/sharing", { on }, w.t);
+  const gr = async (w) => (await call("GET", "/api/graph", null, w.t)).body;
+  const hasC = (g) => g.nodes.some(n => n.name === "Gf Cara");
+  const st0 = await call("GET", "/api/graph/sharing", null, A.t);
+  ok("a new owner has sharing preselected but nothing is shared until they confirm", st0.body.choice === "preselected-on" && st0.body.needsChoice === true && st0.body.isNew === true);
+  ok("sharing endpoints need sign-in and a boolean", (await call("GET", "/api/graph/sharing")).status === 401 && (await call("PUT", "/api/graph/sharing", { on: "yes" }, A.t)).status === 400);
+  await sh(A, true); await sh(B, true);
+  ok("without the third person's own consent nobody sees them", !hasC(await gr(A)));
+  await sh(C, true);
+  const g1 = await gr(A); const cn = g1.nodes.find(n => n.name === "Gf Cara");
+  ok("friend of friend appears when viewer, middle and third person all share", !!cn && cn.type === "friend-of-friend" && !cn.slug && /^f_[0-9a-f]{16}$/.test(cn.id));
+  const raw1 = JSON.stringify(g1);
+  ok("graph carries names and edges only: no notes, places, emails, or slugs and events on third-party nodes and edges", !/gf-private-note|gf-place|@gf\.invalid/.test(raw1) && g1.nodes.filter(n => n.type === "friend-of-friend").every(n => Object.keys(n).sort().join() === "id,name,type") && g1.edges.filter(e => e.kind === "knows").every(e => Object.keys(e).sort().join() === "from,kind,to"));
+  const cEdge = g1.edges.find(e => e.to === cn.id); ok("the edge goes through the person who knows them", !!cEdge && g1.nodes.find(n => n.id === cEdge.from).name === "Gf Bob");
+  let prompt = ""; env.AI = { run: async (m, a) => { prompt = a.messages[0].content; return { response: "ok" }; } };
+  await call("POST", "/api/ask", { q: "Who does Gf Bob know?" }, A.t);
+  ok("Ask sees the friend of friend by name only", prompt.includes("FRIENDS OF FRIENDS") && prompt.includes("Gf Cara") && !prompt.includes("cara@gf.invalid"));
+  const tk = await call("POST", "/api/tokens", { name: "gf agent", scope: "people" }, A.t);
+  const mr = await rpc(tk.body.token, "tools/call", { name: "friends_of_friends", arguments: {} });
+  ok("MCP friends_of_friends returns the same names only", JSON.stringify(mr.body).includes("Gf Cara") && !JSON.stringify(mr.body).includes("gf-private-note"));
+  await sh(C, false);
+  ok("the third person opting out removes them immediately", !hasC(await gr(A)));
+  await sh(C, true); await sh(B, false);
+  ok("the middle person opting out removes their network immediately", !hasC(await gr(A)));
+  await sh(B, true);
+  const before = hasC(await gr(A));
+  await call("DELETE", "/api/people/" + (await call("GET", "/api/people", null, B.t)).body.people.find(x => x.card.name === "Gf Alice").id, null, B.t);
+  ok("if the middle person removes the viewer, the viewer no longer sees their network", before === true && !hasC(await gr(A)));
+  await save(B, A);
+  const Dd = await mk("Gf Dan"); globalThis.__rawCards = true; const raw = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: raw, card: { name: "Gf Eve", headline: "h", links: {} } }, raw); globalThis.__rawCards = false;
+  const E = { t: raw }; await sh(E, true);
+  await call("POST", "/api/people", { slug: B.slug }, E.t); await call("POST", "/api/people", { slug: Dd.slug }, E.t);
+  ok("a viewer with an incomplete profile gets no friends of friends", !hasC(await gr(E)) && (await gr(E)).nodes.every(n => n.type !== "friend-of-friend"));
+  await env.KV.delete("gsh/" + A.t);
+  const st1 = await call("GET", "/api/graph/sharing", null, A.t);
+  ok("an existing owner with no recorded choice shares nothing and must choose", st1.body.choice === "unset" && st1.body.needsChoice === true && !hasC(await gr(A)));
+  await env.KV.put("gsh/" + A.t, JSON.stringify({ on: true, ack: false, cohort: true }));
+  const st2 = await call("GET", "/api/graph/sharing", null, A.t);
+  ok("a test-cohort account shares until it chooses, with the notice still pending", st2.body.choice === "on-until-you-choose" && st2.body.needsChoice === true && st2.body.cohort === true && hasC(await gr(A)));
+  await sh(A, false);
+  ok("opting out of the cohort default takes effect at once", !hasC(await gr(A)));
   env.AI = undefined;
 }
 
