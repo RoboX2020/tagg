@@ -49,12 +49,19 @@ try {
   t = await P.evaluate(() => document.body.innerText);
   assert.ok(!t.includes("Complete your profile to see") && (await P.$("a[href*=\"alex-secret@tagg-test.invalid\"]")) && t.includes("Builds robot arms")); ok("saving name, headline and detail unlocks the details at once");
   if (shots) await P.screenshot({ path: shots + "/gate-unlocked.png" });
+  const ctxS = await browser.createBrowserContext(); const S = await ctxS.newPage(); await S.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+  await S.evaluateOnNewDocument((api, tok) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "gb@tagg-test.invalid", name: "Bob Li", kind: "email", emailVerified: false })); localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Bob Li", headline: "ML student", detail: "Studies machine learning", links: {} })); localStorage.setItem("tagg.slug.v1", "bobli"); }, API_URL, b.ownerToken);
+  await S.goto(base + "#/c/" + card.slug, { waitUntil: "networkidle0" }); await sleep(1500);
+  const st2 = await S.evaluate(() => document.body.innerText);
+  assert.ok(!st2.includes("Complete your profile to see Alex") && /github/i.test(st2) && /alex-sample/.test(st2)); ok("a completed non-owner scanner sees the full card");
+  if (shots) await S.screenshot({ path: shots + "/qr-complete-scanner.png" });
   const ctx2 = await browser.createBrowserContext(); const G = await ctx2.newPage(); await G.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   await G.evaluateOnNewDocument((api) => { localStorage.setItem("tagg.api", api); }, API_URL);
   await G.goto(base + "#/c/" + card.slug, { waitUntil: "networkidle0" }); await sleep(1500);
   const gt = await G.evaluate(() => document.body.innerText), gh = await G.evaluate(() => document.documentElement.outerHTML);
   assert.ok(gt.includes("Alex Sample") && gt.includes("Robotics student") && gt.includes("Complete your profile to see Alex's links and contact")); ok("anonymous scan shows the minimal preview and the complete-your-profile notice");
   assert.ok(!/alex-secret|555 0142|alex-sample|robot arms/.test(gh)); ok("an anonymous scan page holds none of the hidden details");
+  assert.ok(gt.includes("this name is what they typed") && !/name and email on this card/.test(gt)); ok("preview copy does not mention an email it is not showing");
   if (shots) await G.screenshot({ path: shots + "/qr-preview.png" });
   console.log("\nGate UI checks passed:", n);
 } catch (e) { console.error("FAIL", e.message); process.exitCode = 1; }

@@ -1111,7 +1111,7 @@
     shell(null,
       '<span class="pill">You just met</span>' +
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
-      (slug ? '<p class="fineprint" style="margin:-4px 0 12px">' + (verified ? 'Signed in with Google' : 'Identity not verified - the name and email on this card are what they typed.') + '</p>' : '') +
+      (slug ? '<p class="fineprint" style="margin:-4px 0 12px">' + (verified ? 'Signed in with Google' : (c.email ? 'Identity not verified - the name and email on this card are what they typed.' : 'Identity not verified - this name is what they typed.')) + '</p>' : '') +
       '<p class="lead">' + (signedIn ? 'Share your card - ' + first + ' gets a request, and once they accept you both save the moment.' : 'Create your Tagg to connect. ' + first + ' gets your card and you both keep each other.') + '</p>' +
       cardHtml(c) + enrichHtml({ enriched: enriched, card: c, slug: slug }) +
       '<div style="height:18px"></div>' +
