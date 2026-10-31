@@ -30,6 +30,12 @@ export class Store {
         if (n) this.sql.exec("UPDATE kv SET v=? WHERE k=?", JSON.stringify(arr), op.k);
         out.push({ patched: n });
       }
+      else if (op.o === "jappend") {
+        // Atomic multi-item append (one Durable Object turn), skipping items whose name+metAt already exist, for the device-to-server people import.
+        const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let arr = []; try { arr = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : []; } catch (e) {}
+        let n = 0; for (const it of op.items || []) { if (arr.some(q => q && q.card && it.card && q.card.name === it.card.name && it.metAt && q.metAt === it.metAt)) continue; arr.push(it); n++; }
+        this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", op.k, JSON.stringify(arr.slice(0, op.cap || 500)), r ? r.exp : null); out.push({ added: n, total: Math.min(arr.length, op.cap || 500) });
+      }
       else if (op.o === "jdel") {
         // Atomic removal of the list elements that match, leaving elements other requests added a moment ago.
         const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let arr = []; try { arr = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : []; } catch (e) {}
@@ -72,5 +78,6 @@ export class BatchedKV {
   async jpatch(k, match, patch) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpatch", k, match, patch }]); const out = await this._send(ops); return out[out.length - 1]; }
   async jmerge(k, set, del) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jmerge", k, set, del }]); const out = await this._send(ops); return out[out.length - 1]; }
   async jdel(k, match) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jdel", k, match }]); const out = await this._send(ops); return out[out.length - 1]; }
+  async jappend(k, items, cap) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jappend", k, items, cap }]); const out = await this._send(ops); return out[out.length - 1]; }
   async flush() { if (this.buf.length) await this._send(this.buf.splice(0)); }
 }

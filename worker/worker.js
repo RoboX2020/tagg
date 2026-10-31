@@ -40,6 +40,12 @@ async function saveEnrich(kv, slug, o) {
   if (kv.jmerge) return kv.jmerge("enrich/" + slug, set, del);
   const cur = (await getJSON(kv, "enrich/" + slug)) || {}; Object.assign(cur, set); for (const k of del) delete cur[k]; await kv.put("enrich/" + slug, JSON.stringify(cur));
 }
+async function jappend(kv, key, items, cap) {
+  if (kv.jappend) return kv.jappend(key, items, cap);
+  const arr = (await getJSON(kv, key)) || []; let n = 0;
+  for (const it of items) { if (arr.some(q => q && q.card && it.card && q.card.name === it.card.name && it.metAt && q.metAt === it.metAt)) continue; arr.push(it); n++; }
+  await kv.put(key, JSON.stringify(arr.slice(0, cap))); return { added: n, total: Math.min(arr.length, cap) };
+}
 async function jdel(kv, key, match) {
   if (kv.jdel) return kv.jdel(key, match);
   const arr = (await getJSON(kv, key)) || [], keep = arr.filter(x => !(x && Object.entries(match).every(([f, v]) => x[f] === v)));
@@ -464,8 +470,7 @@ async function notify(env, owner, type, evId, name) {
       if (subs.length) {
         await env.KV.put("nd/push/" + id, "1", { expirationTtl: 2592000 });
         const keep = [], pay = { title: c.title, body: c.line, url: NOTIFY_SITE + (type === "request" || type === "connected" || type === "scan" || type === "network" ? "people" : "card"), tag: type };
-        for (const sb of subs) { let r = "fail"; try { r = await sendPush(env, sb, pay); } catch (e) {} if (r !== "gone") keep.push(sb); if (r === "ok") out.push = (out.push || 0) + 1; }
-        if (keep.length !== subs.length) await env.KV.put("ps/" + owner, JSON.stringify(keep));
+        for (const sb of subs) { let r = "fail"; try { r = await sendPush(env, sb, pay); } catch (e) {} if (r !== "gone") keep.push(sb); else await jdel(env.KV, "ps/" + owner, { endpoint: sb.endpoint }); if (r === "ok") out.push = (out.push || 0) + 1; }
       }
     }
     return out;
@@ -925,11 +930,10 @@ const appHandler = {
       if (!b.approve) { back.searchParams.set("error", "access_denied"); return j({ redirect: back.toString() }); }
       const list = ((await getJSON(env.KV, "mcpl/" + owner)) || []).filter(t => t.exp > Date.now());
       const keep = [];
-      for (const t of list) { if (t.oauth && t.name === r.name) { await env.KV.delete("mcp/" + t.h); if (t.rh) await env.KV.delete("oref/" + t.rh); } else keep.push(t); }
+      for (const t of list) { if (t.oauth && t.name === r.name) { await env.KV.delete("mcp/" + t.h); if (t.rh) await env.KV.delete("oref/" + t.rh); await jdel(env.KV, "mcpl/" + owner, { id: t.id }); } else keep.push(t); }
       if (keep.length >= 5) return j({ error: "You can have 5 agent connections. Remove one in Settings first." }, 400);
       const code = "tgcode_" + token() + token();
       await env.KV.put("ocd/" + (await sha256hex(code)), JSON.stringify({ owner, cid: r.cid, ru: r.ru, ch: r.ch, name: r.name, scope: b.notes === true ? "people+notes" : "people" }), { expirationTtl: 300 });
-      await env.KV.put("mcpl/" + owner, JSON.stringify(keep));
       back.searchParams.set("code", code);
       return j({ redirect: back.toString() });
     }
@@ -945,9 +949,8 @@ const appHandler = {
         const list = (await getJSON(env.KV, "mcpl/" + owner)) || [];
         const i = list.findIndex(t => t.id === grantId);
         if (prev && i < 0) return null;
-        if (i >= 0) { await env.KV.delete("mcp/" + list[i].h); list[i].h = ah; list[i].rh = rh; list[i].exp = now + MCP_TTL_MS; }
-        else list.push({ id: grantId, name, scope, created: now, exp: now + MCP_TTL_MS, h: ah, rh, oauth: true });
-        await env.KV.put("mcpl/" + owner, JSON.stringify(list));
+        if (i >= 0) { await env.KV.delete("mcp/" + list[i].h); await jpatch(env.KV, "mcpl/" + owner, { id: grantId }, { h: ah, rh, exp: now + MCP_TTL_MS }); }
+        else await jpush(env.KV, "mcpl/" + owner, { id: grantId, name, scope, created: now, exp: now + MCP_TTL_MS, h: ah, rh, oauth: true }, { cap: 20 });
         return { access_token: at, token_type: "Bearer", expires_in: 3600, refresh_token: rt, scope: "tagg.read" };
       };
       if (gt === "authorization_code") {
@@ -991,8 +994,7 @@ const appHandler = {
       const h = await sha256hex(tok);
       const id = rand(10), now = Date.now();
       await env.KV.put("mcp/" + h, JSON.stringify({ owner, id, scope, exp: now + MCP_TTL_MS }), { expirationTtl: Math.floor(MCP_TTL_MS / 1000) + 3600 });
-      live.push({ id, name, scope, created: now, exp: now + MCP_TTL_MS, h });
-      await env.KV.put("mcpl/" + owner, JSON.stringify(live));
+      await jpush(env.KV, "mcpl/" + owner, { id, name, scope, created: now, exp: now + MCP_TTL_MS, h }, { cap: 20 });
       return j({ token: tok, id, name, scope, expires: now + MCP_TTL_MS });
     }
     const tm = p.match(/^\/api\/tokens\/([a-z0-9]+)$/);
@@ -1003,7 +1005,7 @@ const appHandler = {
       const t = list.find(q => q.id === tm[1]);
       if (!t) return j({ error: "not found" }, 404);
       await env.KV.delete("mcp/" + t.h); if (t.rh) await env.KV.delete("oref/" + t.rh);
-      await env.KV.put("mcpl/" + owner, JSON.stringify(list.filter(q => q.id !== tm[1])));
+      await jdel(env.KV, "mcpl/" + owner, { id: tm[1] });
       return j({ revoked: true });
     }
     if (p === "/api/mcp") {
@@ -1237,17 +1239,18 @@ const appHandler = {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
       const b = await req.json().catch(() => null);
-      let subs = (await getJSON(env.KV, "ps/" + owner)) || [];
+      // List edits are single atomic steps on the Durable Object store, so two devices subscribing together keep both.
       if (req.method === "DELETE") {
-        subs = b && typeof b.endpoint === "string" ? subs.filter(x => x.endpoint !== b.endpoint) : [];
+        if (b && typeof b.endpoint === "string") await jdel(env.KV, "ps/" + owner, { endpoint: b.endpoint }); else await env.KV.delete("ps/" + owner);
       } else {
         if (!pushEnabled(env)) return j({ error: "Push is not available yet" }, 503);
         if (await overLimit(env, "psub/" + owner, 10, 3600)) return j({ error: "Too many attempts" }, 429);
         const v = validSub(b && b.subscription);
         if (!v) return j({ error: "That is not a valid push subscription" }, 400);
-        subs = [v, ...subs.filter(x => x.endpoint !== v.endpoint)].slice(0, 5);
+        await jdel(env.KV, "ps/" + owner, { endpoint: v.endpoint });
+        await jpush(env.KV, "ps/" + owner, v, { cap: 5 });
       }
-      if (subs.length) await env.KV.put("ps/" + owner, JSON.stringify(subs)); else await env.KV.delete("ps/" + owner);
+      const subs = (await getJSON(env.KV, "ps/" + owner)) || [];
       return j({ push: subs.length });
     }
 
@@ -1583,7 +1586,7 @@ const appHandler = {
       if (!body || typeof body.ownerToken !== "string" || body.ownerToken.length < 10) return j({ error: "ownerToken required" }, 400);
       if ((await env.KV.get("own/" + body.ownerToken)) === null) return j({ error: "unauthorized" }, 401);
       const incoming = Array.isArray(body.people) ? body.people : [];
-      const list = await getPeople(env, body.ownerToken);
+      const list = await getPeople(env, body.ownerToken), adds = [];
       for (const x of incoming.slice(0, 200)) {
         const card = cleanCard(x.card); if (!card) continue;
         // Skip people the server already has (a device that synced them from here must not upload them again).
@@ -1592,12 +1595,12 @@ const appHandler = {
         let loc = null;
         if (x.location && typeof x.location === "object") loc = { lat: x.location.lat ?? null, lon: x.location.lon ?? null, label: (x.location.label || "").slice(0, 200) };
         else if (x.place && typeof x.place === "object") loc = { lat: x.place.lat ?? null, lon: x.place.lng ?? null, label: "" };
-        list.push({ id: "p_" + rand(10), slug: null, card,
+        adds.push({ id: "p_" + rand(10), slug: null, card,
           metAt: typeof x.metAt === "string" ? x.metAt : new Date().toISOString(),
           event: (x.event || "").slice(0, 200), location: loc, note: (x.note || "").slice(0, 2000), enriched: null });
       }
-      await putPeople(env, body.ownerToken, list);
-      return j({ ok: true, count: list.length });
+      const ar = await jappend(env.KV, "ppl/" + body.ownerToken, adds, 500);
+      return j({ ok: true, count: ar.total });
     }
 
     // Nearby place name from OpenStreetMap Nominatim (free, no key). Server side so the request carries a proper User-Agent,
