@@ -24,26 +24,6 @@ function cleanCard(c) {
     email: (c.email || "").slice(0, 200), phone: (c.phone || "").slice(0, 40), links,
   };
 }
-async function enrichGithub(env, slug, card) {
-  try {
-    const gh = card.links && card.links.github;
-    if (!gh) return;
-    const m = gh.match(/github\.com\/([A-Za-z0-9-]+)/);
-    if (!m) return;
-    const ghHeaders = { "User-Agent": "tagg-app", "Accept": "application/vnd.github+json" };
-    if (env.GITHUB_TOKEN) ghHeaders.Authorization = "Bearer " + env.GITHUB_TOKEN;
-    const r = await fetch("https://api.github.com/users/" + m[1], { headers: ghHeaders });
-    if (!r.ok) return;
-    const u = await r.json();
-    const enriched = { source: "github", fetchedAt: new Date().toISOString(), github: {
-      login: u.login, name: u.name || null, bio: u.bio || null, company: u.company || null,
-      avatar: u.avatar_url || null, followers: u.followers ?? null, repos: u.public_repos ?? null,
-      location: u.location || null, blog: u.blog || null } };
-    // Merge, never replace: the owner's confirmed LinkedIn details live in the same record.
-    const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
-    await env.KV.put("enrich/" + slug, JSON.stringify(Object.assign(existing, enriched)));
-  } catch (e) { /* enrichment is best-effort */ }
-}
 // LinkedIn import (user-initiated, reviewed). LinkedIn's robots.txt and User Agreement forbid automated reading of profile pages
 // and it answers server requests with HTTP 999, so Tagg never fetches linkedin.com. The owner pastes the text of their OWN profile
 // (or its "Save to PDF" export); Cloudflare Workers AI (free tier) pulls out roles, employers, schools and place, and every extracted value must
@@ -344,7 +324,6 @@ export default {
       if (!slug) { slug = rand(8); await env.KV.put("own/" + owner, slug); }
       const rec = { card, ownerToken: owner, slug, updatedAt: new Date().toISOString(), createdAt: (await getJSON(env.KV, "card/" + slug))?.createdAt || new Date().toISOString() };
       await env.KV.put("card/" + slug, JSON.stringify(rec));
-      ctx.waitUntil(enrichGithub(env, slug, card));
       return j({ ownerToken: owner, slug });
     }
 
@@ -929,6 +908,60 @@ export default {
         company: fields.companies[0] || null, title: fields.titles[0] || null, school: fields.schools[0] || null });
       await env.KV.put("enrich/" + slug, JSON.stringify(existing));
       return j({ ok: true, linkedin: existing.linkedin });
+    }
+    // GitHub: same informed, owner-initiated flow as LinkedIn. Reads only the public GitHub profile of the handle in the owner's link,
+    // once, after the notice. Free public API, no key. Nothing runs on card save any more.
+    if (p === "/api/import/github/auto" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      if (!body || body.ownProfile !== true || body.disclosure !== "github-auto-v1") return j({ error: "Accept the notice about importing your profile first" }, 400);
+      const gm = typeof body.url === "string" ? body.url.trim().match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/?$/i) : null;
+      if (!gm) return j({ error: "Use a link like github.com/yourname" }, 400);
+      const url = "https://github.com/" + gm[1];
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if ((existing.github && existing.github.url === url) || (existing.githubRemoved && existing.githubRemoved.url === url)) return j({ error: "That link was already imported.", code: "same-link" }, 409);
+      if (await overLimit(env, "ghimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+      let r; try { r = await fetch("https://api.github.com/users/" + gm[1], { headers: { "User-Agent": "tagg-app", "Accept": "application/vnd.github+json" }, signal: AbortSignal.timeout(10000) }); } catch (e) { r = null; }
+      if (!r) return j({ error: "Could not reach GitHub right now. Your link is saved.", code: "unavailable" }, 503);
+      if (r.status === 404) return j({ error: "GitHub has no public profile at that link. Your link is saved.", code: "unreadable" }, 422);
+      if (r.status === 403 || r.status === 429) return j({ error: "GitHub is limiting requests right now. Your link is saved. Try Import again later.", code: "rate-limited" }, 503);
+      if (!r.ok) return j({ error: "Could not read GitHub right now. Your link is saved.", code: "unavailable" }, 503);
+      const u = await r.json().catch(() => null);
+      if (!u || typeof u.login !== "string") return j({ error: "Could not read that profile.", code: "unreadable" }, 422);
+      const now = new Date().toISOString();
+      existing.github = { login: u.login, name: clip(u.name, 120) || null, bio: clip(u.bio, 300) || null, company: clip(u.company, 120) || null, avatar: typeof u.avatar_url === "string" && u.avatar_url.startsWith("https://") ? u.avatar_url : null,
+        followers: Number.isFinite(u.followers) ? u.followers : null, repos: Number.isFinite(u.public_repos) ? u.public_repos : null, location: clip(u.location, 120) || null, blog: clip(u.blog, 200) || null,
+        source: "github-public-api", url, importedAt: now, autoImported: true, disclosure: "github-auto-v1" };
+      delete existing.githubRemoved;
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await env.KV.put("impconsent/gh/" + owner, JSON.stringify({ version: "github-auto-v1", at: now, url }));
+      return j({ ok: true, github: existing.github });
+    }
+    if (p === "/api/import/github/edit" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if (!existing.github) return j({ error: "Nothing imported to edit" }, 404);
+      const f = (body && body.fields) || {};
+      const fields = { name: clip(f.name, 120) || null, bio: clip(f.bio, 300) || null, company: clip(f.company, 120) || null, location: clip(f.location, 120) || null };
+      const suppressed = Object.keys(fields).filter(k => !fields[k]);
+      existing.github = Object.assign(existing.github, fields, { editedAt: new Date().toISOString(), suppressed });
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      return j({ ok: true, github: existing.github });
+    }
+    if (p === "/api/import/github" && req.method === "DELETE") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if (existing.github && existing.github.url) existing.githubRemoved = { url: existing.github.url, at: new Date().toISOString() };
+      delete existing.github;
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      return j({ ok: true });
     }
     if (p === "/api/import/linkedin" && req.method === "DELETE") {
       const owner = authOwner(req);

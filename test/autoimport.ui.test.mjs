@@ -7,7 +7,8 @@ const root = path.resolve(import.meta.dirname, "..");
 const api = await start(8793); const API_URL = "http://localhost:8793";
 api.env.SIGNUP_PER_HOUR = "200"; api.env.APIFY_ENABLED = "1"; api.env.APIFY_TOKEN = "mock";
 const realFetch = globalThis.fetch; let apifyCalls = 0;
-globalThis.fetch = async (u, init) => { if (String(u).includes("api.apify.com")) { apifyCalls++; return new Response(JSON.stringify([{ headline: "Robotics engineering student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); } return realFetch(u, init); };
+let ghCalls = 0;
+globalThis.fetch = async (u, init) => { if (String(u).includes("api.github.com/users/")) { ghCalls++; return new Response(JSON.stringify({ login: "sam-gh", name: "Sam Rivera", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, public_repos: 7, avatar_url: null }), { status: 200 }); } if (String(u).includes("api.apify.com")) { apifyCalls++; return new Response(JSON.stringify([{ headline: "Robotics engineering student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); } return realFetch(u, init); };
 const web = http.createServer((q, r) => { const f = path.join(root, q.url.split("?")[0] === "/" ? "index.html" : q.url.split("?")[0]); if (!fs.existsSync(f)) { r.writeHead(404); return r.end(); }
   const t = { ".js": "text/javascript", ".html": "text/html", ".css": "text/css", ".svg": "image/svg+xml", ".webmanifest": "application/json" }[path.extname(f)] || "application/octet-stream"; r.writeHead(200, { "Content-Type": t }); r.end(fs.readFileSync(f)); }).listen(8794);
 const base = "http://localhost:8794/";
@@ -43,6 +44,17 @@ try {
   await P.click("#li-add"); await sleep(800);
   const pub2 = await call("GET", "/api/c/" + card.slug); assert.equal(pub2.enriched.linkedin.location, ""); assert.ok(pub2.enriched.linkedin.suppressed.includes("location")); ok("owner edit saved; cleared field recorded as cleared");
   await P.click("#li-remove"); await sleep(700); const pub3 = await call("GET", "/api/c/" + card.slug); assert.ok(!pub3.enriched || !pub3.enriched.linkedin); ok("owner can remove imported details");
+  // GitHub: notice, import, edit, remove.
+  await sleep(4000); await P.type("#f-github", "github.com/sam-gh"); await P.click("#save"); await waitText(P, "Fill your card from GitHub?");
+  assert.equal(ghCalls, 0); assert.equal(await P.$eval("#ai-own", e => e.checked), false); assert.equal(await P.$eval("#ai-yes", e => e.disabled), true); ok("a new GitHub link shows its own notice, unticked, import disabled, nothing read yet");
+  assert.ok(/public GitHub profile/.test(await text(P)) && /connect with/.test(await text(P)));
+  if (shots) { await sleep(900); await P.screenshot({ path: shots + "/gh-1-notice.png" }); }
+  await P.click("#ai-own"); await P.click("#ai-yes"); await waitText(P, "Imported from GitHub"); assert.equal(ghCalls, 1);
+  ok("accepting imports the public GitHub profile and shows it with edit and remove");
+  if (shots) { await P.evaluate(() => document.getElementById("ghimport").scrollIntoView()); await sleep(300); await P.screenshot({ path: shots + "/gh-2-filled.png" }); }
+  await P.click("#gh-edit"); await P.$eval("#gh-bio", e => e.value = ""); await P.click("#gh-save"); await sleep(800);
+  const gp = await call("GET", "/api/c/" + card.slug); assert.equal(gp.enriched.github.bio, null); assert.ok(gp.enriched.github.suppressed.includes("bio")); ok("GitHub edit saved, cleared field stays cleared");
+  await P.click("#gh-remove"); await sleep(800); const gp2 = await call("GET", "/api/c/" + card.slug); assert.ok(!gp2.enriched || !gp2.enriched.github); ok("GitHub details removed");
   // Saving again with the same link must not ask or re-import.
   await P.click("#save"); await sleep(800);
   assert.ok(!(await text(P)).includes("Fill your card from LinkedIn?") && apifyCalls === 1); ok("saving again with the same link neither asks nor re-imports");

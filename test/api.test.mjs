@@ -206,10 +206,12 @@ if (env) {
 // LinkedIn import from pasted text: preview, review, confirm. Gemini is mocked locally; hallucinated values must be dropped.
 if (env) {
   const realFetch2 = globalThis.fetch;
-  let geminiCalls = 0, linkedinCalls = 0, apifyCalls = 0;
+  let geminiCalls = 0, linkedinCalls = 0, apifyCalls = 0, ghCalls = 0;
   globalThis.fetch = async (u, init) => {
     const us = String(u);
     if (us.includes("api.apify.com")) { apifyCalls++; if (init && init.method === "POST") return new Response(JSON.stringify([{ headline: "Student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); }
+    if (us.includes("api.github.com/users/")) { ghCalls++; const h = us.split("/users/")[1]; if (h === "nobody-here") return new Response("{}", { status: 404 }); if (h === "limited-user") return new Response("{}", { status: 403 }); if (h === "down-user") throw new Error("net");
+      return new Response(JSON.stringify({ login: h, name: "Gh Person", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, public_repos: 7, avatar_url: "https://avatars.githubusercontent.com/u/1", blog: "" }), { status: 200 }); }
     if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
     return realFetch2(u, init);
   };
@@ -265,6 +267,25 @@ if (env) {
   await call("POST", "/api/card", { ownerToken: gTok, card: { name: "Gh Person", headline: "h", links: { github: "https://github.com/octocat" } } }, gTok); await new Promise(r => setTimeout(r, 200));
   const gp = await call("GET", "/api/c/" + gc.body.slug);
   ok("saving a card with a GitHub link keeps confirmed LinkedIn details", gp.body.enriched && gp.body.enriched.linkedin && gp.body.enriched.linkedin.schools[0] === "Arizona State University");
+  // GitHub informed import.
+  const hTok = (await call("POST", "/api/owner", {})).body.ownerToken; const hc = await call("POST", "/api/card", { ownerToken: hTok, card: { name: "Hub Person", headline: "h", links: { github: "https://github.com/hub-person" } } }, hTok);
+  await new Promise(r => setTimeout(r, 100)); ok("saving a card with a GitHub link reads nothing by itself", ghCalls === 0 && !((await call("GET", "/api/c/" + hc.body.slug)).body.enriched));
+  const gh = { url: "github.com/hub-person", ownProfile: true, disclosure: "github-auto-v1" };
+  ok("github import needs the notice", (await call("POST", "/api/import/github/auto", { url: gh.url, ownProfile: true }, hTok)).status === 400 && ghCalls === 0);
+  ok("github import needs sign in", (await call("POST", "/api/import/github/auto", gh)).status === 401);
+  ok("github import rejects a non-profile url", (await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/a/b" }, hTok)).status === 400);
+  const gr = await call("POST", "/api/import/github/auto", gh, hTok);
+  ok("github import stores public profile with provenance", gr.status === 200 && gr.body.github.bio === "Builds robots" && gr.body.github.autoImported === true && gr.body.github.source === "github-public-api");
+  ok("same github link is not imported twice", (await call("POST", "/api/import/github/auto", gh, hTok)).status === 409);
+  const ge = await call("POST", "/api/import/github/edit", { fields: { name: "Hub", bio: "", company: "ASU", location: "" } }, hTok);
+  ok("github edit keeps changes and records cleared fields", ge.status === 200 && ge.body.github.bio === null && ge.body.github.suppressed.includes("bio") && ge.body.github.name === "Hub");
+  ok("github remove, then same link stays removed", (await call("DELETE", "/api/import/github", null, hTok)).status === 200 && (await call("POST", "/api/import/github/auto", gh, hTok)).status === 409);
+  ok("github 404 fails gracefully", (await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/nobody-here" }, hTok)).status === 422);
+  const rlm = await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/limited-user" }, hTok); ok("github rate limit fails gracefully", rlm.status === 503 && rlm.body.code === "rate-limited");
+  ok("github network failure fails gracefully", (await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/down-user" }, hTok)).status === 503);
+  const lk2 = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: lk2, card: { name: "Both", headline: "h", links: {} } }, lk2);
+  await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/both-person", ownProfile: true, disclosure: "linkedin-auto-v1" }, lk2); await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/both-person" }, lk2);
+  const bothSlug = await env.KV.get("own/" + lk2); const bothE = JSON.parse(await env.KV.get("enrich/" + bothSlug)); ok("github import keeps LinkedIn details in the same record", !!bothE.linkedin && !!bothE.github);
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;

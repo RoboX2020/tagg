@@ -858,13 +858,17 @@
     }
     load();
   }
-  /* Adding or changing the LinkedIn link: tell the owner, before saving, that Tagg will read the public profile and fill the shared card. Nothing is pre-ticked. */
-  function askAutoImport(c) {
+  /* Adding or changing a LinkedIn or GitHub link: tell the owner, before saving, what Tagg will read and where it goes. Nothing is pre-ticked. */
+  function askAutoImport(c, which) {
+    var li = which.indexOf("linkedin") >= 0, gh = which.indexOf("github") >= 0;
+    var reads = [];
+    if (li) reads.push("LinkedIn: Tagg asks a data service (Apify) to read the public parts of your profile (headline, roles, employers, schools, place)");
+    if (gh) reads.push("GitHub: Tagg reads your public GitHub profile (name, bio, company, place, follower and repository counts) from GitHub's public API");
     var bg = document.createElement("div");
     bg.className = "sheet-bg";
-    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Fill your card from LinkedIn?</h3>' +
-      '<p class="hint" style="line-height:1.45">If you save this link with import, Tagg asks a data service (Apify) to read the public parts of your LinkedIn profile: headline, roles, employers, schools and place. They fill your shared card and are shown to people you connect with. You can edit or remove them afterwards. Tagg has not verified them.</p>' +
-      '<label class="row" style="gap:12px;cursor:pointer"><input type="checkbox" id="ai-own" style="width:18px;height:18px;accent-color:var(--accent)"><span class="grow detail" style="white-space:normal">This is my own LinkedIn profile, and I agree to this.</span></label>' +
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Fill your card from ' + (li && gh ? "LinkedIn and GitHub" : li ? "LinkedIn" : "GitHub") + '?</h3>' +
+      '<p class="hint" style="line-height:1.45">If you save with import, ' + reads.map(esc).join(". ") + '. They fill your shared card and are shown to people you connect with. You can edit or remove them afterwards. Tagg has not verified them.</p>' +
+      '<label class="row" style="gap:12px;cursor:pointer"><input type="checkbox" id="ai-own" style="width:18px;height:18px;accent-color:var(--accent)"><span class="grow detail" style="white-space:normal">' + (li && gh ? "These are my own profiles" : "This is my own profile") + ', and I agree to this.</span></label>' +
       '<button class="btn btn-accent" id="ai-yes" style="margin-top:10px" disabled>Save and import</button>' +
       '<button class="btn btn-gray" id="ai-link">Save link only</button>' +
       '<button class="btn btn-plain" id="ai-no">Cancel</button><div class="fineprint" id="ai-err"></div></div>';
@@ -876,12 +880,46 @@
     bg.querySelector("#ai-link").addEventListener("click", function () { bg.remove(); persist().then(function () { toast("Card saved"); location.hash = "#/"; }); });
     yes.addEventListener("click", function () {
       yes.disabled = true; yes.textContent = "Importing...";
-      persist().then(function () { return api("/api/import/linkedin/auto", { method: "POST", body: { url: c.links.linkedin, ownProfile: true, disclosure: "linkedin-auto-v1" } }); }).then(function () {
-        bg.remove(); toast("Card saved and filled from LinkedIn"); renderEdit();
-      }).catch(function (e) {
-        bg.remove(); toast((e && e.error) || "Card saved. Could not import right now."); renderEdit();
+      var firstErr = "", did = 0;
+      persist().then(function () {
+        return which.reduce(function (chain, k) {
+          return chain.then(function () {
+            return api("/api/import/" + k + "/auto", { method: "POST", body: { url: c.links[k], ownProfile: true, disclosure: k + "-auto-v1" } }).then(function () { did++; }).catch(function (e) { if (!firstErr) firstErr = (e && e.error) || "Could not import right now."; });
+          });
+        }, Promise.resolve());
+      }).then(function () {
+        bg.remove(); toast(did ? "Card saved and filled from " + (did > 1 ? "your profiles" : which.length === 1 ? (li ? "LinkedIn" : "GitHub") : "one profile") + (firstErr ? ". " + firstErr : "") : firstErr || "Card saved"); renderEdit();
       });
     });
+  }
+  /* GitHub details on the edit page: shown after import, with edit and remove. */
+  function mountGithubPanel() {
+    var box = document.getElementById("ghimport"); if (!box) return;
+    function summary(g) {
+      return '<div class="panel"><div style="font-weight:600">Imported from GitHub</div>' +
+        '<div style="color:var(--text-2);font-size:13px;margin-top:4px;line-height:1.5">' +
+        [g.name || g.login, g.bio, g.company, g.location, (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? ", " + g.repos + " public repos" : "")].filter(Boolean).map(esc).join("<br>") +
+        '</div><div class="fineprint" style="margin-top:6px">Shown to people you connect with. Tagg has not verified it.</div>' +
+        '<button class="btn btn-gray" id="gh-edit" style="margin-top:8px">Edit details</button> <button class="btn btn-plain" id="gh-remove" style="margin-top:4px">Remove imported details</button></div>';
+    }
+    function show(g) {
+      box.innerHTML = g ? summary(g) : "";
+      var rm = document.getElementById("gh-remove"), ed = document.getElementById("gh-edit");
+      if (rm) rm.addEventListener("click", function () { api("/api/import/github", { method: "DELETE" }).then(function () { toast("Imported details removed"); show(null); }).catch(function () { toast("Could not remove - try again"); }); });
+      if (ed) ed.addEventListener("click", function () {
+        function fld(id, label, val) { return '<div class="field"><label>' + label + '</label><input class="input" id="' + id + '" value="' + esc(val || "") + '"></div>'; }
+        box.innerHTML = '<div class="panel"><div style="font-weight:600">Edit GitHub details</div><p class="hint" style="margin:6px 0 8px;line-height:1.45">Fix anything or clear what you do not want. Cleared details stay cleared.</p>' +
+          fld("gh-name", "Name", g.name) + fld("gh-bio", "Bio", g.bio) + fld("gh-company", "Company", g.company) + fld("gh-loc", "Location", g.location) +
+          '<button class="btn btn-accent" id="gh-save" style="margin-top:8px">Save changes</button><button class="btn btn-plain" id="gh-cancel">Discard</button><div class="fineprint" id="gh-err"></div></div>';
+        document.getElementById("gh-cancel").addEventListener("click", function () { show(g); });
+        document.getElementById("gh-save").addEventListener("click", function () {
+          var f = { name: document.getElementById("gh-name").value, bio: document.getElementById("gh-bio").value, company: document.getElementById("gh-company").value, location: document.getElementById("gh-loc").value };
+          api("/api/import/github/edit", { method: "POST", body: { fields: f } }).then(function (r) { toast("Saved"); show(r.github); }).catch(function (e) { document.getElementById("gh-err").textContent = (e && e.error) || "Could not save - try again"; });
+        });
+      });
+    }
+    var slug = cardSlug();
+    if (slug) api("/api/c/" + slug).then(function (d) { if (d.enriched && d.enriched.github) show(d.enriched.github); }).catch(function () {});
   }
   function renderEdit() {
     var c = loadCard() || { name: "", headline: "", email: "", phone: "", links: {} };
@@ -893,6 +931,7 @@
       '<div class="field"><label>LinkedIn</label><input class="input" id="f-linkedin" placeholder="username or URL" value="' + esc(c.links.linkedin || "") + '"></div>' +
       '<div id="liimport"></div>' +
       '<div class="field"><label>GitHub</label><input class="input" id="f-github" placeholder="username or URL" value="' + esc(c.links.github || "") + '"></div>' +
+      '<div id="ghimport"></div>' +
       '<div class="field"><label>X</label><input class="input" id="f-x" placeholder="handle" value="' + esc(c.links.x || "") + '"></div>' +
       '<div class="field"><label>Instagram</label><input class="input" id="f-instagram" placeholder="handle" value="' + esc(c.links.instagram || "") + '"></div>' +
       '<div class="field"><label>Website</label><input class="input" id="f-website" placeholder="prajvalarora.com" value="' + esc(c.links.website || "") + '"></div>' +
@@ -901,7 +940,8 @@
       '<h2 class="section">Preview</h2>' +
       '<div id="preview"></div>' +
       '<div style="height:18px"></div>' +
-      '<button class="btn btn-accent" id="save">Save card</button>'
+      '<button class="btn btn-accent" id="save">Save card</button>' +
+      '<div style="height:110px" aria-hidden="true"></div>'
     );
     function collect() {
       return {
@@ -925,13 +965,17 @@
       i.addEventListener("input", refresh);
     });
     refresh();
+    mountGithubPanel();
     mountLinkedinImport(collect, function (headline) { var h = document.getElementById("f-head"); if (headline && !h.value.trim()) { h.value = headline; refresh(); } });
     document.getElementById("save").addEventListener("click", function () {
       var c = collect();
       if (!c.name) { toast("Add your name first"); return; }
       Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
-      var prevLi = (loadCard() || { links: {} }).links.linkedin || "";
-      if (c.links.linkedin && c.links.linkedin !== prevLi) { askAutoImport(c); return; }
+      var prevLinks = (loadCard() || { links: {} }).links || {};
+      var changed = [];
+      if (c.links.linkedin && c.links.linkedin !== (prevLinks.linkedin || "")) changed.push("linkedin");
+      if (c.links.github && c.links.github !== (prevLinks.github || "")) changed.push("github");
+      if (changed.length) { askAutoImport(c, changed); return; }
       saveCard(c);
       lastSync = 0;
       syncCard().then(function (d) {
