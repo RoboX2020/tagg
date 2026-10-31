@@ -1706,7 +1706,7 @@
     // Interactive graph: nodes settle with a small physics model. Drag a node to move it, drag the background to pan,
     // pinch / scroll / +- to zoom. People who met at the same event are linked. Tap a node (without dragging) to open it.
     var cv = document.getElementById("graph");
-    var W = cv.parentElement.clientWidth - 20, H = Math.min(520, Math.max(340, Math.round(W * 1.15)));
+    var W = cv.parentElement.clientWidth - 20, H = (window.innerWidth >= 900) ? Math.min(620, Math.max(420, Math.round(W * 0.62))) : Math.min(520, Math.max(340, Math.round(W * 1.15)));
     var dpr = window.devicePixelRatio || 1;
     cv.width = W * dpr; cv.height = H * dpr;
     cv.style.width = W + "px"; cv.style.height = H + "px"; cv.style.touchAction = "none"; cv.style.cursor = "grab";

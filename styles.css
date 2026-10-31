@@ -349,3 +349,25 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .lockbars{display:grid;gap:8px;margin:6px 0 12px}
 .lockbars i{display:block;height:12px;border-radius:6px;background:var(--sep)}
 .lockbars i:nth-child(2){width:78%}.lockbars i:nth-child(3){width:52%}
+
+/* ---------- laptop and desktop (900px and wider): sidebar navigation, wider content, centered dialogs ---------- */
+@media (min-width: 900px) {
+  #app { max-width: 1180px; display: grid; grid-template-columns: 232px minmax(0, 1fr); grid-template-rows: auto 1fr; }
+  #app > .topbar { grid-column: 1 / 3; padding-left: 28px; padding-right: 28px; }
+  #app > .content { grid-column: 2; grid-row: 2; padding: 26px 40px 56px; max-width: 920px; width: 100%; margin: 0; }
+  #app:not(:has(.tabbar)) { grid-template-columns: minmax(0, 1fr); }
+  #app:not(:has(.tabbar)) > .content { grid-column: 1; margin: 0 auto; }
+  .tabbar { position: sticky; top: 70px; left: auto; bottom: auto; transform: none; grid-column: 1; grid-row: 2; align-self: start;
+    width: auto; max-width: none; flex-direction: column; gap: 4px; padding: 22px 14px; border-top: 0; border-right: 0.5px solid var(--sep);
+    background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; min-height: calc(100vh - 70px); }
+  .tab { flex: 0 0 auto; flex-direction: row; justify-content: flex-start; gap: 12px; padding: 11px 14px; border-radius: 12px; font-size: 15px; position: relative; }
+  .tab:hover { background: var(--bg-elev); }
+  .tab.active { background: rgba(217,115,61,0.12); }
+  .tabbadge { position: static; margin-left: auto; }
+  h1.largetitle { font-size: 30px; }
+  p.lead { font-size: 14px; max-width: 640px; }
+  .metagrid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sheet-bg { align-items: center; }
+  .sheet { border-radius: 24px; max-width: 480px; padding-bottom: 24px; }
+  .graphwrap canvas { margin: 0 auto; }
+}
