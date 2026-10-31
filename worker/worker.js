@@ -884,11 +884,56 @@ export default {
       await env.KV.delete("liprev/" + body.previewId);
       return j({ ok: true, linkedin: existing.linkedin });
     }
+    // Auto-import when the owner ADDS or CHANGES their own LinkedIn link, after they accepted the disclosure shown before saving it.
+    // Runs once per link event (never in the background, never for other people). Stored straight to the shared card with provenance;
+    // the owner can edit or remove it afterwards. The same link is not imported again after an edit or removal.
+    if (p === "/api/import/linkedin/auto" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      if (!body || body.ownProfile !== true || body.disclosure !== "linkedin-auto-v1") return j({ error: "Accept the notice about importing your profile first" }, 400);
+      const url = typeof body.url === "string" ? parseLinkedinUrl(body.url) : null;
+      if (!url) return j({ error: "Paste a link like linkedin.com/in/yourname" }, 400);
+      if (env.APIFY_ENABLED !== "1" || !env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead.", code: "unavailable" }, 503);
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if ((existing.linkedin && existing.linkedin.url === url) || (existing.linkedinRemoved && existing.linkedinRemoved.url === url)) return j({ error: "That link was already imported. Use Import again if you want to read it again.", code: "same-link" }, 409);
+      if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+      let res = null; try { res = await importViaApify(env, url); } catch (e) { res = { unavailable: "network" }; }
+      if (res && res.unavailable !== undefined) return j({ error: "Could not read that profile right now. Your link is saved. You can paste your profile text instead.", code: "unavailable" }, 503);
+      if (!res) return j({ error: "Could not read that profile. Is it public? Your link is saved. You can paste your profile text instead.", code: "unreadable" }, 422);
+      const now = new Date().toISOString();
+      existing.linkedin = Object.assign({ headline: res.headline, titles: res.titles, companies: res.companies, schools: res.schools, location: res.location },
+        { source: "linkedin-link-import", url, importedAt: now, confirmedAt: now, autoImported: true, disclosure: "linkedin-auto-v1",
+          company: res.companies[0] || null, title: res.titles[0] || null, school: res.schools[0] || null });
+      delete existing.linkedinRemoved;
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await env.KV.put("impconsent/" + owner, JSON.stringify({ version: "linkedin-auto-v1", at: now, url }));
+      return j({ ok: true, linkedin: existing.linkedin });
+    }
+    // The owner edits imported details. Anything they clear stays cleared: it is not refilled from the provider.
+    if (p === "/api/import/linkedin/edit" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if (!existing.linkedin) return j({ error: "Nothing imported to edit" }, 404);
+      const f = (body && body.fields) || {};
+      const list = (x, n) => asNames(Array.isArray(x) ? x.filter(v => typeof v === "string") : [], n);
+      const fields = { headline: clip(f.headline, 300), titles: list(f.titles, 5), companies: list(f.companies, 6), schools: list(f.schools, 6), location: clip(f.location, 120) };
+      const suppressed = Object.keys(fields).filter(k => Array.isArray(fields[k]) ? !fields[k].length : !fields[k]);
+      existing.linkedin = Object.assign(existing.linkedin, fields, { editedAt: new Date().toISOString(), suppressed,
+        company: fields.companies[0] || null, title: fields.titles[0] || null, school: fields.schools[0] || null });
+      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      return j({ ok: true, linkedin: existing.linkedin });
+    }
     if (p === "/api/import/linkedin" && req.method === "DELETE") {
       const owner = authOwner(req);
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
       const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if (existing.linkedin && existing.linkedin.url) existing.linkedinRemoved = { url: existing.linkedin.url, at: new Date().toISOString() };
       delete existing.linkedin;
       await env.KV.put("enrich/" + slug, JSON.stringify(existing));
       return j({ ok: true });

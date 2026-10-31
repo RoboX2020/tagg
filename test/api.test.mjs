@@ -246,6 +246,19 @@ if (env) {
   ok("link imports have no daily cap, only the hourly abuse limit", (await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok)).status === 200);
   let ab; for (let i = 0; i < 4; i++) ab = await call("POST", "/api/import/linkedin", { url: "linkedin.com/in/test-person", ownProfile: true }, aTok);
   ok("link imports hit the hourly abuse limit", ab.status === 429);
+  // Auto-import when the owner adds their own link, after the disclosure.
+  const bTok0 = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: bTok0, card: { name: "Auto Person", headline: "h", links: {} } }, bTok0);
+  const au = { url: "linkedin.com/in/auto-person", ownProfile: true, disclosure: "linkedin-auto-v1" };
+  ok("auto import needs the disclosure", (await call("POST", "/api/import/linkedin/auto", { url: au.url, ownProfile: true }, bTok0)).status === 400);
+  ok("auto import needs the own-profile tick", (await call("POST", "/api/import/linkedin/auto", { url: au.url, disclosure: au.disclosure }, bTok0)).status === 400);
+  ok("auto import needs sign in", (await call("POST", "/api/import/linkedin/auto", au)).status === 401);
+  const ar = await call("POST", "/api/import/linkedin/auto", au, bTok0);
+  ok("auto import fills the card with provenance", ar.status === 200 && ar.body.linkedin.source === "linkedin-link-import" && ar.body.linkedin.autoImported === true && ar.body.linkedin.schools[0] === "Arizona State University");
+  ok("same link is not imported twice", (await call("POST", "/api/import/linkedin/auto", au, bTok0)).status === 409);
+  const ed = await call("POST", "/api/import/linkedin/edit", { fields: { headline: "Mine", titles: [], companies: ["ASU"], schools: [], location: "" } }, bTok0);
+  ok("owner edits are kept and cleared fields are recorded", ed.status === 200 && ed.body.linkedin.titles.length === 0 && ed.body.linkedin.suppressed.includes("titles") && ed.body.linkedin.headline === "Mine");
+  ok("remove then same link is still not re-imported", (await call("DELETE", "/api/import/linkedin", null, bTok0)).status === 200 && (await call("POST", "/api/import/linkedin/auto", au, bTok0)).status === 409);
+  ok("a different link imports again", (await call("POST", "/api/import/linkedin/auto", { ...au, url: "linkedin.com/in/auto-person-2" }, bTok0)).status === 200);
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;

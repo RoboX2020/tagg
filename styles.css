@@ -324,3 +324,4 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .linkbtn{background:none;border:0;color:var(--accent-2);font:inherit;cursor:pointer;padding:6px}
 .tokenbox{background:var(--accent-soft);border-radius:12px;padding:12px;margin:0 0 12px}
 .tokenbox code{display:block;word-break:break-all;font-size:12.5px;margin:8px 0;user-select:all}
+.btn[disabled]{opacity:.45;cursor:default}

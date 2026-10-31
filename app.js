@@ -422,6 +422,7 @@
     if (!v) return "";
     if (/^https?:\/\//i.test(v)) return v;
     v = v.replace(/^@/, "");
+    if (/^(www\.)?(linkedin\.com|github\.com|x\.com|twitter\.com|instagram\.com)\//i.test(v)) return "https://" + v;
     var hosts = { linkedin: "linkedin.com/in/", github: "github.com/", x: "x.com/", instagram: "instagram.com/" };
     if (k === "website") return "https://" + v.replace(/^https?:\/\//, "");
     return "https://" + (hosts[k] || "") + v;
@@ -781,11 +782,14 @@
         '<div style="color:var(--text-2);font-size:13px;margin-top:4px;line-height:1.5">' +
         [li.titles && li.titles.length ? list(li.titles) : li.title, list(li.companies && li.companies.length ? li.companies : [li.company]), list(li.schools && li.schools.length ? li.schools : [li.school]), li.location].filter(Boolean).map(esc).join("<br>") +
         '</div><div class="fineprint" style="margin-top:6px">Shown to people who scan your code and used when you ask Tagg who you met.</div>' +
+        '<button class="btn btn-gray" id="li-edit" style="margin-top:8px">Edit details</button> ' +
         '<button class="btn btn-plain" id="li-remove" style="margin-top:4px">Remove imported details</button></div>';
     }
     function idle(li) {
       box.innerHTML = (li ? summary(li) : "") + '<button class="btn btn-gray" id="li-open" style="margin:8px 0 4px">' + (li ? "Import again" : "Import school and work from LinkedIn") + '</button>';
       document.getElementById("li-open").addEventListener("click", ask);
+      var ed = document.getElementById("li-edit");
+      if (ed && li) ed.addEventListener("click", function () { review({ fields: li, edit: true }); });
       var rm = document.getElementById("li-remove");
       if (rm) rm.addEventListener("click", function () {
         api("/api/import/linkedin", { method: "DELETE" }).then(function () { toast("Imported details removed"); idle(null); }).catch(function () { toast("Could not remove - try again"); });
@@ -831,18 +835,18 @@
       var f = d.fields;
       function fld(id, label, val) { return '<div class="field"><label>' + label + '</label><input class="input" id="' + id + '" value="' + esc(val || "") + '"></div>'; }
       box.innerHTML = '<div class="panel"><div style="font-weight:600">Check what Tagg found</div>' +
-        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">Only what the profile shows. Fix anything, clear what you do not want. Nothing is saved until you add it.</p>' +
+        '<p class="hint" style="margin:6px 0 8px;line-height:1.45">' + (d.edit ? "Fix anything or clear what you do not want. Cleared details stay cleared. Tagg has not verified this." : "Only what the profile shows. Fix anything, clear what you do not want. Nothing is saved until you add it.") + '</p>' +
         fld("li-headline", "Headline", f.headline) + fld("li-titles", "Roles, separated by commas", list(f.titles)) +
         fld("li-companies", "Employers", list(f.companies)) + fld("li-schools", "Schools", list(f.schools)) + fld("li-location", "Location", f.location) +
         '<div class="fineprint">Shown to people who scan your code.</div>' +
-        '<button class="btn btn-accent" id="li-add" style="margin-top:8px">Add to my card</button>' +
+        '<button class="btn btn-accent" id="li-add" style="margin-top:8px">' + (d.edit ? "Save changes" : "Add to my card") + '</button>' +
         '<button class="btn btn-plain" id="li-discard">Discard</button><div class="fineprint" id="li-err2"></div></div>';
       document.getElementById("li-discard").addEventListener("click", function () { load(); });
       document.getElementById("li-add").addEventListener("click", function () {
         var btn = this; btn.disabled = true;
         function split(id) { return document.getElementById(id).value.split(/[,\n]/).map(function (x) { return x.trim(); }).filter(Boolean); }
         var fields = { headline: document.getElementById("li-headline").value.trim(), titles: split("li-titles"), companies: split("li-companies"), schools: split("li-schools"), location: document.getElementById("li-location").value.trim() };
-        api("/api/import/linkedin/confirm", { method: "POST", body: { previewId: d.previewId, fields: fields } }).then(function (r) {
+        (d.edit ? api("/api/import/linkedin/edit", { method: "POST", body: { fields: fields } }) : api("/api/import/linkedin/confirm", { method: "POST", body: { previewId: d.previewId, fields: fields } })).then(function (r) {
           toast("Added to your card"); onHeadline(fields.headline); idle(r.linkedin);
         }).catch(function (e) { btn.disabled = false; document.getElementById("li-err2").textContent = (e && e.error) || "Could not save - try again"; });
       });
@@ -853,6 +857,31 @@
       if (slug) api("/api/c/" + slug).then(function (d) { if (d.enriched && d.enriched.linkedin) idle(d.enriched.linkedin); }).catch(function () {});
     }
     load();
+  }
+  /* Adding or changing the LinkedIn link: tell the owner, before saving, that Tagg will read the public profile and fill the shared card. Nothing is pre-ticked. */
+  function askAutoImport(c) {
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Fill your card from LinkedIn?</h3>' +
+      '<p class="hint" style="line-height:1.45">If you save this link with import, Tagg asks a data service (Apify) to read the public parts of your LinkedIn profile: headline, roles, employers, schools and place. They fill your shared card and are shown to people you connect with. You can edit or remove them afterwards. Tagg has not verified them.</p>' +
+      '<label class="row" style="gap:12px;cursor:pointer"><input type="checkbox" id="ai-own" style="width:18px;height:18px;accent-color:var(--accent)"><span class="grow detail" style="white-space:normal">This is my own LinkedIn profile, and I agree to this.</span></label>' +
+      '<button class="btn btn-accent" id="ai-yes" style="margin-top:10px" disabled>Save and import</button>' +
+      '<button class="btn btn-gray" id="ai-link">Save link only</button>' +
+      '<button class="btn btn-plain" id="ai-no">Cancel</button><div class="fineprint" id="ai-err"></div></div>';
+    document.body.appendChild(bg);
+    var yes = bg.querySelector("#ai-yes");
+    bg.querySelector("#ai-own").addEventListener("change", function () { yes.disabled = !this.checked; });
+    bg.querySelector("#ai-no").addEventListener("click", function () { bg.remove(); });
+    function persist() { saveCard(c); lastSync = 0; return syncCard(); }
+    bg.querySelector("#ai-link").addEventListener("click", function () { bg.remove(); persist().then(function () { toast("Card saved"); location.hash = "#/"; }); });
+    yes.addEventListener("click", function () {
+      yes.disabled = true; yes.textContent = "Importing...";
+      persist().then(function () { return api("/api/import/linkedin/auto", { method: "POST", body: { url: c.links.linkedin, ownProfile: true, disclosure: "linkedin-auto-v1" } }); }).then(function () {
+        bg.remove(); toast("Card saved and filled from LinkedIn"); renderEdit();
+      }).catch(function (e) {
+        bg.remove(); toast((e && e.error) || "Card saved. Could not import right now."); renderEdit();
+      });
+    });
   }
   function renderEdit() {
     var c = loadCard() || { name: "", headline: "", email: "", phone: "", links: {} };
@@ -901,6 +930,8 @@
       var c = collect();
       if (!c.name) { toast("Add your name first"); return; }
       Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
+      var prevLi = (loadCard() || { links: {} }).links.linkedin || "";
+      if (c.links.linkedin && c.links.linkedin !== prevLi) { askAutoImport(c); return; }
       saveCard(c);
       lastSync = 0;
       syncCard().then(function (d) {
