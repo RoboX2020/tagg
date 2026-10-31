@@ -1209,7 +1209,7 @@
       }
       api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified, d.photo ? API + "/api/photo/" + id + "?v=" + encodeURIComponent((d.enriched && d.enriched.linkedin && d.enriched.linkedin.importedAt) || "1") : ""); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function (e) {
         var busy = e && e.busy;
-        shell(null, '<div class="empty"><div class="t">' + (busy ? "Tagg is busy right now" : "That code did not scan right") + '</div><div class="d">' + (busy ? "Lots of people are opening cards. Try again in a minute." : "Ask them to show their Tagg code again.") + '</div></div><a class="btn btn-gray" href="#/">Back</a>');
+        shell(null, '<div class="empty"><div class="t">' + (busy ? (e.daily ? "Card views are paused for today" : "Tagg is busy right now") : "That code did not scan right") + '</div><div class="d">' + (busy ? (e.daily ? "Tagg has used up today's free capacity. It resets around 5 PM Arizona time. Signing in still works." : "Lots of people are opening cards. Try again in a minute.") : "Ask them to show their Tagg code again.") + '</div></div><a class="btn btn-gray" href="#/">Back</a>');
       });
       return;
     }

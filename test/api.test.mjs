@@ -749,11 +749,13 @@ if (env) {
   ok("A cannot edit or delete B's saved person", (await call("DELETE", "/api/people/" + bPid, null, PA.o)).status >= 400 && (await call("GET", "/api/people", null, PB.o)).body.people.length === 1);
   env.PUBLIC_VIEWS_PER_IP_MIN = "5"; const codes = []; for (let k = 0; k < 8; k++) codes.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "9.9.9.9" } })).status);
   const signedIn = (await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "9.9.9.9", Authorization: "Bearer " + PB.o } })).status;
+  const fake = (await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "9.9.9.9", Authorization: "Bearer " + "f".repeat(30) } })).status;
   const other = (await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "8.8.8.8" } })).status;
   delete env.PUBLIC_VIEWS_PER_IP_MIN;
-  ok("public card views are limited per address (5 allowed, then 429), signed-in viewers and other addresses are not blocked", codes.slice(0, 5).every(c => c === 200) && codes.slice(5).every(c => c === 429) && signedIn === 200 && other === 200);
-  env.PUBLIC_VIEWS_PER_DAY = "3"; const dc = []; for (let k = 0; k < 5; k++) dc.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "7.7." + k + ".1" } })).status); delete env.PUBLIC_VIEWS_PER_DAY;
-  ok("a daily ceiling on anonymous views answers 429 with a plain message once reached", dc.slice(-1)[0] === 429);
+  ok("public card views are limited per address (5 allowed, then 429), signed-in viewers and other addresses are not blocked", codes.slice(0, 5).every(c => c === 200) && codes.slice(5).every(c => c === 429) && signedIn === 200 && other === 200 && fake === 429);
+  env.PUBLIC_VIEWS_PER_DAY = "3"; const dc = []; for (let k = 0; k < 5; k++) dc.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "7.7." + k + ".1" } })).status);
+  const dr = await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "7.7.9.1" } }).then(r => r.json());
+  ok("a daily ceiling on anonymous views answers 429 with a distinct, reset-aware message (not 'try again in a minute')", dc.slice(-1)[0] === 429 && dr.daily === true && /resets/.test(dr.error) && !/in a minute/.test(dr.error)); delete env.PUBLIC_VIEWS_PER_DAY;
 }
 
 // ---- Response hygiene ----

@@ -559,6 +559,8 @@ export class RateLimiter {
 async function networkFirstAccessCheck(env, actor) {
   try {
     if ((await env.KV.get("cfg/notify")) !== "on" || (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "off" };
+    // If the actor is not sharing, they can neither see anyone nor be seen, so nobody's network can have opened because of them.
+    if (!(await gshareOn(env, actor))) return { skipped: "not-sharing" };
     const cands = [actor], seen = new Set([actor]);
     const add = async (people, cap) => { let n = 0; for (const x of people) { if (n >= cap || cands.length >= 16) break; if (!x.slug) continue; const rec = await getJSON(env.KV, "card/" + x.slug); const o = rec && rec.ownerToken; if (o && !seen.has(o)) { seen.add(o); cands.push(o); n++; } } };
     const mids = []; await add((await getPeople(env, actor)).slice(0, 12), 12);
@@ -618,10 +620,13 @@ const appHandler = {
     if (cm && req.method === "GET") {
       // Budget guard for anonymous previews (signed-in viewers are not counted). Per address generous enough for a shared event network, plus a daily
       // ceiling so a scripted loop or a viral burst cannot use up the free daily reads that sign-in, connect and accept also need.
-      if (!authOwner(req)) {
+      const guardTok = authOwner(req);
+      if (!guardTok || (await env.KV.get("own/" + guardTok)) === null) { // a made-up Authorization header does not skip the guard
         const ip = req.headers.get("CF-Connecting-IP") || "x";
-        if (await overLimit(env, "pubip/" + ip, Number(env.PUBLIC_VIEWS_PER_IP_MIN) || 240, 60) || await overLimit(env, "pubday/" + new Date().toISOString().slice(0, 10), Number(env.PUBLIC_VIEWS_PER_DAY) || 20000, 86400))
+        if (await overLimit(env, "pubip/" + ip, Number(env.PUBLIC_VIEWS_PER_IP_MIN) || 240, 60))
           return j({ error: "Lots of people are opening cards right now. Please try again in a minute.", busy: true }, 429);
+        if (await overLimit(env, "pubday/" + new Date().toISOString().slice(0, 10), Number(env.PUBLIC_VIEWS_PER_DAY) || 20000, 86400))
+          return j({ error: "Tagg has used up today's free capacity for opening cards. It resets around 5 PM Arizona time. Signed-in people can still open cards.", busy: true, daily: true }, 429);
       }
       const rec = await getJSON(env.KV, "card/" + cm[1]);
       if (!rec) return j({ error: "not found" }, 404);
