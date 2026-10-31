@@ -35,7 +35,12 @@ try {
   await B.click("[data-rmbtn]"); await sleep(300);
   const op = await B.evaluate(() => ({ h: document.querySelector("[data-rm]").getBoundingClientRect().height, t: document.querySelector("[data-rmbtn]").textContent }));
   assert.ok(op.h > 200 && op.t === "Show less"); ok("Read more expands in place: " + op.h);
-  if (shots) await B.screenshot({ path: shots + "/readmore-open.png", fullPage: true });
+  await B.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight)); await sleep(400);
+  const bt = await B.evaluate(() => { const nav = document.querySelector("nav, .tabbar, .bottomnav"); const kids = [...document.querySelector(".content").children].filter(e => e.getBoundingClientRect().height > 0); const last = kids[kids.length - 1].getBoundingClientRect(); const nb = nav ? nav.getBoundingClientRect().top : innerHeight; return { lastBottom: last.bottom, navTop: nb, hasNav: !!nav }; });
+  assert.ok(bt.lastBottom <= bt.navTop + 1); ok("scrolled to the bottom, the last content block clears the nav: " + JSON.stringify(bt));
+  if (shots) await B.screenshot({ path: shots + "/readmore-bottom.png" });
+  await B.evaluate(() => window.scrollTo(0, 0)); await sleep(200);
+  if (shots) await B.screenshot({ path: shots + "/readmore-open.png" });
   const D = await mkPage(b.ownerToken, "cb@tagg-test.invalid", "Bob Li", 1280, 800);
   await D.goto(base + "#/c/" + card.slug, { waitUntil: "networkidle0" }); await sleep(1500);
   const dk = await D.evaluate(() => ({ h: document.querySelector("[data-rm]").getBoundingClientRect().height, bh: document.querySelector("[data-rmbtn]").getBoundingClientRect().height }));
