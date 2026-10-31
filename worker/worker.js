@@ -1755,13 +1755,41 @@ const appHandler = {
     return j({ error: "not found" }, 404);
   },
 };
+// 256 KB request-body cap, enforced on the actual byte stream (see the default export below).
+const MAX_BODY_BYTES = 262144;
+async function readBodyCapped(stream, max) {
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) { await reader.cancel().catch(() => {}); return null; }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out;
+}
 // Any unexpected failure (for example the free daily KV write allowance running out) becomes a clean, readable 503 with CORS headers,
 // not a raw platform error page that the app cannot read.
 export default {
   async fetch(req, env, ctx) {
     try {
       // Reject oversized request bodies early (largest legitimate body is a pasted LinkedIn profile or a saved-people migration, well under 256 KB).
-      if (req.method !== "GET" && req.method !== "OPTIONS" && Number(req.headers.get("content-length") || 0) > 262144) return withSecurityHeaders(j({ error: "That request is too large." }, 413));
+      // The Content-Length check alone is not enough: a request without that header (chunked) or with a false one used to bypass the cap.
+      // Count the actual bytes from the body stream instead and re-issue the request with the verified body for the handlers below.
+      if (req.method !== "GET" && req.method !== "OPTIONS") {
+        const tooBig = withSecurityHeaders(j({ error: "That request is too large." }, 413));
+        if (Number(req.headers.get("content-length") || 0) > MAX_BODY_BYTES) return tooBig;
+        if (req.body) {
+          const buf = await readBodyCapped(req.body, MAX_BODY_BYTES);
+          if (buf === null) return tooBig;
+          req = new Request(req, { body: buf });
+        }
+      }
       const res = withSecurityHeaders(await appHandler.fetch(req, env, ctx));
       // Anything that can change who is complete or sharing (card or photo saved, LinkedIn or GitHub import, share on/off, accept) re-checks the first-access alert.
       if (req.method !== "GET" && req.method !== "OPTIONS" && res.status < 400 && /^\/api\/(card|profile-photo|import\/|graph\/sharing|inbox\/respond)/.test(new URL(req.url).pathname)) {
