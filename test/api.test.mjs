@@ -728,6 +728,14 @@ if (env) {
   globalThis.__rawCards = false; await env.KV.delete("cfg/notify"); await env.KV.delete("cfg/notify-net");
 }
 
+// ---- Response hygiene ----
+{
+  const r = await fetch(url + "/api/c/zzzzzzzz"); const r2 = await fetch(url + "/api/owner", { method: "POST" });
+  ok("API responses are never cached and not sniffable", r.headers.get("cache-control") === "private, no-cache" && r2.headers.get("cache-control") === "private, no-cache" && r.headers.get("x-content-type-options") === "nosniff" && r.headers.get("referrer-policy") === "no-referrer");
+  const big = await fetch(url + "/api/card", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ card: { name: "x".repeat(400000) } }) });
+  ok("an oversized request body is refused with 413", big.status === 413);
+}
+
 // ---- Free-tier exhaustion: a failing KV write must give a clean readable 503, not a raw platform error ----
 if (env && !process.env.TAGG_DO) {
   const op = env.KV.put; env.KV.put = async () => { throw new Error("KV put() limit exceeded for the day."); };

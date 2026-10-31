@@ -23,6 +23,12 @@ async function jpush(kv, key, item, opts = {}) {
   if (dup) return { dup };
   arr.unshift(item); await kv.put(key, JSON.stringify(arr.slice(0, opts.cap || 50))); return { added: true };
 }
+async function jpatch(kv, key, match, patch) {
+  if (kv.jpatch) return kv.jpatch(key, match, patch);
+  const arr = (await getJSON(kv, key)) || []; let n = 0;
+  for (const x of arr) if (x && Object.entries(match).every(([f, v]) => x[f] === v)) { Object.assign(x, patch); n++; }
+  if (n) await kv.put(key, JSON.stringify(arr)); return { patched: n };
+}
 async function getJSON(kv, key) { const v = await kv.get(key); return v ? JSON.parse(v) : null; }
 function cleanCard(c) {
   if (!c || typeof c.name !== "string" || !c.name.trim()) return null;
@@ -570,6 +576,12 @@ async function networkFirstAccessCheck(env, actor) {
 }
 
 export { networkFirstAccessCheck };
+// Responses carry personal data: never cache them in browsers or shared caches, never let a browser guess the content type, send no referrer.
+function withSecurityHeaders(res) {
+  const out = new Response(res.body, res);
+  if (!out.headers.has("Cache-Control")) out.headers.set("Cache-Control", "private, no-cache"); out.headers.set("X-Content-Type-Options", "nosniff"); out.headers.set("Referrer-Policy", "no-referrer");
+  return out;
+}
 const appHandler = {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
@@ -632,7 +644,7 @@ const appHandler = {
       // scanner saves card owner
       const scannerPeople = await getPeople(env, scanner);
       const person = { id: "p_" + rand(10), slug: rec.slug, card: rec.card, metAt: now, event: evt, location: loc, note: "", enriched: (await getJSON(env.KV, "enrich/" + rec.slug)) || null };
-      if (!scannerPeople.some(x => x.slug === rec.slug)) { scannerPeople.unshift(person); await putPeople(env, scanner, scannerPeople); }
+      if (!scannerPeople.some(x => x.slug === rec.slug)) await jpush(env.KV, "ppl/" + scanner, person, { cap: 500, dedupe: { slug: rec.slug } });
       // mutual: card owner saves scanner's card back
       let mutual = false;
       const scannerSlug = await env.KV.get("own/" + scanner);
@@ -640,10 +652,7 @@ const appHandler = {
         const sRec = await getJSON(env.KV, "card/" + scannerSlug);
         if (sRec && rec.ownerToken) {
           const ownerPeople = await getPeople(env, rec.ownerToken);
-          if (!ownerPeople.some(x => x.slug === scannerSlug)) {
-            ownerPeople.unshift({ id: "p_" + rand(10), slug: scannerSlug, card: sRec.card, metAt: now, event: evt, location: loc, note: "", enriched: (await getJSON(env.KV, "enrich/" + scannerSlug)) || null });
-            await putPeople(env, rec.ownerToken, ownerPeople);
-          }
+          if (!ownerPeople.some(x => x.slug === scannerSlug)) await jpush(env.KV, "ppl/" + rec.ownerToken, { id: "p_" + rand(10), slug: scannerSlug, card: sRec.card, metAt: now, event: evt, location: loc, note: "", enriched: (await getJSON(env.KV, "enrich/" + scannerSlug)) || null }, { cap: 500, dedupe: { slug: scannerSlug } });
           mutual = true;
         }
       }
@@ -1169,8 +1178,7 @@ const appHandler = {
     if (p === "/api/notify/read" && req.method === "POST") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      const items = ((await getJSON(env.KV, "nt/" + owner)) || []).map(x => ({ ...x, read: true }));
-      await env.KV.put("nt/" + owner, JSON.stringify(items));
+      await jpatch(env.KV, "nt/" + owner, {}, { read: true });
       return j({ ok: true });
     }
     if (p === "/api/notify/prefs" && (req.method === "GET" || req.method === "POST")) {
@@ -1223,8 +1231,7 @@ const appHandler = {
       if (!rq) return j({ error: "not found" }, 404);
       if (rq.status !== "pending") return j({ error: "already handled" }, 400);
       if (!body.accept) {
-        rq.status = "declined";
-        await env.KV.put("cin/" + owner, JSON.stringify(inbox));
+        await jpatch(env.KV, "cin/" + owner, { id: rq.id }, { status: "declined" });
         return j({ ok: true, status: "declined" });
       }
       const now = new Date().toISOString();
@@ -1240,8 +1247,8 @@ const appHandler = {
         op = { id: "p_" + rand(10), slug: rq.requesterSlug || null, card: rCard, metAt: rq.at || now,
           event: rq.event || "", location: rq.location || null, note: "",
           enriched: rq.requesterSlug ? (await getJSON(env.KV, "enrich/" + rq.requesterSlug)) || null : null };
-        ownerPeople.unshift(op);
-        await putPeople(env, owner, ownerPeople);
+        if (op.slug) { const r = await jpush(env.KV, "ppl/" + owner, op, { cap: 500, dedupe: { slug: op.slug } }); if (r.dup) op = r.dup; }
+        else { ownerPeople.unshift(op); await putPeople(env, owner, ownerPeople); }
       }
       let requesterPersonId = null;
       if (rq.requesterToken && (await env.KV.get("own/" + rq.requesterToken)) !== null) {
@@ -1254,14 +1261,13 @@ const appHandler = {
             rp = { id: "p_" + rand(10), slug: mySlug, card: myRec.card, metAt: rq.at || now,
               event: rq.event || "", location: rq.location || null, note: rq.requesterNote || "",
               enriched: (await getJSON(env.KV, "enrich/" + mySlug)) || null };
-            rPeople.unshift(rp);
-            await putPeople(env, rq.requesterToken, rPeople);
+            const r = await jpush(env.KV, "ppl/" + rq.requesterToken, rp, { cap: 500, dedupe: { slug: mySlug } }); if (r.dup) rp = r.dup;
           }
           requesterPersonId = rp.id;
         }
       }
       rq.status = "accepted"; rq.ownerPersonId = op.id; rq.requesterPersonId = requesterPersonId;
-      await env.KV.put("cin/" + owner, JSON.stringify(inbox));
+      await jpatch(env.KV, "cin/" + owner, { id: rq.id }, { status: "accepted", ownerPersonId: op.id, requesterPersonId });
       { const myc = await getJSON(env.KV, "card/" + (await env.KV.get("own/" + owner))); await notify(env, rq.requesterToken, "connected", rq.id, myc && myc.card && myc.card.name); }
       ctx.waitUntil((async () => { await networkFirstAccessCheck(env, owner); if (rq.requesterToken) await networkFirstAccessCheck(env, rq.requesterToken); })());
       return j({ ok: true, status: "accepted", personId: op.id });
@@ -1576,7 +1582,9 @@ const appHandler = {
 export default {
   async fetch(req, env, ctx) {
     try {
-      const res = await appHandler.fetch(req, env, ctx);
+      // Reject oversized request bodies early (largest legitimate body is a pasted LinkedIn profile or a saved-people migration, well under 256 KB).
+      if (req.method !== "GET" && req.method !== "OPTIONS" && Number(req.headers.get("content-length") || 0) > 262144) return withSecurityHeaders(j({ error: "That request is too large." }, 413));
+      const res = withSecurityHeaders(await appHandler.fetch(req, env, ctx));
       // Anything that can change who is complete or sharing (card or photo saved, LinkedIn or GitHub import, share on/off, accept) re-checks the first-access alert.
       if (req.method !== "GET" && req.method !== "OPTIONS" && res.status < 400 && /^\/api\/(card|profile-photo|import\/|graph\/sharing|inbox\/respond)/.test(new URL(req.url).pathname)) {
         const h = req.headers.get("Authorization") || "", o = h.startsWith("Bearer ") ? h.slice(7) : null;
@@ -1589,7 +1597,7 @@ export default {
     catch (e) {
       const m = String(e && e.message || e);
       console.log("unhandled", m.slice(0, 200));
-      return j({ error: "Tagg is very busy right now. Please try again in a little while.", busy: /limit|quota|exceeded|KV/i.test(m) }, 503);
+      return withSecurityHeaders(j({ error: "Tagg is very busy right now. Please try again in a little while.", busy: /limit|quota|exceeded|KV/i.test(m) }, 503));
     }
   },
 };

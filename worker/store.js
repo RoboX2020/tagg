@@ -23,6 +23,13 @@ export class Store {
         const dup = op.dedupe ? arr.find(x => x && Object.entries(op.dedupe).every(([f, v]) => x[f] === v)) : null;
         if (dup) out.push({ dup }); else { arr.unshift(op.item); this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, exp=excluded.exp", op.k, JSON.stringify(arr.slice(0, op.cap || 50)), op.ttl ? now + op.ttl * 1000 : null); out.push({ added: true }); }
       }
+      else if (op.o === "jpatch") {
+        // Atomic in-place edit of the list elements that match, leaving every other element (including ones added a moment ago) untouched.
+        const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let arr = []; try { arr = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : []; } catch (e) {}
+        let n = 0; for (const x of arr) if (x && Object.entries(op.match || {}).every(([f, v]) => x[f] === v)) { Object.assign(x, op.patch); n++; }
+        if (n) this.sql.exec("UPDATE kv SET v=? WHERE k=?", JSON.stringify(arr), op.k);
+        out.push({ patched: n });
+      }
       else if (op.o === "list") { out.push([...this.sql.exec("SELECT k FROM kv WHERE k LIKE ? ESCAPE '\\' AND (exp IS NULL OR exp > ?) ORDER BY k LIMIT ?", String(op.prefix).replace(/[\\%_]/g, "\\$&") + "%", now, Math.min(op.limit || 1000, 1000))].map(r => r.k)); }
     }
     return Response.json({ out });
@@ -49,5 +56,6 @@ export class BatchedKV {
   async delete(k) { this.cache.set(k, null); this.buf.push({ o: "del", k }); }
   async list(o) { const ops = this.buf.splice(0).concat([{ o: "list", prefix: (o && o.prefix) || "", limit: o && o.limit }]); const out = await this._send(ops); return { keys: out[out.length - 1].map(name => ({ name })), list_complete: true }; }
   async jpush(k, item, opts = {}) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpush", k, item, dedupe: opts.dedupe, cap: opts.cap, ttl: opts.ttl }]); const out = await this._send(ops); return out[out.length - 1]; }
+  async jpatch(k, match, patch) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpatch", k, match, patch }]); const out = await this._send(ops); return out[out.length - 1]; }
   async flush() { if (this.buf.length) await this._send(this.buf.splice(0)); }
 }
