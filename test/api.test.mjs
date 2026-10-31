@@ -728,6 +728,34 @@ if (env) {
   globalThis.__rawCards = false; await env.KV.delete("cfg/notify"); await env.KV.delete("cfg/notify-net");
 }
 
+// ---- Privacy with fully filled synthetic records, and cross-owner access ----
+if (env) {
+  const mkp = async (name) => { const o = (await call("POST", "/api/owner", {})).body.ownerToken; const c = await call("POST", "/api/card", { ownerToken: o, card: { name, headline: "Headline " + name, detail: "Detail SECRETDETAIL " + name, email: name.toLowerCase() + "@priv.invalid", phone: "+15550001111", links: { linkedin: "https://linkedin.com/in/" + name.toLowerCase(), github: "https://github.com/" + name.toLowerCase() } } }, o); return { o, slug: c.body.slug }; };
+  const PA = await mkp("Priva"), PB = await mkp("Privb");
+  await env.KV.put("enrich/" + PA.slug, JSON.stringify({ linkedin: { url: "https://linkedin.com/in/priva", titles: ["SECRETTITLE"], companies: ["SECRETCO"], schools: ["SECRETSCHOOL"], hasPhoto: true }, github: { login: "priva", repos: ["SECRETREPO"] } }));
+  await env.KV.put("photo/" + PA.slug, JSON.stringify({ ct: "image/jpeg", b64: "AAAA" }));
+  const anon = await fetch(url + "/api/c/" + PA.slug).then(r => r.text());
+  ok("anonymous preview of a fully filled card leaks no email, phone, links, detail or imports", !/priva@priv|5550001111|linkedin\.com|github\.com|SECRET/.test(anon) && /Priva/.test(anon) && /Headline Priva/.test(anon));
+  const noProfile = (await call("POST", "/api/owner", {})).body.ownerToken;
+  const thin = await fetch(url + "/api/c/" + PA.slug, { headers: { Authorization: "Bearer " + noProfile } }).then(r => r.text());
+  ok("a signed-in viewer with no profile also gets only the preview", !/priva@priv|5550001111|linkedin\.com|SECRET/.test(thin));
+  await call("POST", "/api/people", { slug: PA.slug, note: "PRIVATE-NOTE-OF-B" }, PB.o);
+  for (const path of ["/api/people", "/api/inbox", "/api/notify", "/api/graph", "/api/tokens", "/api/me", "/api/notify/prefs"]) {
+    const r = await call("GET", path, null, PA.o); const txt = JSON.stringify(r.body);
+    ok("owner A cannot read B's private data via " + path, !/PRIVATE-NOTE-OF-B|Privb@priv|privb@priv/.test(txt));
+  }
+  ok("a made-up owner token gets nothing", (await call("GET", "/api/people", null, "x".repeat(40))).status === 401 && (await call("GET", "/api/inbox", null, "x".repeat(40))).status === 401);
+  const bPid = (await call("GET", "/api/people", null, PB.o)).body.people[0].id;
+  ok("A cannot edit or delete B's saved person", (await call("DELETE", "/api/people/" + bPid, null, PA.o)).status >= 400 && (await call("GET", "/api/people", null, PB.o)).body.people.length === 1);
+  env.PUBLIC_VIEWS_PER_IP_MIN = "5"; const codes = []; for (let k = 0; k < 8; k++) codes.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "9.9.9.9" } })).status);
+  const signedIn = (await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "9.9.9.9", Authorization: "Bearer " + PB.o } })).status;
+  const other = (await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "8.8.8.8" } })).status;
+  delete env.PUBLIC_VIEWS_PER_IP_MIN;
+  ok("public card views are limited per address (5 allowed, then 429), signed-in viewers and other addresses are not blocked", codes.slice(0, 5).every(c => c === 200) && codes.slice(5).every(c => c === 429) && signedIn === 200 && other === 200);
+  env.PUBLIC_VIEWS_PER_DAY = "3"; const dc = []; for (let k = 0; k < 5; k++) dc.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "7.7." + k + ".1" } })).status); delete env.PUBLIC_VIEWS_PER_DAY;
+  ok("a daily ceiling on anonymous views answers 429 with a plain message once reached", dc.slice(-1)[0] === 429);
+}
+
 // ---- Response hygiene ----
 {
   const r = await fetch(url + "/api/c/zzzzzzzz"); const r2 = await fetch(url + "/api/owner", { method: "POST" });

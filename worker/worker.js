@@ -616,6 +616,13 @@ const appHandler = {
     // Public card fetch.
     const cm = p.match(/^\/api\/c\/([a-z0-9]+)$/);
     if (cm && req.method === "GET") {
+      // Budget guard for anonymous previews (signed-in viewers are not counted). Per address generous enough for a shared event network, plus a daily
+      // ceiling so a scripted loop or a viral burst cannot use up the free daily reads that sign-in, connect and accept also need.
+      if (!authOwner(req)) {
+        const ip = req.headers.get("CF-Connecting-IP") || "x";
+        if (await overLimit(env, "pubip/" + ip, Number(env.PUBLIC_VIEWS_PER_IP_MIN) || 240, 60) || await overLimit(env, "pubday/" + new Date().toISOString().slice(0, 10), Number(env.PUBLIC_VIEWS_PER_DAY) || 20000, 86400))
+          return j({ error: "Lots of people are opening cards right now. Please try again in a minute.", busy: true }, 429);
+      }
       const rec = await getJSON(env.KV, "card/" + cm[1]);
       if (!rec) return j({ error: "not found" }, 404);
       // QR gate: the owner and scanners with a complete profile get the full card. Everyone else (including anonymous

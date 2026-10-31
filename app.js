@@ -1207,8 +1207,9 @@
         sessionStorage.setItem("tagg.pinged." + id, "1");
         fetch(API + "/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: id }) }).catch(function () {});
       }
-      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified, d.photo ? API + "/api/photo/" + id + "?v=" + encodeURIComponent((d.enriched && d.enriched.linkedin && d.enriched.linkedin.importedAt) || "1") : ""); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function () {
-        shell(null, '<div class="empty"><div class="t">That code did not scan right</div><div class="d">Ask them to show their Tagg code again.</div></div><a class="btn btn-gray" href="#/">Back</a>');
+      api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified, d.photo ? API + "/api/photo/" + id + "?v=" + encodeURIComponent((d.enriched && d.enriched.linkedin && d.enriched.linkedin.importedAt) || "1") : ""); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function (e) {
+        var busy = e && e.busy;
+        shell(null, '<div class="empty"><div class="t">' + (busy ? "Tagg is busy right now" : "That code did not scan right") + '</div><div class="d">' + (busy ? "Lots of people are opening cards. Try again in a minute." : "Ask them to show their Tagg code again.") + '</div></div><a class="btn btn-gray" href="#/">Back</a>');
       });
       return;
     }
