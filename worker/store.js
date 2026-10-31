@@ -30,6 +30,12 @@ export class Store {
         if (n) this.sql.exec("UPDATE kv SET v=? WHERE k=?", JSON.stringify(arr), op.k);
         out.push({ patched: n });
       }
+      else if (op.o === "jmerge") {
+        // Atomic object edit: set or remove only the named top-level fields, leaving fields other requests wrote a moment ago untouched.
+        const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let o = {}; try { o = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : {}; } catch (e) {}
+        Object.assign(o, op.set || {}); for (const f of op.del || []) delete o[f];
+        this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", op.k, JSON.stringify(o), r ? r.exp : null); out.push({ merged: true });
+      }
       else if (op.o === "list") { out.push([...this.sql.exec("SELECT k FROM kv WHERE k LIKE ? ESCAPE '\\' AND (exp IS NULL OR exp > ?) ORDER BY k LIMIT ?", String(op.prefix).replace(/[\\%_]/g, "\\$&") + "%", now, Math.min(op.limit || 1000, 1000))].map(r => r.k)); }
     }
     return Response.json({ out });
@@ -57,5 +63,6 @@ export class BatchedKV {
   async list(o) { const ops = this.buf.splice(0).concat([{ o: "list", prefix: (o && o.prefix) || "", limit: o && o.limit }]); const out = await this._send(ops); return { keys: out[out.length - 1].map(name => ({ name })), list_complete: true }; }
   async jpush(k, item, opts = {}) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpush", k, item, dedupe: opts.dedupe, cap: opts.cap, ttl: opts.ttl }]); const out = await this._send(ops); return out[out.length - 1]; }
   async jpatch(k, match, patch) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpatch", k, match, patch }]); const out = await this._send(ops); return out[out.length - 1]; }
+  async jmerge(k, set, del) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jmerge", k, set, del }]); const out = await this._send(ops); return out[out.length - 1]; }
   async flush() { if (this.buf.length) await this._send(this.buf.splice(0)); }
 }

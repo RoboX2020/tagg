@@ -29,6 +29,17 @@ async function jpatch(kv, key, match, patch) {
   for (const x of arr) if (x && Object.entries(match).every(([f, v]) => x[f] === v)) { Object.assign(x, patch); n++; }
   if (n) await kv.put(key, JSON.stringify(arr)); return { patched: n };
 }
+// Enrich records hold independent sections (linkedin, github, ...). Load keeps a hidden snapshot; save writes only the top-level fields this request changed
+// (atomic merge on the Durable Object store), so two imports finishing together no longer overwrite each other's section. On plain KV it falls back to a full write.
+async function loadEnrich(kv, slug) { const raw = await kv.get("enrich/" + slug); const o = raw ? JSON.parse(raw) : {}; Object.defineProperty(o, "__orig", { value: raw ? JSON.parse(raw) : {}, enumerable: false }); return o; }
+async function saveEnrich(kv, slug, o) {
+  const orig = o.__orig || {}, set = {}, del = [];
+  for (const k of Object.keys(o)) if (JSON.stringify(o[k]) !== JSON.stringify(orig[k])) set[k] = o[k];
+  for (const k of Object.keys(orig)) if (!(k in o)) del.push(k);
+  if (!Object.keys(set).length && !del.length) return;
+  if (kv.jmerge) return kv.jmerge("enrich/" + slug, set, del);
+  const cur = (await getJSON(kv, "enrich/" + slug)) || {}; Object.assign(cur, set); for (const k of del) delete cur[k]; await kv.put("enrich/" + slug, JSON.stringify(cur));
+}
 async function getJSON(kv, key) { const v = await kv.get(key); return v ? JSON.parse(v) : null; }
 function cleanCard(c) {
   if (!c || typeof c.name !== "string" || !c.name.trim()) return null;
@@ -1328,10 +1339,10 @@ const appHandler = {
       const f = (body && body.fields) || {};
       const list = (x, n) => asNames(Array.isArray(x) ? x.filter(v => typeof v === "string") : [], n);
       const fields = { headline: clip(f.headline, 300), titles: list(f.titles, 5), companies: list(f.companies, 6), schools: list(f.schools, 6), location: clip(f.location, 120) };
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       existing.linkedin = Object.assign(fields, { source: prev.source || "linkedin-pasted-text", url: prev.url, importedAt: prev.at, confirmedAt: new Date().toISOString(),
         company: fields.companies[0] || null, title: fields.titles[0] || null, school: fields.schools[0] || null });
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       await env.KV.delete("liprev/" + body.previewId);
       return j({ ok: true, linkedin: existing.linkedin });
     }
@@ -1347,7 +1358,7 @@ const appHandler = {
       const url = typeof body.url === "string" ? parseLinkedinUrl(body.url) : null;
       if (!url) return j({ error: "Paste a link like linkedin.com/in/yourname" }, 400);
       if (env.APIFY_ENABLED !== "1" || !env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead.", code: "unavailable" }, 503);
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       if ((existing.linkedin && existing.linkedin.url === url) || (existing.linkedinRemoved && existing.linkedinRemoved.url === url)) return j({ error: "That link was already imported. Use Import again if you want to read it again.", code: "same-link" }, 409);
       if (await overLimit(env, "liimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
       let res = null; try { res = await importViaApify(env, url); } catch (e) { res = { unavailable: "network" }; }
@@ -1360,7 +1371,7 @@ const appHandler = {
         { source: "linkedin-link-import", url, importedAt: now, confirmedAt: now, autoImported: true, disclosure: body.disclosure, hasPhoto,
           company: res.companies[0] || null, title: res.titles[0] || null, school: res.schools[0] || null });
       delete existing.linkedinRemoved;
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       await env.KV.put("impconsent/" + owner, JSON.stringify({ version: body.disclosure, at: now, url }));
       return j({ ok: true, linkedin: existing.linkedin });
     }
@@ -1370,7 +1381,7 @@ const appHandler = {
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
       const body = await req.json().catch(() => null);
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       if (!existing.linkedin) return j({ error: "Nothing imported to edit" }, 404);
       const f = (body && body.fields) || {};
       const list = (x, n) => asNames(Array.isArray(x) ? x.filter(v => typeof v === "string") : [], n);
@@ -1378,7 +1389,7 @@ const appHandler = {
       const suppressed = Object.keys(fields).filter(k => Array.isArray(fields[k]) ? !fields[k].length : !fields[k]);
       existing.linkedin = Object.assign(existing.linkedin, fields, { editedAt: new Date().toISOString(), suppressed,
         company: fields.companies[0] || null, title: fields.titles[0] || null, school: fields.schools[0] || null });
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       return j({ ok: true, linkedin: existing.linkedin });
     }
     // GitHub: same informed, owner-initiated flow as LinkedIn. Reads only the public GitHub profile of the handle in the owner's link,
@@ -1392,7 +1403,7 @@ const appHandler = {
       const gm = typeof body.url === "string" ? body.url.trim().match(/^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9](?:[A-Za-z0-9-]{0,38}))\/?$/i) : null;
       if (!gm) return j({ error: "Use a link like github.com/yourname" }, 400);
       const url = "https://github.com/" + gm[1];
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       if ((existing.github && existing.github.url === url) || (existing.githubRemoved && existing.githubRemoved.url === url)) return j({ error: "That link was already imported.", code: "same-link" }, 409);
       if (await overLimit(env, "ghimport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
       let r; try { r = await fetch("https://api.github.com/users/" + gm[1], { headers: { "User-Agent": "tagg-app", "Accept": "application/vnd.github+json" }, signal: AbortSignal.timeout(10000) }); } catch (e) { r = null; }
@@ -1407,7 +1418,7 @@ const appHandler = {
         followers: Number.isFinite(u.followers) ? u.followers : null, repos: Number.isFinite(u.public_repos) ? u.public_repos : null, location: clip(u.location, 120) || null, blog: clip(u.blog, 200) || null,
         source: "github-public-api", url, importedAt: now, autoImported: true, disclosure: "github-auto-v1" };
       delete existing.githubRemoved;
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       await env.KV.put("impconsent/gh/" + owner, JSON.stringify({ version: "github-auto-v1", at: now, url }));
       return j({ ok: true, github: existing.github });
     }
@@ -1416,23 +1427,23 @@ const appHandler = {
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
       const body = await req.json().catch(() => null);
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       if (!existing.github) return j({ error: "Nothing imported to edit" }, 404);
       const f = (body && body.fields) || {};
       const fields = { name: clip(f.name, 120) || null, bio: clip(f.bio, 300) || null, company: clip(f.company, 120) || null, location: clip(f.location, 120) || null };
       const suppressed = Object.keys(fields).filter(k => !fields[k]);
       existing.github = Object.assign(existing.github, fields, { editedAt: new Date().toISOString(), suppressed });
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       return j({ ok: true, github: existing.github });
     }
     if (p === "/api/import/github" && req.method === "DELETE") {
       const owner = authOwner(req);
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       if (existing.github && existing.github.url) existing.githubRemoved = { url: existing.github.url, at: new Date().toISOString() };
       delete existing.github;
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       return j({ ok: true });
     }
     // Imported profile picture: public like the card itself, served from our own copy.
@@ -1448,8 +1459,8 @@ const appHandler = {
       const owner = authOwner(req);
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
-      if (existing.linkedin) { existing.linkedin.hasPhoto = false; await env.KV.put("enrich/" + slug, JSON.stringify(existing)); }
+      const existing = await loadEnrich(env.KV, slug);
+      if (existing.linkedin) { existing.linkedin.hasPhoto = false; await saveEnrich(env.KV, slug, existing); }
       await env.KV.delete("photo/" + slug);
       return j({ ok: true });
     }
@@ -1457,10 +1468,10 @@ const appHandler = {
       const owner = authOwner(req);
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
-      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      const existing = await loadEnrich(env.KV, slug);
       if (existing.linkedin && existing.linkedin.url) existing.linkedinRemoved = { url: existing.linkedin.url, at: new Date().toISOString() };
       delete existing.linkedin; await env.KV.delete("photo/" + slug);
-      await env.KV.put("enrich/" + slug, JSON.stringify(existing));
+      await saveEnrich(env.KV, slug, existing);
       return j({ ok: true });
     }
 
