@@ -1122,7 +1122,7 @@ export default {
       let pr = (await getJSON(env.KV, "npf/" + owner)) || {};
       if (req.method === "POST") { const b = await req.json().catch(() => null); if (!b || typeof b.email !== "boolean") return j({ error: "email must be true or false" }, 400); pr = { email: b.email }; await env.KV.put("npf/" + owner, JSON.stringify(pr)); }
       const subs = (await getJSON(env.KV, "ps/" + owner)) || [];
-      return j({ email: pr.email !== false, push: subs.length, pushAvailable: pushEnabled(env), pushKey: await vapidPublic(env) });
+      return j({ active: (await env.KV.get("cfg/notify")) === "on", email: pr.email !== false, push: subs.length, pushAvailable: pushEnabled(env), pushKey: await vapidPublic(env) });
     }
 
     if (p === "/api/push/subscribe" && (req.method === "POST" || req.method === "DELETE")) {

@@ -31,11 +31,15 @@ try {
       if (stub) { var mkSub = function () { return { endpoint: "https://fcm.googleapis.com/fcm/send/ui-test", toJSON: function () { return { endpoint: this.endpoint, keys: { p256dh: "x", auth: "y" } }; }, unsubscribe: function () { subbed = null; localStorage.removeItem("__sub"); return Promise.resolve(true); } }; }; var subbed = localStorage.getItem("__sub") ? mkSub() : null; window.__perm = 0; Notification = { permission: "default", requestPermission: function () { window.__perm++; Notification.permission = "granted"; return Promise.resolve("granted"); } };
         var ps = { getSubscription: function () { return Promise.resolve(subbed); }, subscribe: function (o) { window.__key = o.applicationServerKey.length; subbed = mkSub(); localStorage.setItem("__sub", "1"); subbed.toJSON = function () { return { endpoint: this.endpoint, keys: { p256dh: "BAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".slice(0, 87), auth: "AAAAAAAAAAAAAAAAAAAAAA" } }; }; return Promise.resolve(subbed); } };
         Object.defineProperty(navigator, "serviceWorker", { value: { ready: Promise.resolve({ pushManager: ps }), register: function () { return Promise.resolve({}); }, addEventListener: function () {} }, configurable: true }); window.PushManager = function () {}; } }, API_URL, tok, !!stub); return P; };
+  const A0 = await mk(a.ownerToken, true); await A0.goto(base + "#/settings", { waitUntil: "networkidle0" }); await sleep(2500);
+  const t0 = await A0.evaluate(() => document.getElementById("notifpanel").innerText);
+  assert.ok(/Alerts are not active yet/.test(t0) && /Nothing is sent right now/.test(t0) && /Saved choice|Verify your email/.test(t0)); ok("while the service is off, Settings says alerts are not active and nothing is sent");
+  if (shots) { await A0.evaluate(() => window.scrollTo(0, document.getElementById("notifpanel").getBoundingClientRect().top + scrollY - 140)); await sleep(300); await A0.screenshot({ path: shots + "/notify-inactive.png" }); }
   await api.env.KV.put("cfg/notify", "on");
   const A = await mk(a.ownerToken, true);
   await A.goto(base + "#/settings", { waitUntil: "networkidle0" }); await sleep(2500);
   let t = await A.evaluate(() => document.getElementById("notifpanel").innerText);
-  assert.ok(/Email alerts/.test(t) && /Enable push/.test(t) && /never include notes/.test(t)); ok("Settings shows email alerts and an Enable push button with the permission note");
+  assert.ok(!/not active/.test(t) && /Email alerts/.test(t) && /Enable push/.test(t) && /never include notes/.test(t)); ok("Settings shows email alerts and an Enable push button with the permission note");
   assert.equal(await A.evaluate(() => window.__perm), 0); ok("the browser permission prompt was NOT triggered by opening Settings");
   assert.equal(pushed.length, 0);
   if (shots) { await A.evaluate(() => window.scrollTo(0, document.getElementById("notifpanel").getBoundingClientRect().top + scrollY - 140)); await sleep(300); await A.screenshot({ path: shots + "/notify-settings-before.png" }); }
