@@ -1491,8 +1491,8 @@
     var parts = [];
     var name = [loc.place ? (loc.guess ? "Near " + loc.place : loc.place) : "", loc.label].filter(Boolean).join(" - ");
     if (name) parts.push(esc(name));
-    if (loc.guess) parts.push('<span style="color:var(--text-2);font-size:12px">Place name from OpenStreetMap, may not be exact. <a href="#" id="place-edit">Edit</a></span>');
-    else if (loc.lat != null) parts.push('<span style="color:var(--text-2);font-size:12px"><a href="#" id="place-edit">' + (loc.place ? "Edit place" : "Add place name") + '</a></span>');
+    if (loc.guess) parts.push('<span style="color:var(--text-2);font-size:12px">Place name from OpenStreetMap, may not be exact. <span class="linklist" style="display:inline"><a href="#" id="place-edit">Edit</a></span></span>');
+    else if (loc.lat != null) parts.push('<span class="linklist" style="font-size:12px"><a href="#" id="place-edit">' + (loc.place ? "Edit place" : "Add place name") + '</a></span>');
     if (loc.lat != null && loc.lon != null) {
       var sv = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + loc.lat + "," + loc.lon;
       parts.push('<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open in Google Maps</a> · <a href="' + sv + '" target="_blank" rel="noopener">Place image</a></span>');
