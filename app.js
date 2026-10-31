@@ -1180,7 +1180,7 @@
     if (slug) api("/api/c/" + slug).then(function (d) { if (d.enriched && d.enriched.github) show(d.enriched.github); }).catch(function () {});
   }
   function renderEdit() {
-    var c = loadCard() || { name: "", headline: "", email: "", phone: "", links: {} };
+    var c = loadCard() || { name: (profile() && profile().name) || "", headline: "", email: "", phone: "", links: {} }; // first card: prefill only the name given at sign-up; email/phone are never prefilled
     shell(null,
       '<h1 class="largetitle">' + (loadCard() ? "Edit card" : "Your card") + '</h1>' +
       '<p class="lead">This is what people see when they scan your code.</p>' +
@@ -1195,6 +1195,7 @@
       '<div class="field"><label>Instagram</label><input class="input" id="f-instagram" placeholder="handle" value="' + esc(c.links.instagram || "") + '"></div>' +
       '<div class="field"><label>Website</label><input class="input" id="f-website" placeholder="prajvalarora.com" value="' + esc(c.links.website || "") + '"></div>' +
       '<div class="field"><label>Email</label><input class="input" id="f-email" type="email" placeholder="you@example.com" value="' + esc(c.email) + '"></div>' +
+      (profile() && profile().email && !c.email ? '<button class="btn btn-plain" id="use-signin-email" type="button" style="margin:-6px 0 8px">Use my sign-in email on my card</button>' : "") +
       '<div class="field"><label>Phone</label><input class="input" id="f-phone" type="tel" placeholder="+1 ..." value="' + esc(c.phone) + '"></div>' +
       '<h2 class="section">Preview</h2>' +
       '<div id="preview"></div>' +
@@ -1223,6 +1224,8 @@
     Array.prototype.forEach.call(document.querySelectorAll(".input"), function (i) {
       i.addEventListener("input", refresh);
     });
+    var use = document.getElementById("use-signin-email");
+    if (use) use.addEventListener("click", function () { document.getElementById("f-email").value = profile().email; use.remove(); refresh(); });
     refresh();
     mountGithubPanel();
     mountLinkedinImport(collect, function (headline) { var h = document.getElementById("f-head"); if (headline && !h.value.trim()) { h.value = headline; refresh(); } });
