@@ -16,6 +16,13 @@ function token() {
   return btoa(String.fromCharCode(...a)).replace(/[+/=]/g, c => ({ "+": "-", "/": "_", "=": "" }[c]));
 }
 async function getMany(kv, keys) { return kv.getMany ? kv.getMany(keys) : Promise.all(keys.map(k => kv.get(k))); }
+// Atomic list insert. On the Durable Object store this is one indivisible step; on plain KV it falls back to read-modify-write (which can lose concurrent inserts).
+async function jpush(kv, key, item, opts = {}) {
+  if (kv.jpush) return kv.jpush(key, item, opts);
+  const arr = (await getJSON(kv, key)) || [], dup = opts.dedupe ? arr.find(x => x && Object.entries(opts.dedupe).every(([f, v]) => x[f] === v)) : null;
+  if (dup) return { dup };
+  arr.unshift(item); await kv.put(key, JSON.stringify(arr.slice(0, opts.cap || 50))); return { added: true };
+}
 async function getJSON(kv, key) { const v = await kv.get(key); return v ? JSON.parse(v) : null; }
 function cleanCard(c) {
   if (!c || typeof c.name !== "string" || !c.name.trim()) return null;
@@ -405,8 +412,10 @@ async function notify(env, owner, type, evId, name) {
     if (type === "scan" && (await env.KV.get("cfg/notify-scan")) !== "on") return { skipped: "scan-off" };
     if (type === "network" && (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "net-off" };
     const id = type + ":" + evId, c = notifyCopy(type, name), out = {};
-    const list = (await getJSON(env.KV, "nt/" + owner)) || [];
-    if (!list.some(x => x.id === id)) { list.unshift({ id, type, title: c.title, line: c.line, at: new Date().toISOString(), read: false }); await env.KV.put("nt/" + owner, JSON.stringify(list.slice(0, 30))); out.inapp = true; }
+    {
+      const pr = await jpush(env.KV, "nt/" + owner, { id, type, title: c.title, line: c.line, at: new Date().toISOString(), read: false }, { cap: 30, dedupe: { id } });
+      if (pr.added) out.inapp = true;
+ }
     const prefs = (await getJSON(env.KV, "npf/" + owner)) || {};
     if (type !== "network" && prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
       const prof = await getJSON(env.KV, "prof/" + owner);
@@ -1120,16 +1129,13 @@ const appHandler = {
       const name = (body.name || "").slice(0, 120).trim();
       const contact = (body.contact || "").slice(0, 200).trim();
       if (!reqSlug && !name) return j({ error: "name required" }, 400);
-      const inbox = (await getJSON(env.KV, "cin/" + rec.ownerToken)) || [];
-      const dup = inbox.find(x => x.requesterToken === rt && x.status === "pending");
-      if (dup) return j({ requestId: dup.id, requestToken: rt, status: "pending", duplicate: true });
       const id = "r_" + rand(10);
       const loc = cleanLocation(body.location);
-      inbox.unshift({ id, name, contact, requesterToken: rt, requesterSlug: reqSlug || null,
+      const res = await jpush(env.KV, "cin/" + rec.ownerToken, { id, name, contact, requesterToken: rt, requesterSlug: reqSlug || null,
         event: (body.event || "").slice(0, 200), location: loc, at: new Date().toISOString(), status: "pending",
         // Private to the requester: copied only into the requester's own saved person, never returned by /api/inbox.
-        requesterNote: typeof body.note === "string" ? body.note.slice(0, 2000) : "" });
-      await env.KV.put("cin/" + rec.ownerToken, JSON.stringify(inbox.slice(0, 50)));
+        requesterNote: typeof body.note === "string" ? body.note.slice(0, 2000) : "" }, { cap: 50, dedupe: { requesterToken: rt, status: "pending" } });
+      if (res.dup) return j({ requestId: res.dup.id, requestToken: rt, status: "pending", duplicate: true });
       await env.KV.put("crt/" + id, JSON.stringify({ owner: rec.ownerToken, id }));
       await notify(env, rec.ownerToken, "request", id, name || (reqSlug && (await getJSON(env.KV, "card/" + reqSlug))?.card?.name));
       return j({ requestId: id, requestToken: rt, status: "pending" });

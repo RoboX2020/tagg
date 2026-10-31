@@ -17,6 +17,12 @@ export class Store {
       if (op.o === "put") { this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, exp=excluded.exp", op.k, op.v, op.ttl ? now + op.ttl * 1000 : null); out.push(null); }
       else if (op.o === "del") { this.sql.exec("DELETE FROM kv WHERE k=?", op.k); out.push(null); }
       else if (op.o === "get") { const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; out.push(r && (!r.exp || r.exp > now) ? r.v : null); }
+      else if (op.o === "jpush") {
+        // Atomic list insert: read, de-duplicate, prepend, trim and write inside one Durable Object turn, so concurrent requests cannot overwrite each other.
+        const r = [...this.sql.exec("SELECT v, exp FROM kv WHERE k=?", op.k)][0]; let arr = []; try { arr = r && (!r.exp || r.exp > now) ? JSON.parse(r.v) : []; } catch (e) {}
+        const dup = op.dedupe ? arr.find(x => x && Object.entries(op.dedupe).every(([f, v]) => x[f] === v)) : null;
+        if (dup) out.push({ dup }); else { arr.unshift(op.item); this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v, exp=excluded.exp", op.k, JSON.stringify(arr.slice(0, op.cap || 50)), op.ttl ? now + op.ttl * 1000 : null); out.push({ added: true }); }
+      }
       else if (op.o === "list") { out.push([...this.sql.exec("SELECT k FROM kv WHERE k LIKE ? ESCAPE '\\' AND (exp IS NULL OR exp > ?) ORDER BY k LIMIT ?", String(op.prefix).replace(/[\\%_]/g, "\\$&") + "%", now, Math.min(op.limit || 1000, 1000))].map(r => r.k)); }
     }
     return Response.json({ out });
@@ -42,5 +48,6 @@ export class BatchedKV {
   async put(k, v, opts) { this.cache.set(k, String(v)); this.buf.push({ o: "put", k, v: String(v), ttl: opts && opts.expirationTtl }); }
   async delete(k) { this.cache.set(k, null); this.buf.push({ o: "del", k }); }
   async list(o) { const ops = this.buf.splice(0).concat([{ o: "list", prefix: (o && o.prefix) || "", limit: o && o.limit }]); const out = await this._send(ops); return { keys: out[out.length - 1].map(name => ({ name })), list_complete: true }; }
+  async jpush(k, item, opts = {}) { this.cache.delete(k); const ops = this.buf.splice(0).concat([{ o: "jpush", k, item, dedupe: opts.dedupe, cap: opts.cap, ttl: opts.ttl }]); const out = await this._send(ops); return out[out.length - 1]; }
   async flush() { if (this.buf.length) await this._send(this.buf.splice(0)); }
 }
