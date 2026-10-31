@@ -1,5 +1,5 @@
-/* Tagg service worker - offline app shell, stale-while-revalidate */
-var CACHE = "tagg-v14";
+/* Tagg service worker - offline app shell, network-first */
+var CACHE = "tagg-v15";
 var SHELL = ["./", "index.html", "styles.css", "app.js", "qrcode.min.js",
   "icon.svg", "icon-180.png", "icon-192.png", "icon-512.png", "manifest.webmanifest"];
 self.addEventListener("install", function (e) {
@@ -30,15 +30,12 @@ self.addEventListener("fetch", function (e) {
     );
     return;
   }
-  /* stale-while-revalidate for shell assets */
+  /* network-first for shell assets: an open app always gets the latest code when online (stale-while-revalidate meant a fix
+     only showed up on the second launch). Falls back to the cache when offline. */
   e.respondWith(
-    caches.match(e.request).then(function (hit) {
-      var fetched = fetch(e.request).then(function (r) {
-        var copy = r.clone();
-        caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
-        return r;
-      }).catch(function () { return hit; });
-      return hit || fetched;
-    })
+    fetch(new Request(e.request, { cache: "no-cache" })).then(function (r) {
+      if (r && r.ok) { var copy = r.clone(); caches.open(CACHE).then(function (c) { c.put(e.request, copy); }); }
+      return r;
+    }).catch(function () { return caches.match(e.request); })
   );
 });

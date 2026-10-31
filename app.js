@@ -1196,6 +1196,8 @@
         if (!cur) return;
         var changed = JSON.stringify(d.person.card) !== JSON.stringify(p.card) || JSON.stringify(d.person.enriched || null) !== JSON.stringify(p.enriched || null);
         if (d.cardStatus === "live") {
+          var st = document.getElementById("cardstate");
+          if (st) st.textContent = "Latest shared profile checked just now." + (d.person.card.links && d.person.card.links.linkedin && !(d.person.enriched && d.person.enriched.linkedin) ? " " + d.person.card.name.split(" ")[0] + " has a LinkedIn link but has not added LinkedIn details to Tagg. Tagg only shows details they add and confirm themselves." : "");
           var all = loadPeople(); for (var k = 0; k < all.length; k++) if (all[k].id === id) { all[k].card = d.person.card; all[k].enriched = d.person.enriched || null; }
           savePeople(all);
           if (changed && !(document.activeElement && document.activeElement.id === "note")) renderPerson(id);

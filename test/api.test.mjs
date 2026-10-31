@@ -263,6 +263,12 @@ if (env) {
   ok("a field they removed is not restored from the old snapshot", !rf.body.person.card.links.github && !rf.body.person.card.email);
   ok("my private note, place and event are unchanged by refresh", rf.body.person.note === "my private note" && rf.body.person.event === "Refresh Expo" && rf.body.person.location.label === "Somewhere");
   ok("another user cannot refresh my saved person", (await call("GET", "/api/people/" + sv.id, null, own)).status === 404);
+  // The friend confirms a LinkedIn import AFTER the viewer saved them: it must show when the viewer opens the person.
+  if (env) {
+    await env.KV.put("enrich/" + sc.slug, JSON.stringify({ linkedin: { headline: "Staff Engineer", titles: ["Engineer"], companies: ["Acme"], schools: ["MIT"], location: "Boston", source: "linkedin-pasted-text", confirmedAt: new Date().toISOString() } }));
+    const rf2 = await call("GET", "/api/people/" + sv.id, null, viewer);
+    ok("details the friend adds after you saved them appear when you open them", rf2.body.person.enriched && rf2.body.person.enriched.linkedin.schools[0] === "MIT" && rf2.body.person.note === "my private note");
+  }
   const stored = (await call("GET", "/api/people", null, viewer)).body.people[0];
   ok("the refreshed card is stored as the latest known copy", stored.card.name === "Rhea Stone-Lee");
 }

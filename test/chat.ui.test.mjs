@@ -32,6 +32,8 @@ try {
   const b = await call("POST", "/api/auth/signup", { email: "b@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
   await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML", links: {} } });
   await call("POST", "/api/people", { slug: card.slug, event: "Cal Hacks", note: "private note xyz" }, b.ownerToken);
+  const savedAlice = (await call("GET", "/api/people", null, b.ownerToken)).people[0];
+  await api.env.KV.put("enrich/" + card.slug, JSON.stringify({ linkedin: { headline: "Robotics Lead", titles: ["Engineer"], companies: ["Acme Robotics"], schools: ["Stanford"], location: "Palo Alto", source: "linkedin-pasted-text", confirmedAt: new Date().toISOString() } }));
   const ctx = await browser.createBrowserContext();
   const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844 });
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
@@ -61,6 +63,11 @@ try {
   await P.screenshot({ path: "/tmp/work/shot-didyoumean.png" });
   await P.click(".sugg"); await sleep(800);
   assert.ok((await P.$$eval(".bubble.me", e => e.map(x => x.textContent))).some(s => /HACKS/.test(s))); ok("tapping the suggestion asks the corrected question visibly");
+  // A friend added LinkedIn details after Bob saved them: opening the person shows them (older records included).
+  await P.goto(base + "#/people"); await sleep(1500); await P.goto(base + "#/p/" + savedAlice.id); await waitText(P, "ADDED FROM LINKEDIN", 8000);
+  assert.ok((await text(P)).includes("Stanford") && (await P.$eval("#note", e => e.value)) === "private note xyz"); ok("details added by the friend after saving appear on open, with Bob's private note kept");
+  assert.ok((await text(P)).toLowerCase().includes("has not verified")); ok("the refreshed details are labelled not verified by Tagg");
+  await waitText(P, "checked just now", 5000); ok("the page says when the shared profile was checked");
   // Settings tab
   await P.goto(base + "#/settings"); await sleep(600);
   assert.equal(await P.$$eval(".tabbar .tab", e => e.length), 5); ok("five tabs in the bottom bar");
