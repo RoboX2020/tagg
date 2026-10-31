@@ -761,7 +761,7 @@ if (env) {
 // ---- Response hygiene ----
 {
   const r = await fetch(url + "/api/c/zzzzzzzz"); const r2 = await fetch(url + "/api/owner", { method: "POST" });
-  ok("API responses are never cached and not sniffable", r.headers.get("cache-control") === "private, no-cache" && r2.headers.get("cache-control") === "private, no-cache" && r.headers.get("x-content-type-options") === "nosniff" && r.headers.get("referrer-policy") === "no-referrer");
+  ok("API responses are never cached and not sniffable", r.headers.get("cache-control") === "no-store" && r2.headers.get("cache-control") === "no-store" && r.headers.get("x-content-type-options") === "nosniff" && r.headers.get("referrer-policy") === "no-referrer");
   const big = await fetch(url + "/api/card", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ card: { name: "x".repeat(400000) } }) });
   ok("an oversized request body is refused with 413", big.status === 413);
 }
@@ -855,16 +855,39 @@ if (env && !process.env.TAGG_DO) {
   ok("only when the owner ticks private notes does the grant include them", (await call("GET", "/api/tokens", null, ownerA)).body.tokens[0].scope === "people+notes" && /ALICE PRIVATE NOTE/.test(JSON.stringify(nr.body)));
 }
 
-// Write freeze for a storage move
+// Personal JSON is never stored by browsers or shared caches
 if (env) {
-  const fz = (await call("POST", "/api/owner", {})).body.ownerToken;
-  const fc = (await call("POST", "/api/card", { ownerToken: fz, card: { name: "Frieda Freeze", headline: "Maker" } })).body;
-  await env.KV.put("cfg/freeze", "on");
-  const w1 = await call("POST", "/api/owner", {}), w2 = await call("POST", "/api/card", { ownerToken: fz, card: { name: "Frieda Changed", headline: "Maker" } });
-  const rd = await call("GET", "/api/c/" + fc.slug, null);
-  ok("freeze on: writes get 503 with a plain message", w1.status === 503 && w2.status === 503 && w1.body.frozen === true && /being moved/.test(w1.body.error));
-  ok("freeze on: reads still work and the card is unchanged", rd.status === 200 && rd.body.card.name === "Frieda Freeze");
+  const cc = async (p, tok) => (await fetch(url + p, { headers: tok ? { Authorization: "Bearer " + tok } : {} })).headers.get("cache-control");
+  const po = (await call("POST", "/api/owner", {})).body.ownerToken, pc = (await call("POST", "/api/card", { ownerToken: po, card: { name: "Cache Check", headline: "h", detail: "d" } })).body;
+  const heads = [await cc("/api/c/" + pc.slug), await cc("/api/inbox", po), await cc("/api/people", po), await cc("/api/me", po), await cc("/api/graph", po), await cc("/api/notify", po)];
+  ok("personal JSON (card, inbox, people, me, graph, notify) is Cache-Control: no-store", heads.every(h => h === "no-store"));
+}
+// Write freeze for a storage move: refuses EVERY mutation at the storage layer, including reads that write
+if (env) {
+  env.FREEZE_CACHE_MS = "0";
+  const dump = async () => { const out = {}; for (const { name } of (await env.KV.list({ prefix: "", limit: 100000 })).keys) out[name] = await env.KV.get(name); return JSON.stringify(Object.entries(out).sort()); };
+  const mkOwner = async (n, e) => { const o = (await call("POST", "/api/owner", {})).body.ownerToken; const c = (await call("POST", "/api/card", { ownerToken: o, card: { name: n, headline: "Maker", detail: "d" } })).body; return { o, slug: c.slug }; };
+  const FA = await mkOwner("Frieda A"), FB = await mkOwner("Frieda B");
+  await call("POST", "/api/connect", { slug: FA.slug, requesterToken: FB.o, name: "Frieda B" });
+  const before = await dump();
+  await env.KV.put("cfg/freeze", "on"); const frozenDump = await dump();
+  const routes = [
+    ["GET", "/api/c/" + FA.slug, null, null], ["GET", "/api/c/" + FA.slug, null, FB.o], ["POST", "/api/scan", { slug: FA.slug }, null], ["POST", "/api/scan", { slug: FA.slug }, FB.o],
+    ["GET", "/api/inbox", null, FA.o], ["GET", "/api/people", null, FA.o], ["GET", "/api/graph", null, FA.o], ["GET", "/api/notify", null, FA.o], ["GET", "/api/graph/sharing", null, FA.o],
+    ["GET", "/api/me", null, FA.o], ["GET", "/api/intro/config", null, FA.o], ["GET", "/api/intros", null, FA.o], ["GET", "/api/tokens", null, FA.o],
+    ["POST", "/api/auth/login", { email: "nobody@example.com", password: "guess guess1" }, null], ["POST", "/api/owner", {}, null],
+    ["POST", "/api/card", { ownerToken: FA.o, card: { name: "Changed", headline: "x", detail: "d" } }, FA.o],
+    ["POST", "/api/inbox/respond", { id: "nope", accept: true }, FA.o], ["PUT", "/api/graph/sharing", { on: false }, FA.o], ["POST", "/api/connect", { slug: FA.slug, requesterToken: FB.o, name: "Again" }, null],
+    ["DELETE", "/api/people/x", null, FA.o], ["POST", "/api/notify/read", {}, FA.o],
+  ];
+  const codes = []; for (const [m, p, b, t] of routes) codes.push(m + " " + p.split("/").slice(0, 3).join("/") + ":" + (await call(m, p, b, t)).status);
+  const after = await dump();
+  ok("freeze: " + routes.length + " routes (scan ping, login, connect, respond, card save, sharing) changed no key", after === frozenDump);
+  ok("freeze: mutating routes answer 503 frozen", codes.filter(c => /^(POST \/api\/owner|POST \/api\/card|PUT)/.test(c)).every(c => c.endsWith(":503")));
+  ok("freeze: a card read still works", codes[0].endsWith(":200"));
   await env.KV.put("cfg/freeze", "off");
+  for (const [m, p, b, t] of routes) await call(m, p, b, t);
+  ok("control: the same routes DO change storage when not frozen", (await dump()) !== frozenDump);
   ok("freeze off: writes work again", (await call("POST", "/api/owner", {})).status === 200);
 }
 srv.close();

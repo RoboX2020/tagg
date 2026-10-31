@@ -632,7 +632,7 @@ export { networkFirstAccessCheck };
 // Responses carry personal data: never cache them in browsers or shared caches, never let a browser guess the content type, send no referrer.
 function withSecurityHeaders(res) {
   const out = new Response(res.body, res);
-  if (!out.headers.has("Cache-Control")) out.headers.set("Cache-Control", "private, no-cache"); out.headers.set("X-Content-Type-Options", "nosniff"); out.headers.set("Referrer-Policy", "no-referrer");
+  if (!out.headers.has("Cache-Control")) out.headers.set("Cache-Control", "no-store"); out.headers.set("X-Content-Type-Options", "nosniff"); out.headers.set("Referrer-Policy", "no-referrer");
   return out;
 }
 const appHandler = {
@@ -1780,17 +1780,37 @@ async function readBodyCapped(stream, max) {
 }
 // Any unexpected failure (for example the free daily KV write allowance running out) becomes a clean, readable 503 with CORS headers,
 // not a raw platform error page that the app cannot read.
+// ---- Write freeze for a storage move. While KV key cfg/freeze is "on", EVERY mutation through env.KV (put, delete and the atomic json ops)
+// is refused at the storage layer, whatever route or background task issued it, so reads that write (scan ping, notify dedupe, cleanup) cannot
+// change the data being copied. Rate-limit counters live in the RL Durable Object, not KV, and are not part of the copy.
+// The flag is cached per isolate for FREEZE_CACHE_MS; the runbook waits longer than that plus KV propagation before the final snapshot.
+const FREEZE_MUTATORS = new Set(["put", "delete", "jpush", "jpatch", "jdel", "jmerge", "jappend"]);
+class FrozenError extends Error { constructor() { super("frozen"); this.frozen = true; } }
+const freezeState = { at: 0, on: false };
+async function isFrozen(kv, ms = 5000) {
+  const now = Date.now();
+  if (now - freezeState.at < ms) return freezeState.on;
+  let on = false; try { on = (await kv.get("cfg/freeze")) === "on"; } catch (e) { on = freezeState.on; }
+  freezeState.at = now; freezeState.on = on; return on;
+}
+function withFreeze(env) {
+  const kv = env.KV, ms = env.FREEZE_CACHE_MS !== undefined && Number(env.FREEZE_CACHE_MS) >= 0 ? Number(env.FREEZE_CACHE_MS) : 5000;
+  const proxy = new Proxy(kv, { get(t, prop) {
+    const v = t[prop];
+    if (typeof v !== "function") return v;
+    if (FREEZE_MUTATORS.has(prop)) return async (...a) => { if (await isFrozen(t, ms)) throw new FrozenError(); return v.apply(t, a); };
+    return v.bind(t);
+  } });
+  return { ...env, KV: proxy };
+}
+export { withFreeze, isFrozen, FrozenError, freezeState };
 export default {
   async fetch(req, env, ctx) {
     try {
+      env = withFreeze(env);
       // Reject oversized request bodies early (largest legitimate body is a pasted LinkedIn profile or a saved-people migration, well under 256 KB).
       // The Content-Length check alone is not enough: a request without that header (chunked) or with a false one used to bypass the cap.
       // Count the actual bytes from the body stream instead and re-issue the request with the verified body for the handlers below.
-      // Write freeze for a storage move: while cfg/freeze is "on", every request that changes data gets 503 with Retry-After. Reads still work.
-      // GETs that only bump short-lived counters (view ceiling, rate limits) are not frozen; those keys are not migrated.
-      if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS" && (await env.KV.get("cfg/freeze")) === "on") {
-        const fr = withSecurityHeaders(j({ error: "Tagg is being moved to new storage. Try again in a few minutes.", frozen: true }, 503)); fr.headers.set("Retry-After", "120"); return fr;
-      }
       if (req.method !== "GET" && req.method !== "OPTIONS") {
         const tooBig = withSecurityHeaders(j({ error: "That request is too large." }, 413));
         if (Number(req.headers.get("content-length") || 0) > MAX_BODY_BYTES) return tooBig;
@@ -1811,6 +1831,7 @@ export default {
       return res;
     }
     catch (e) {
+      if (e && e.frozen) { const fr = withSecurityHeaders(j({ error: "Tagg is being moved to new storage. Try again in a few minutes.", frozen: true }, 503)); fr.headers.set("Retry-After", "120"); return fr; }
       const m = String(e && e.message || e);
       console.log("unhandled", m.slice(0, 200));
       return withSecurityHeaders(j({ error: "Tagg is very busy right now. Please try again in a little while.", busy: /limit|quota|exceeded|KV/i.test(m) }, 503));

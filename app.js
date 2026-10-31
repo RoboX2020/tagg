@@ -1260,7 +1260,7 @@
       // Anonymous "someone scanned" ping so the owner's app updates at once. Carries no identity, once per tab session.
       if (cardSlug() !== id && !sessionStorage.getItem("tagg.pinged." + id)) {
         sessionStorage.setItem("tagg.pinged." + id, "1");
-        fetch(API + "/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: id }) }).catch(function () {});
+        fetch(API + "/api/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: id }) }).then(function (r) { return r.text(); }).catch(function () {});
       }
       api("/api/c/" + id).then(function (d) { renderScanned(d.card, id, d.enriched, d.verified, d.photo ? API + "/api/photo/" + id + "?v=" + encodeURIComponent((d.enriched && d.enriched.linkedin && d.enriched.linkedin.importedAt) || "1") : ""); if (d.locked) setTimeout(function () { scanLockNote(d.card); }, 50); }).catch(function (e) {
         var busy = e && e.busy;
