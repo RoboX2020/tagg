@@ -1260,7 +1260,11 @@ const appHandler = {
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
       const rq = inbox.find(x => x.id === body.id);
       if (!rq) return j({ error: "not found" }, 404);
-      if (rq.status !== "pending") return j({ error: "already handled" }, 400);
+      // Claim the request first (one atomic step on the Durable Object store) so two simultaneous taps cannot both run the accept. A claim left behind by a crash is retried after 60 seconds.
+      const stale = rq.status === "accepting" && Date.now() - Date.parse(rq.claimedAt || 0) > 60000;
+      if (rq.status !== "pending" && !stale) return j({ error: "already handled" }, 400);
+      { const c = await jpatch(env.KV, "cin/" + owner, { id: rq.id, status: stale ? "accepting" : "pending" }, { status: "accepting", claimedAt: new Date().toISOString() });
+        if (!c.patched) return j({ error: "already handled" }, 400); }
       if (!body.accept) {
         await jpatch(env.KV, "cin/" + owner, { id: rq.id }, { status: "declined" });
         return j({ ok: true, status: "declined" });
