@@ -1,6 +1,6 @@
 // End-to-end API test: signup, login, scan-to-connect, consent, mutual saving, private notes, location. Run: node test/api.test.mjs
 import assert from "node:assert/strict";
-import { start } from "./serve.mjs";
+const { start } = await import(process.env.TAGG_DO ? "./serve-do.mjs" : "./serve.mjs");
 // Set TAGG_API to run the same checks against a deployed worker (use a staging worker: it creates accounts).
 const { srv, url, env } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
 if (env) env.SIGNUP_PER_HOUR = "200"; // this test signs up many accounts from one address
@@ -729,7 +729,7 @@ if (env) {
 }
 
 // ---- Free-tier exhaustion: a failing KV write must give a clean readable 503, not a raw platform error ----
-if (env) {
+if (env && !process.env.TAGG_DO) {
   const op = env.KV.put; env.KV.put = async () => { throw new Error("KV put() limit exceeded for the day."); };
   const r = await call("POST", "/api/owner", {});
   env.KV.put = op;
@@ -819,3 +819,9 @@ if (env) {
 
 srv.close();
 console.log("\n" + passed + " checks passed");
+
+if (process.env.TAGG_DO) {
+  const { stats } = await import("./serve-do.mjs");
+  console.log("\nDurable Object calls per request (prototype, whole test suite):");
+  for (const [k, v] of [...stats.byPath].sort((a, b) => b[1].sum - a[1].sum).slice(0, 14)) console.log(k.padEnd(34), "n=" + String(v.n).padStart(4), "avg=" + (v.sum / v.n).toFixed(1), "max=" + v.max);
+}

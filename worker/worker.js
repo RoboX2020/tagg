@@ -15,6 +15,7 @@ function token() {
   const a = new Uint8Array(24); crypto.getRandomValues(a);
   return btoa(String.fromCharCode(...a)).replace(/[+/=]/g, c => ({ "+": "-", "/": "_", "=": "" }[c]));
 }
+async function getMany(kv, keys) { return kv.getMany ? kv.getMany(keys) : Promise.all(keys.map(k => kv.get(k))); }
 async function getJSON(kv, key) { const v = await kv.get(key); return v ? JSON.parse(v) : null; }
 function cleanCard(c) {
   if (!c || typeof c.name !== "string" || !c.name.trim()) return null;
@@ -194,9 +195,10 @@ async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + ow
 const PROFILE_SECTIONS_NEEDED = 3;
 async function profileStatus(env, owner) {
   const slug = await env.KV.get("own/" + owner);
-  const rec = slug ? await getJSON(env.KV, "card/" + slug) : null;
+  const [recRaw, enRaw, photoRaw] = slug ? await getMany(env.KV, ["card/" + slug, "enrich/" + slug, "photo/" + slug]) : [null, null, null];
+  const rec = recRaw ? JSON.parse(recRaw) : null;
   const c = rec && rec.card;
-  const en = slug ? await getJSON(env.KV, "enrich/" + slug) : null;
+  const en = enRaw ? JSON.parse(enRaw) : null;
   const li = en && en.linkedin;
   const liDetail = !!(li && ((li.titles || []).length || (li.companies || []).length || (li.schools || []).length));
   const has = (v, n) => typeof v === "string" && v.trim().length >= n;
@@ -204,7 +206,7 @@ async function profileStatus(env, owner) {
   if (c && has(c.name, 1)) n++;
   if (c && has(c.headline, 3)) n++;
   if (c && has(c.detail, 3)) n++;
-  if (slug && (await env.KV.get("photo/" + slug)) !== null) n++;
+  if (slug && photoRaw !== null) n++;
   if (c && c.links && Object.values(c.links).some(v => has(v, 1))) n++;
   if (c && (has(c.email, 1) || has(c.phone, 1))) n++;
   if (liDetail) n++;
@@ -239,18 +241,29 @@ async function fofFor(env, viewer) {
   const viewerSlug = await env.KV.get("own/" + viewer);
   if (!viewerSlug) return empty;
   const mine = await getPeople(env, viewer), direct = new Map();
-  for (const x of mine.slice(0, 40)) { if (!x.slug) continue; const rec = await getJSON(env.KV, "card/" + x.slug); if (rec && rec.ownerToken && rec.ownerToken !== viewer) direct.set(rec.ownerToken, x); }
-  const nodes = new Map(), edges = [];
-  for (const [mid, mx] of direct) {
-    if (!(await gshareOn(env, mid))) continue;
-    const theirs = await getPeople(env, mid);
-    if (!theirs.some(t => t.slug && t.slug === viewerSlug)) continue;
-    for (const t of theirs.slice(0, 100)) {
-      if (!t.slug) continue;
-      const rec = await getJSON(env.KV, "card/" + t.slug);
+  const mineSl = mine.slice(0, 40).filter(x => x.slug);
+  const mineCards = await getMany(env.KV, mineSl.map(x => "card/" + x.slug));
+  mineSl.forEach((x, i) => { const rec = mineCards[i] && JSON.parse(mineCards[i]); if (rec && rec.ownerToken && rec.ownerToken !== viewer) direct.set(rec.ownerToken, x); });
+  const mids = [...direct.keys()];
+  const midRaw = await getMany(env.KV, mids.flatMap(m => ["gsh/" + m, "ppl/" + m]));
+  const nodes = new Map(), edges = [], need = new Set(), pend = [];
+  mids.forEach((mid, i) => {
+    const g = midRaw[2 * i] && JSON.parse(midRaw[2 * i]);
+    if (!(g && g.on === true && (g.ack === true || g.cohort === true))) return;
+    const theirs = midRaw[2 * i + 1] ? JSON.parse(midRaw[2 * i + 1]) : [];
+    if (!theirs.some(t => t.slug && t.slug === viewerSlug)) return;
+    const list = theirs.slice(0, 100).filter(t => t.slug); list.forEach(t => need.add("card/" + t.slug)); pend.push({ mid, list });
+  });
+  const cardRaw = await getMany(env.KV, [...need]), cardOf = new Map([...need].map((k, i) => [k, cardRaw[i] ? JSON.parse(cardRaw[i]) : null]));
+  const owners = new Set(); for (const { list } of pend) for (const t of list) { const rec = cardOf.get("card/" + t.slug); if (rec && rec.ownerToken) owners.add(rec.ownerToken); }
+  const ownerArr = [...owners], gRaw = await getMany(env.KV, ownerArr.map(o => "gsh/" + o)), shares = new Map(ownerArr.map((o, i) => { const g = gRaw[i] && JSON.parse(gRaw[i]); return [o, !!(g && g.on === true && (g.ack === true || g.cohort === true))]; }));
+  for (const { mid, list } of pend) {
+    const mx = direct.get(mid);
+    for (const t of list) {
+      const rec = cardOf.get("card/" + t.slug);
       if (!rec || !rec.ownerToken || rec.ownerToken === viewer || rec.ownerToken === mid) continue;
-      if (direct.has(rec.ownerToken)) { const dx = direct.get(rec.ownerToken); if (await gshareOn(env, rec.ownerToken)) edges.push({ from: mx.id, to: dx.id, kind: "knows" }); continue; }
-      if (!(await gshareOn(env, rec.ownerToken))) continue;
+      if (direct.has(rec.ownerToken)) { const dx = direct.get(rec.ownerToken); if (shares.get(rec.ownerToken)) edges.push({ from: mx.id, to: dx.id, kind: "knows" }); continue; }
+      if (!shares.get(rec.ownerToken)) continue;
       const nid = await opaqueId(rec.ownerToken);
       if (!nodes.has(nid)) nodes.set(nid, { id: nid, type: "friend-of-friend", name: (rec.card && rec.card.name) || "" });
       edges.push({ from: mx.id, to: nid, kind: "knows" });
@@ -532,14 +545,14 @@ async function networkFirstAccessCheck(env, actor) {
   try {
     if ((await env.KV.get("cfg/notify")) !== "on" || (await env.KV.get("cfg/notify-net")) !== "on") return { skipped: "off" };
     const cands = [actor], seen = new Set([actor]);
-    const add = async (people, cap) => { let n = 0; for (const x of people) { if (n >= cap || cands.length >= 24) break; if (!x.slug) continue; const rec = await getJSON(env.KV, "card/" + x.slug); const o = rec && rec.ownerToken; if (o && !seen.has(o)) { seen.add(o); cands.push(o); n++; } } };
+    const add = async (people, cap) => { let n = 0; for (const x of people) { if (n >= cap || cands.length >= 16) break; if (!x.slug) continue; const rec = await getJSON(env.KV, "card/" + x.slug); const o = rec && rec.ownerToken; if (o && !seen.has(o)) { seen.add(o); cands.push(o); n++; } } };
     const mids = []; await add((await getPeople(env, actor)).slice(0, 12), 12);
     for (const m of cands.slice(1, 7)) mids.push(m);
     for (const m of mids) await add((await getPeople(env, m)).slice(0, 4), 4);
     let notified = 0, evaluated = 0;
     for (const v of cands) {
       if ((await env.KV.get("net/seen/" + v)) !== null) continue;
-      if (!(await gshareOn(env, v)) || evaluated >= 16) continue;
+      if (!(await gshareOn(env, v)) || evaluated >= 8) continue;
       evaluated++;
       if ((await fofFor(env, v)).nodes.length > 0) { await env.KV.put("net/seen/" + v, "1"); await notify(env, v, "network", "n", ""); notified++; }
     }
