@@ -32,13 +32,17 @@ try {
   let P = await open(A, "#/intros"); assert.ok((await text(P)).includes("not available yet")); ok("with the switch off the screen offers nothing"); await P.close();
   await api.env.KV.put("cfg/intro", "on");
   // target: opts in (default is off) with the headline hidden
-  P = await open(T, "#/intros"); let t = await text(P); assert.ok(t.includes("Let friends of friends ask to meet you") && t.includes("Photos are not shown")); await shot(P, "intro-target-optin");
+  P = await open(T, "#/intros"); let t = await text(P); assert.ok(t.includes("Let friends of friends ask to meet you") && t.includes("Photos are not shown") && t.includes("choose whether to connect")); await shot(P, "intro-target-optin");
   await P.$eval("#ic-on", e => e.click()); await sleep(1000); t = await text(P); assert.ok(t.includes("Also show my headline")); assert.equal((await call("GET", "/api/intro/consent", null, T.t)).on, true); ok("the target opts in from the screen; headline stays hidden by default"); await P.close();
+  // contextual entry on People for an eligible second-degree person, and the Map link
+  P = await open(A, "#/people"); await sleep(600); t = await text(P); assert.ok(t.includes("Tess Kim") && t.includes("Ask for intro"), "People shows the contextual entry: " + t.slice(-300)); await shot(P, "intro-people-entry");
+  await P.$eval("a[href^='#/intros?ref=']", e => e.click()); await sleep(1200); assert.ok(P.url().includes("#/intros?ref=")); t = await text(P); assert.ok(t.includes("Ask Max Ortiz to introduce you")); ok("People offers 'Ask for intro' next to an eligible person and opens that request"); await P.close();
+  P = await open(A, "#/map"); await sleep(800); t = await text(P); assert.ok(t.includes("Ask a connection for an introduction")); ok("the Map links to introductions when on"); await P.close();
   // requester: sees the target (name only), writes a note and asks
   P = await open(A, "#/intros"); t = await text(P); assert.ok(t.includes("Tess Kim") && t.includes("Through Max Ortiz") && !t.includes("Tess Kim headline")); await shot(P, "intro-requester");
   await P.$eval("#note-0", e => { e.value = "Would love to hear how you started"; e.dispatchEvent(new Event("input")); }); await P.$eval("button[data-act=ask]", e => e.click()); await sleep(1200); t = await text(P); assert.ok(t.includes("Requested")); await shot(P, "intro-requester-requested"); ok("the requester sees the target without the headline and asks through the mutual connection"); await P.close();
   // mutual: sees the request, passes it on
-  P = await open(M, "#/intros"); t = await text(P); assert.ok(t.includes("Ava Lee would like to meet Tess Kim") && t.includes("Would love to hear how you started") && t.includes("Nothing else is shared")); await shot(P, "intro-mutual");
+  P = await open(M, "#/intros"); t = await text(P); assert.ok(t.includes("Ava Lee would like to meet Tess Kim") && t.includes("Would love to hear how you started") && t.includes("then decides whether to connect")); await shot(P, "intro-mutual");
   await P.$eval("button[data-act=req-forward]", e => e.click()); await sleep(1200); t = await text(P); assert.ok(!t.includes("would like to meet")); ok("the mutual connection sees the request and passes it on"); await P.close();
   // target: sees the offer, accepts
   P = await open(T, "#/intros"); t = await text(P); assert.ok(t.includes("Ava Lee") && t.includes("Introduced by Max Ortiz") && t.includes("saved in each other")); assert.ok(!/intro\.invalid|ownerToken/.test(t)); await shot(P, "intro-target-offer");

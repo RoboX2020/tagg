@@ -108,4 +108,16 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
   await cons(T4, false); ok((await call("GET", "/api/intros", null, M4.t)).intros.length === 0, "opt-out hides the request");
   ok((await call("POST", "/api/intro", { viaPersonId: cd[0].via.personId, targetRef: "f_0000000000000000" }, A4.t)).s === 404, "unknown ref refused");
 }
+
+// ---- expiry ----
+{
+  const A5 = await mk("ExAlice"), M5 = await mk("ExMia"), T5 = await mk("ExTara"); await save(A5, M5); await save(M5, A5); await save(M5, T5); await save(T5, M5); for (const w of [A5, M5, T5]) await sh(w, true); await cons(T5);
+  await intro(A5, await idOf(A5, M5), T5); const id = (await call("GET", "/api/intros", null, M5.t)).intros[0].id; await call("POST", "/api/intros/respond", { id, forward: true }, M5.t);
+  ok((await call("GET", "/api/intro-offers", null, T5.t)).offers.length === 1, "fresh offer visible");
+  const realNow = Date.now; Date.now = () => realNow() + 31 * 86400000;
+  const o = await call("GET", "/api/intro-offers", null, T5.t), l = await call("GET", "/api/intros", null, M5.t), ra = await call("POST", "/api/intro-offers/respond", { id, accept: true }, T5.t);
+  Date.now = realNow;
+  ok(o.offers.length === 0 && l.intros.length === 0 && ra.s === 404, "after 30 days: hidden and not actionable");
+  ok(JSON.parse(await kv.get("intf/" + T5.t)).length === 0 && JSON.parse(await kv.get("intr/" + M5.t)).length === 0, "expired records are removed from storage on read");
+}
 console.log(`intro checks: ${pass} pass, ${fail} fail`); process.exit(fail ? 1 : 0);

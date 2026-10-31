@@ -308,6 +308,10 @@ async function fofFor(env, viewer) {
 }
 // Each person decides separately whether friends of friends may ask for an intro to them, and whether their headline may be shown in that ask. Default: off.
 async function introConsent(env, owner) { const c = (await getJSON(env.KV, "ics/" + owner)) || {}; return { on: c.on === true, headline: c.on === true && c.headline === true }; }
+// Intro records expire after 30 days: they are hidden, cannot be acted on, and are removed from the list the next time that list is read or written.
+const INTRO_TTL_MS = 30 * 86400000;
+const introExpired = (it) => !it || Date.now() - Date.parse(it.at || 0) > INTRO_TTL_MS;
+async function introPrune(env, key) { const all = (await getJSON(env.KV, key)) || []; for (const it of all) if (introExpired(it)) await jdel(env.KV, key, { id: it.id }); return all.filter(it => !introExpired(it)); }
 // Shared eligibility for an intro: the target must be a friend-of-friend of the requester under the SAME rule the Map uses (fofFor), reached through this via person.
 // Returns the via person's owner token, or null. Never says which condition failed.
 async function introVia(env, viewer, viaPersonId, targetSlug) {
@@ -1321,6 +1325,7 @@ const appHandler = {
       const NA = () => j({ error: "Not available" }, 404);
       const viaOwner = await introVia(env, owner, body.viaPersonId, body.targetSlug);
       if (!viaOwner) return NA();
+      await introPrune(env, "intr/" + viaOwner);
       const pairKey = "intrp/" + mySlug + "/" + body.targetSlug;
       if ((await env.KV.get(pairKey)) !== null) return j({ ok: true, duplicate: true });
       const note = typeof body.note === "string" ? body.note.slice(0, 500) : "";
@@ -1332,7 +1337,7 @@ const appHandler = {
       // The middle person reads their own list. Each entry is re-checked now, so a revoked opt-out, deleted save or changed connection hides it at once.
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      const all = (await getJSON(env.KV, "intr/" + owner)) || [], out = [];
+      const all = await introPrune(env, "intr/" + owner), out = [];
       for (const it of all.slice(0, 20)) {
         if (it.status !== "pending") continue;
         const v = await introValid(env, it, owner); if (!v) continue;
@@ -1347,7 +1352,7 @@ const appHandler = {
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
       const b = await req.json().catch(() => null);
       if (!b || typeof b.id !== "string") return j({ error: "id required" }, 400);
-      const it = ((await getJSON(env.KV, "intr/" + owner)) || []).find(x => x.id === b.id);
+      const it = ((await getJSON(env.KV, "intr/" + owner)) || []).find(x => x.id === b.id && !introExpired(x));
       const staleF = it && it.status === "forwarding" && Date.now() - Date.parse(it.claimedAt || 0) > 60000;
       if (!it || (it.status !== "pending" && !staleF)) return j({ error: "Not available" }, 404);
       const c = await jpatch(env.KV, "intr/" + owner, { id: it.id, status: staleF ? "forwarding" : "pending" }, b.forward === true ? { status: "forwarding", claimedAt: new Date().toISOString() } : { status: "declined" });
@@ -1363,7 +1368,7 @@ const appHandler = {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
       const out = [];
-      for (const of of (((await getJSON(env.KV, "intf/" + owner)) || []).slice(0, 20))) {
+      for (const of of (await introPrune(env, "intf/" + owner)).slice(0, 20)) {
         if (of.status !== "pending") continue;
         const vr = await getJSON(env.KV, "card/" + of.viaSlug), v = vr && vr.ownerToken ? await introValid(env, { requesterSlug: of.requesterSlug, targetSlug: await env.KV.get("own/" + owner) }, vr.ownerToken) : null;
         if (!v || v.tgtOwner !== owner || !(await profileStatus(env, owner)).complete) continue;
@@ -1376,7 +1381,7 @@ const appHandler = {
       if (!mySlug) return j({ error: "unauthorized" }, 401);
       const b = await req.json().catch(() => null);
       if (!b || typeof b.id !== "string") return j({ error: "id required" }, 400);
-      const of = ((await getJSON(env.KV, "intf/" + owner)) || []).find(x => x.id === b.id);
+      const of = ((await getJSON(env.KV, "intf/" + owner)) || []).find(x => x.id === b.id && !introExpired(x));
       const staleA = of && of.status === "accepting" && Date.now() - Date.parse(of.claimedAt || 0) > 60000;
       if (!of || (of.status !== "pending" && !staleA)) return j({ error: "Not available" }, 404);
       const c = await jpatch(env.KV, "intf/" + owner, { id: of.id, status: staleA ? "accepting" : "pending" }, b.accept === true ? { status: "accepting", claimedAt: new Date().toISOString() } : { status: "declined" });

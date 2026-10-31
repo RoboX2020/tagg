@@ -601,7 +601,7 @@
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
     if (h === "#/settings") { refreshSoon(); return renderSettings(); }
     if (h === "#/map") { refreshSoon(); return renderMap(); }
-    if (h === "#/intros") { refreshSoon(); return renderIntros(); }
+    if (h === "#/intros" || h.indexOf("#/intros?") === 0) { refreshSoon(); return renderIntros(); }
     refreshSoon();
     return renderHome();
   }
@@ -746,25 +746,29 @@
           var go = document.getElementById("gs-open"); if (go) go.addEventListener("click", function () { GS_SKIP = false; openGraphChoice(st, function () { mountNetworkPeople(fresh()); }); });
           return;
         }
-        box.innerHTML = '<h2 class="section">People your connections know</h2><div class="group">' + rows.map(function (e) { return '<div class="row"><div class="grow"><div class="title">' + esc(nm[e.to]) + '</div><div class="detail">Knows ' + esc(nm[e.from] || "someone you know") + '</div></div></div>'; }).join("") + '</div><p class="fineprint">Shown because everyone involved shares their network. Names only.</p>';
+        box.innerHTML = '<h2 class="section">People your connections know</h2><div class="group">' + rows.map(function (e) { return '<div class="row"><div class="grow"><div class="title">' + esc(nm[e.to]) + '</div><div class="detail">Knows ' + esc(nm[e.from] || "someone you know") + '</div></div><span data-intro-ref="' + esc(e.to) + '"></span></div>'; }).join("") + '</div><p class="fineprint">Shown because everyone involved shares their network. Names only.</p>';
+        // Contextual entry: when introductions are on and this person has allowed them, offer to ask for one right here.
+        api("/api/intro/config").then(function (c) { if (!c.enabled) return; return api("/api/intro/candidates").then(function (cd) {
+          (cd.candidates || []).forEach(function (x) { var sp = box.querySelector('[data-intro-ref="' + x.ref + '"]'); if (sp) sp.outerHTML = x.requested ? '<span class="detail">Requested</span>' : '<a class="btn btn-tinted" style="width:auto;padding:0 12px;height:32px;line-height:32px;white-space:nowrap" href="#/intros?ref=' + encodeURIComponent(x.ref) + '">Ask for intro</a>'; });
+        }); }).catch(function () {});
       });
     }).catch(function () {});
   }
   /* ================= introductions (shown only when the server has the feature switched on) ================= */
   function renderIntros() {
-    var card = loadCard();
+    var card = loadCard(); var wantRef = (location.hash.split("ref=")[1] || "").replace(/[^a-z0-9_]/gi, "");
     if (!card) { location.hash = "#/"; return; }
-    shell("settings", '<h1 class="largetitle">Introductions</h1><p class="lead">Ask someone you both know to introduce you to a person two steps away. Nothing goes to them until they agree.</p><div id="intro-body"><div class="fineprint">Loading...</div></div><p class="footer-note"><a href="#/settings">Back to Settings</a></p>');
+    shell("settings", '<h1 class="largetitle">Introductions</h1><p class="lead">Ask someone you both know to pass your request to a person two steps away. They see your request and decide whether to connect.</p><div id="intro-body"><div class="fineprint">Loading...</div></div><p class="footer-note"><a href="#/settings">Back to Settings</a></p>');
     var box = document.getElementById("intro-body");
     api("/api/intro/config").then(function (c) {
       if (!c.enabled) { box.innerHTML = '<div class="fineprint">Introductions are not available yet.</div>'; return; }
-      return Promise.all([api("/api/intro/consent"), api("/api/intro/candidates"), api("/api/intros"), api("/api/intro-offers")]).then(function (r) { drawIntros(box, r[0], r[1], r[2].intros || [], r[3].offers || []); });
+      return Promise.all([api("/api/intro/consent"), api("/api/intro/candidates"), api("/api/intros"), api("/api/intro-offers")]).then(function (r) { drawIntros(box, r[0], r[1], r[2].intros || [], r[3].offers || [], wantRef); });
     }).catch(function () { box.innerHTML = '<div class="fineprint">Could not load. Try again in a moment.</div>'; });
   }
-  function drawIntros(box, cons, cand, reqs, offers) {
+  function drawIntros(box, cons, cand, reqs, offers, wantRef) {
     function rowBtns(id, a, b) { return '<div class="btnrow" style="margin-top:10px"><button class="btn btn-accent" data-act="' + a[0] + '" data-id="' + id + '">' + a[1] + '</button><button class="btn btn-gray" data-act="' + b[0] + '" data-id="' + id + '">' + b[1] + '</button></div>'; }
     var h = '<h2 class="section">Being asked for</h2><div class="panel"><div style="font-weight:600">Let friends of friends ask to meet you</div>' +
-      '<div class="fineprint" style="margin:6px 0 10px">If this is on, a person two steps away can see your name, and ask someone you both know to introduce you. They can see your headline only if you allow it below. Photos are not shown. You can turn this off at any time, and open requests disappear at once.</div>' +
+      '<div class="fineprint" style="margin:6px 0 10px">If this is on, a person two steps away can see your name, and ask someone you both know to introduce you. A mutual connection passes your name on, and you choose whether to connect. They can see your headline only if you allow it below. Photos are not shown. You can turn this off at any time, and open requests disappear at once.</div>' +
       '<div class="themeseg"><button id="ic-on"' + (cons.on ? ' class="on"' : "") + '>Allow</button><button id="ic-off"' + (!cons.on ? ' class="on"' : "") + '>Not now</button></div>' +
       (cons.on ? '<label class="fineprint" style="display:flex;gap:8px;align-items:center;margin:12px 0 0"><input type="checkbox" id="ic-head"' + (cons.headline ? " checked" : "") + '> Also show my headline</label>' : "") + '</div>';
     if (offers.length) h += '<h2 class="section">Introductions for you</h2><div class="group">' + offers.map(function (o) {
@@ -774,14 +778,15 @@
     if (reqs.length) h += '<h2 class="section">Asking you to introduce</h2><div class="group">' + reqs.map(function (q) {
       return '<div class="row" style="display:block"><div class="title" style="white-space:normal">' + esc(q.requester.name) + ' would like to meet ' + esc(q.target.name) + '</div>' + (q.target.headline ? '<div class="detail" style="white-space:normal">' + esc(q.target.headline) + '</div>' : "") +
         (q.note ? '<div class="detail" style="white-space:normal;margin-top:6px">"' + esc(q.note) + '"</div>' : "") +
-        '<div class="fineprint" style="margin:8px 0 0">If you pass it on, ' + esc(q.target.name) + ' gets to see the request and decide. Nothing else is shared.</div>' + rowBtns(q.id, ["req-forward", "Pass it on"], ["req-decline", "Decline"]) + '</div>'; }).join("") + '</div>';
+        '<div class="fineprint" style="margin:8px 0 0">If you pass it on, ' + esc(q.target.name) + ' sees the request and your name, then decides whether to connect. Nothing else is shared.</div>' + rowBtns(q.id, ["req-forward", "Pass it on"], ["req-decline", "Decline"]) + '</div>'; }).join("") + '</div>';
     h += '<h2 class="section">Ask for an introduction</h2>';
     if (cand.needsProfile) h += '<div class="fineprint">Finish your profile first. You need a complete profile to ask for introductions.</div>';
     else if (!cand.candidates.length) h += '<div class="fineprint">No one is available to ask for right now. People show up here when they are two steps away, share their network, and have allowed introductions.</div>';
     else h += '<div class="group">' + cand.candidates.map(function (c, i) {
-      return '<div class="row" style="display:block"><div class="title" style="white-space:normal">' + esc(c.name) + '</div>' + (c.headline ? '<div class="detail" style="white-space:normal">' + esc(c.headline) + '</div>' : "") + '<div class="detail" style="white-space:normal">Through ' + esc(c.via.name) + '</div>' +
+      return '<div class="row" id="cand-' + esc(c.ref) + '" style="display:block' + (wantRef && c.ref === wantRef ? ';box-shadow:inset 0 0 0 2px var(--accent, #d9733d)' : '') + '"><div class="title" style="white-space:normal">' + esc(c.name) + '</div>' + (c.headline ? '<div class="detail" style="white-space:normal">' + esc(c.headline) + '</div>' : "") + '<div class="detail" style="white-space:normal">Through ' + esc(c.via.name) + '</div>' +
         (c.requested ? '<div class="fineprint" style="margin:8px 0 0">Requested</div>' : '<textarea class="field" id="note-' + i + '" maxlength="500" placeholder="Add a short note (optional)" style="margin-top:8px;width:100%;box-sizing:border-box;min-height:64px;font:15px var(--font);padding:10px 12px;border:1px solid var(--line, #d9d9de);border-radius:12px;background:var(--bg-elev);color:inherit;resize:none"></textarea><div class="btnrow" style="margin-top:8px"><button class="btn btn-accent" data-act="ask" data-i="' + i + '">Ask ' + esc(c.via.name) + ' to introduce you</button></div>') + '</div>'; }).join("") + '</div>';
     box.innerHTML = h;
+    if (wantRef) { var tg = document.getElementById("cand-" + wantRef); if (tg && tg.scrollIntoView) tg.scrollIntoView({ block: "center" }); }
     function again() { renderIntros(); }
     function fail(e) { toast(e && e.error === "Not available" ? "That is no longer available" : "Could not save - try again"); again(); }
     function setC(on, head) { api("/api/intro/consent", { method: "PUT", body: { on: on, headline: head } }).then(function () { toast(on ? "Introductions are on" : "Introductions are off"); again(); }).catch(fail); }
@@ -2045,6 +2050,7 @@
         var hint = document.querySelector(".graphwrap + .hint");
         if (hint) hint.style.cssText += ';font-size:13px;line-height:1.4;color:var(--text-2)';
         if (hint) hint.innerHTML = people.length + ' connection' + (people.length > 1 ? "s" : "") + ' so far, plus ' + fofCount + ' ' + (fofCount > 1 ? "people" : "person") + ' they know (hollow, dashed lines). Shown only because they chose to share their network.';
+        api("/api/intro/config").then(function (c) { if (c.enabled && hint && document.body.contains(hint)) { var l = document.createElement("div"); l.style.marginTop = "8px"; l.innerHTML = '<a href="#/intros">Ask a connection for an introduction</a>'; hint.appendChild(l); } }).catch(function () {});
       }
       if (!fofCount) {
         api("/api/graph/sharing").then(function (st) {
