@@ -241,6 +241,9 @@ function gatePerson(x, complete) {
   const o = { id: x.id, card: { name: x.card.name, headline: x.card.headline || "", email: "", phone: "", links: {} }, metAt: x.metAt, event: x.event, location: x.location || null, note: x.note || "", enriched: null, slug: null, locked: true };
   if (x.photo) o.photo = x.photo;
   if (x.savedPrivately) o.savedPrivately = true;
+  // Import provenance is the owner's own metadata, not gated third-party detail: keep it visible either way.
+  if (x.source) o.source = x.source;
+  if (x.connectedOn) o.connectedOn = x.connectedOn;
   return o;
 }
 async function getPeopleFor(env, owner) {

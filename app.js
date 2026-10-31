@@ -1938,7 +1938,7 @@
     var people = loadPeople();
     shell("map",
       '<h1 class="largetitle">Your map</h1>' +
-      '<p class="lead">Everyone you have met. Drag a person to move them, drag the background to pan, pinch or scroll to zoom, tap to open a card. Dotted gray lines group people you met at the same event - that does not mean they know each other. Dashed orange lines and hollow nodes are people your connections know, shown only with their consent.</p>' +
+      '<p class="lead">Everyone you have met. Drag a person to move them, drag the background to pan, pinch or scroll to zoom, tap to open a card. People you met at the same event drift together. Dashed orange lines and hollow nodes are people your connections know, shown only with their consent.</p>' +
       (people.length ?
         '<div class="graphwrap" style="position:relative"><canvas id="graph"></canvas>' +
         '<div class="graphctl"><button id="g-in" aria-label="Zoom in">+</button><button id="g-out" aria-label="Zoom out">\u2212</button><button id="g-reset" aria-label="Reset view">Reset</button></div></div>' +
@@ -1947,7 +1947,7 @@
     );
     if (!people.length) return;
     // Interactive graph: nodes settle with a small physics model. Drag a node to move it, drag the background to pan,
-    // pinch / scroll / +- to zoom. People you met at the same event are grouped with a dotted gray line (grouping only, not evidence they know each other). Tap a node (without dragging) to open it.
+    // pinch / scroll / +- to zoom. People you met at the same event drift into a cluster (spatial grouping only, never a drawn link). Tap a node (without dragging) to open it.
     var cv = document.getElementById("graph");
     var W = cv.parentElement.clientWidth - 20, H = (window.innerWidth >= 900) ? Math.min(620, Math.max(420, Math.round(W * 0.62))) : Math.min(520, Math.max(340, Math.round(W * 1.15)));
     var dpr = window.devicePixelRatio || 1;
@@ -1957,7 +1957,7 @@
     var font = getComputedStyle(document.body).fontFamily;
     var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     var cs = getComputedStyle(document.documentElement);
-    var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim(), mapSoft = cs.getPropertyValue("--text-3").trim();
+    var mapLine = cs.getPropertyValue("--map-line").trim(), mapNode = cs.getPropertyValue("--map-node").trim(), mapText = cs.getPropertyValue("--map-text").trim(), mapSub = cs.getPropertyValue("--text-2").trim();
     var me = loadCard();
     var R0 = Math.min(W, H) / 2 - 56;
     var nodes = [{ you: true, x: 0, y: 0, vx: 0, vy: 0, r: 26, label: "You", init: me ? initial(me.name) : "Y", fixed: false }];
@@ -1970,7 +1970,7 @@
     for (var i = 1; i < nodes.length; i++) for (var j = i + 1; j < nodes.length; j++) {
       var ea = (nodes[i].p.event || "").trim().toLowerCase(), eb = (nodes[j].p.event || "").trim().toLowerCase();
       // Same-event grouping only: a shared event label is not evidence the two people know each other.
-      if (ea && ea === eb) links.push({ a: i, b: j, k: 0.05, len: 60, soft: true });
+      if (ea && ea === eb) links.push({ a: i, b: j, k: 0.05, len: 60, soft: true, hidden: true });
     }
     var view = { x: W / 2, y: H / 2, k: 1 };
     var energy = 1, raf = 0, drag = null, pan = null, pinch = null, moved = false;
@@ -1998,7 +1998,7 @@
       g.save(); g.translate(view.x, view.y); g.scale(view.k, view.k);
       links.forEach(function (l) {
         var A = nodes[l.a], B = nodes[l.b]; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y);
-        g.strokeStyle = l.soft ? mapSoft : mapLine; g.lineWidth = (l.soft ? 0.8 : 1) / view.k; g.setLineDash(l.dashed ? [5 / view.k, 4 / view.k] : (l.soft ? [1.2 / view.k, 3.2 / view.k] : [])); g.stroke(); g.setLineDash([]);
+        if (l.hidden) return; g.strokeStyle = mapLine; g.lineWidth = 1 / view.k; g.setLineDash(l.dashed ? [5 / view.k, 4 / view.k] : []); g.stroke(); g.setLineDash([]);
       });
       nodes.forEach(function (n) {
         g.beginPath(); g.arc(n.x, n.y, n.r, 0, 7);

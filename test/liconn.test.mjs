@@ -32,6 +32,14 @@ const jacob = people.find(p => p.card.name === "Jacob Kaplan");
 ok("provenance kept: source + connectedOn, no slug, no met moment", jacob && jacob.source === "linkedin-export" && jacob.connectedOn === "12 Mar 2025" && jacob.slug === null && jacob.metAt === "" && jacob.event === "");
 ok("no email/phone fabricated", jacob.card.email === "" && jacob.card.phone === "");
 ok("bare linkedin URL normalized", people.find(p => p.card.name === "Toshan Jagani").card.links.linkedin === "https://www.linkedin.com/in/toshan-jagani");
+// Import provenance survives the profile gate: an owner with an incomplete profile still sees it.
+const su2 = await call("POST", "/api/auth/signup", { email: "thin@example.com", password: "correct horse", name: "Thin User" });
+const tok2 = su2.body.ownerToken;
+await call("POST", "/api/card", { ownerToken: tok2, card: { name: "Thin User", headline: "Robotics", email: "", links: {} } });
+await call("POST", "/api/import/linkedin-connections", { connections: [{ name: "Gate Check", headline: "Dev at Gamma", url: "", connectedOn: "01 Jan 2025" }] }, tok2);
+const gated = (await call("GET", "/api/people", null, tok2)).body.people.find(p => p.card.name === "Gate Check");
+ok("provenance visible through the profile gate", gated && gated.source === "linkedin-export" && gated.connectedOn === "01 Jan 2025");
+
 // Second import of the same file dedupes everything by URL and by name.
 const imp2 = await call("POST", "/api/import/linkedin-connections", { connections: rows }, tok);
 ok("re-import dedupes all", imp2.status === 200 && imp2.body.added === 0 && imp2.body.skipped === 5);
