@@ -11,11 +11,12 @@ const idOf = async (a, b) => ((await call("GET", "/api/people", null, a.t)).peop
 const intro = (a, via, target, extra = {}) => call("POST", "/api/intro", { viaPersonId: via, targetSlug: target.slug, ...extra }, a.t);
 const A = await mk("InAlice"), M = await mk("InMia"), N = await mk("InNoa"), T = await mk("InTara"), H = await mk("InHidden");
 await save(A, M); await save(M, A); await save(A, N); await save(N, A); await save(M, T); await save(N, T); await save(M, H);
-for (const w of [A, M, N, T]) await sh(w, true); await sh(H, false);
+await kv.put("cfg/intro", "on"); const cons = (w, on = true, headline = false) => call("PUT", "/api/intro/consent", { on, headline }, w.t);
+for (const w of [A, M, N, T]) { await sh(w, true); } await sh(H, false); await cons(T); await cons(H); await cons(N);
 const viaM = await idOf(A, M), viaN = await idOf(A, N);
 const ntM = (await kv.get("nt/" + M.t)) || "", mails = sent.length;
-let r = await intro(A, viaM, T); ok(r.s === 404, "flag off 404 " + r.s); ok(!(await kv.get("intr/" + M.t)), "flag off stores nothing");
-r = await call("GET", "/api/intros", null, M.t); ok(r.s === 404, "flag off list 404");
+await kv.put("cfg/intro", "off"); let r = await intro(A, viaM, T); ok(r.s === 404, "flag off 404 " + r.s); ok(!(await kv.get("intr/" + M.t)), "flag off stores nothing");
+r = await call("GET", "/api/intros", null, M.t); ok(r.s === 404, "flag off list 404"); ok((await call("GET", "/api/intro/config")).enabled === false && (await call("PUT", "/api/intro/consent", { on: true }, T.t)).s === 404, "config says disabled; consent route 404");
 await kv.put("cfg/intro", "on");
 ok((await intro({ t: "bogus" }, viaM, T)).s === 401, "bad token 401");
 // hidden / wrong / cross-owner all return the identical answer
@@ -50,7 +51,7 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
 {
   const A2 = await mk("RqAlice"), M2 = await mk("RqMia"), T2 = await mk("RqTara"), Z = await mk("RqZed");
   await save(A2, M2); await save(M2, A2); await save(M2, T2); await save(T2, M2); await save(M2, Z); await save(Z, M2);
-  for (const w of [A2, M2, T2, Z]) await sh(w, true);
+  for (const w of [A2, M2, T2, Z]) await sh(w, true); await call("PUT", "/api/intro/consent", { on: true }, T2.t);
   const via2 = await idOf(A2, M2);
   const nt0 = ["nt/" + T2.t, "nt/" + M2.t, "nt/" + A2.t].map(k => kv.data ? 0 : 0); const mails0 = sent.length;
   await kv.put("cfg/intro", "off");
@@ -74,7 +75,7 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
 }
 {
   const A3 = await mk("RcAlice"), M3 = await mk("RcMia"), T3 = await mk("RcTara");
-  await save(A3, M3); await save(M3, A3); await save(M3, T3); await save(T3, M3); for (const w of [A3, M3, T3]) await sh(w, true);
+  await save(A3, M3); await save(M3, A3); await save(M3, T3); await save(T3, M3); for (const w of [A3, M3, T3]) await sh(w, true); await call("PUT", "/api/intro/consent", { on: true }, T3.t);
   await intro(A3, await idOf(A3, M3), T3); const id = (await call("GET", "/api/intros", null, M3.t)).intros[0].id;
   await call("POST", "/api/intros/respond", { id, forward: true }, M3.t);
   const m0 = sent.length; const [x, y] = await Promise.all([call("POST", "/api/intro-offers/respond", { id, accept: true }, T3.t), call("POST", "/api/intro-offers/respond", { id, accept: true }, T3.t)]);
@@ -82,9 +83,29 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
   const pa = (await call("GET", "/api/people", null, A3.t)).people.filter(p => p.card.name === "RcTara"), pt = (await call("GET", "/api/people", null, T3.t)).people.filter(p => p.card.name === "RcAlice");
   ok(pa.length === 1 && pt.length === 1 && /Introduced by RcMia/.test(pa[0].event), "mutual saves marked as introduction, one each");
   ok(sent.length === m0, "no email at any step");
-  const dI = await mk("RdAlice"), dM = await mk("RdMia"), dT = await mk("RdTara"); await save(dI, dM); await save(dM, dI); await save(dM, dT); await save(dT, dM); for (const w of [dI, dM, dT]) await sh(w, true);
+  const dI = await mk("RdAlice"), dM = await mk("RdMia"), dT = await mk("RdTara"); await save(dI, dM); await save(dM, dI); await save(dM, dT); await save(dT, dM); for (const w of [dI, dM, dT]) await sh(w, true); await call("PUT", "/api/intro/consent", { on: true }, dT.t);
   await intro(dI, await idOf(dI, dM), dT); const id2 = (await call("GET", "/api/intros", null, dM.t)).intros[0].id;
   ok((await call("POST", "/api/intros/respond", { id: id2, forward: false }, dM.t)).status === "declined", "via declines");
   ok((await call("GET", "/api/intro-offers", null, dT.t)).offers.length === 0, "declined intro never reaches target");
+}
+
+// ---- target re-consent (opt-in) and candidates ----
+{
+  const A4 = await mk("CnAlice"), M4 = await mk("CnMia"), T4 = await mk("CnTara");
+  await save(A4, M4); await save(M4, A4); await save(M4, T4); await save(T4, M4); for (const w of [A4, M4, T4]) await sh(w, true);
+  const v4 = await idOf(A4, M4);
+  ok(JSON.stringify(await intro(A4, v4, T4)) === same, "no opt-in: same refusal as hidden");
+  ok((await call("GET", "/api/intro/candidates", null, A4.t)).candidates.length === 0, "no opt-in: not a candidate");
+  ok((await call("GET", "/api/intro/consent", null, T4.t)).on === false, "default is off");
+  ok((await call("PUT", "/api/intro/consent", { on: "yes" }, T4.t)).s === 400, "consent needs a boolean");
+  await cons(T4, true, false);
+  let cd = (await call("GET", "/api/intro/candidates", null, A4.t)).candidates; ok(cd.length === 1 && cd[0].name === "CnTara" && cd[0].headline === undefined && cd[0].via.name === "CnMia" && !/slug|ownerToken|@/.test(JSON.stringify(cd)), "candidate: name only, no headline, no private fields");
+  await cons(T4, true, true); cd = (await call("GET", "/api/intro/candidates", null, A4.t)).candidates; ok(cd[0].headline === "Engineer", "headline shown only with its own consent");
+  const rq = await call("POST", "/api/intro", { viaPersonId: cd[0].via.personId, targetRef: cd[0].ref, note: "hi" }, A4.t); ok(rq.s === 200, "request by opaque ref " + rq.s);
+  ok((await call("GET", "/api/intro/candidates", null, A4.t)).candidates[0].requested === true, "candidate marked requested");
+  const il = (await call("GET", "/api/intros", null, M4.t)).intros; ok(il.length === 1 && il[0].target.headline === "Engineer", "middle sees headline when consented");
+  await cons(T4, true, false); ok((await call("GET", "/api/intros", null, M4.t)).intros[0].target.headline === undefined, "headline consent withdrawn hides it at once");
+  await cons(T4, false); ok((await call("GET", "/api/intros", null, M4.t)).intros.length === 0, "opt-out hides the request");
+  ok((await call("POST", "/api/intro", { viaPersonId: cd[0].via.personId, targetRef: "f_0000000000000000" }, A4.t)).s === 404, "unknown ref refused");
 }
 console.log(`intro checks: ${pass} pass, ${fail} fail`); process.exit(fail ? 1 : 0);

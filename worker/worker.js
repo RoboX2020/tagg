@@ -300,34 +300,37 @@ async function fofFor(env, viewer) {
       if (direct.has(rec.ownerToken)) { const dx = direct.get(rec.ownerToken); if (shares.get(rec.ownerToken)) edges.push({ from: mx.id, to: dx.id, kind: "knows" }); continue; }
       if (!shares.get(rec.ownerToken)) continue;
       const nid = await opaqueId(rec.ownerToken);
-      if (!nodes.has(nid)) nodes.set(nid, { id: nid, type: "friend-of-friend", name: (rec.card && rec.card.name) || "" });
+      if (!nodes.has(nid)) { const nd = { id: nid, type: "friend-of-friend", name: (rec.card && rec.card.name) || "" }; Object.defineProperty(nd, "slug", { value: t.slug, enumerable: false }); Object.defineProperty(nd, "owner", { value: rec.ownerToken, enumerable: false }); nodes.set(nid, nd); }
       edges.push({ from: mx.id, to: nid, kind: "knows" });
     }
   }
   return { nodes: [...nodes.values()], edges };
 }
+// Each person decides separately whether friends of friends may ask for an intro to them, and whether their headline may be shown in that ask. Default: off.
+async function introConsent(env, owner) { const c = (await getJSON(env.KV, "ics/" + owner)) || {}; return { on: c.on === true, headline: c.on === true && c.headline === true }; }
 // Shared eligibility for an intro: the target must be a friend-of-friend of the requester under the SAME rule the Map uses (fofFor), reached through this via person.
 // Returns the via person's owner token, or null. Never says which condition failed.
 async function introVia(env, viewer, viaPersonId, targetSlug) {
-  try {
+  {
     const mine = await getPeople(env, viewer), via = mine.find(x => x.id === viaPersonId && x.slug); if (!via) return null;
     const viaRec = await getJSON(env.KV, "card/" + via.slug); if (!viaRec || !viaRec.ownerToken || (await env.KV.get("own/" + viaRec.ownerToken)) === null) return null;
     const tRec = await getJSON(env.KV, "card/" + targetSlug); if (!tRec || !tRec.ownerToken || tRec.ownerToken === viewer) return null;
     const fof = await fofFor(env, viewer), nid = await opaqueId(tRec.ownerToken);
     if (!fof.nodes.some(n => n.id === nid) || !fof.edges.some(e => e.from === via.id && e.to === nid)) return null;
+    if (!(await introConsent(env, tRec.ownerToken)).on) return null; // the target must have opted in to being asked for
     return viaRec.ownerToken;
-  } catch (e) { return null; }
+  }
 }
 // Re-check a stored intro against the current rules. Returns the owner tokens involved, or null if anything changed (opt-out, un-save, deletion).
 async function introValid(env, it, viaOwner) {
-  try {
+  {
     const rr = await getJSON(env.KV, "card/" + it.requesterSlug); if (!rr || !rr.ownerToken) return null;
     const viaSlug = await env.KV.get("own/" + viaOwner); if (!viaSlug) return null;
     const vp = (await getPeople(env, rr.ownerToken)).find(x => x.slug === viaSlug); if (!vp) return null;
     if ((await introVia(env, rr.ownerToken, vp.id, it.targetSlug)) !== viaOwner) return null;
     const tr = await getJSON(env.KV, "card/" + it.targetSlug); if (!tr || !tr.ownerToken) return null;
     return { reqOwner: rr.ownerToken, tgtOwner: tr.ownerToken, viaSlug, reqCard: rr.card, tgtCard: tr.card };
-  } catch (e) { return null; }
+  }
 }
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
@@ -1280,12 +1283,38 @@ const appHandler = {
     // Owner accepts or declines; accept saves the connection both ways.
     // Intro requests (PREP ONLY). Off unless the KV flag cfg/intro is "on"; while off every intro route answers 404 and nothing is stored. Even when on, this sends no
     // email, push or in-app alert: it only records the request in the middle person's separate intro list. Accepting, forwarding and alerts are not built.
-    if ((p === "/api/intro" || p === "/api/intros" || p === "/api/intros/respond" || p === "/api/intro-offers" || p === "/api/intro-offers/respond") && (await env.KV.get("cfg/intro")) !== "on") return j({ error: "not found" }, 404);
+    if (p === "/api/intro/config" && req.method === "GET") return j({ enabled: (await env.KV.get("cfg/intro")) === "on" });
+    if ((p === "/api/intro" || p === "/api/intro/consent" || p === "/api/intro/candidates" || p === "/api/intros" || p === "/api/intros/respond" || p === "/api/intro-offers" || p === "/api/intro-offers/respond") && (await env.KV.get("cfg/intro")) !== "on") return j({ error: "not found" }, 404);
+    if (p === "/api/intro/consent" && (req.method === "GET" || req.method === "PUT")) {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      if (req.method === "PUT") {
+        const b = await req.json().catch(() => null); if (!b || typeof b.on !== "boolean") return j({ error: "on must be true or false" }, 400);
+        await env.KV.put("ics/" + owner, JSON.stringify({ on: b.on, headline: b.on && b.headline === true, at: new Date().toISOString() }));
+      }
+      return j(await introConsent(env, owner));
+    }
+    if (p === "/api/intro/candidates" && req.method === "GET") {
+      // Who the viewer could ask to be introduced to, and through whom. Computed with the Map's rule plus the target's own opt-in. Targets are opaque references.
+      const owner = authOwner(req), mySlug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!mySlug) return j({ error: "unauthorized" }, 401);
+      if (!(await profileStatus(env, owner)).complete) return j({ candidates: [], needsProfile: true });
+      const fof = await fofFor(env, owner), mine = await getPeople(env, owner), out = [];
+      const byId = new Map(mine.map(x => [x.id, x])), cons = new Map();
+      for (const e of fof.edges) {
+        const nd = fof.nodes.find(n => n.id === e.to && n.slug), vp = byId.get(e.from); if (!nd || !vp || out.length >= 30) continue;
+        if (!cons.has(nd.owner)) cons.set(nd.owner, await introConsent(env, nd.owner)); const cs = cons.get(nd.owner); if (!cs.on) continue;
+        const tr = cs.headline ? await getJSON(env.KV, "card/" + nd.slug) : null;
+        out.push({ ref: nd.id, name: nd.name, headline: tr && tr.card ? tr.card.headline || "" : undefined, via: { personId: vp.id, name: (vp.card && vp.card.name) || "" }, requested: (await env.KV.get("intrp/" + mySlug + "/" + nd.slug)) !== null });
+      }
+      return j({ candidates: out });
+    }
     if (p === "/api/intro" && req.method === "POST") {
       const owner = authOwner(req), mySlug = owner ? await env.KV.get("own/" + owner) : null;
       if (!mySlug) return j({ error: "unauthorized" }, 401);
       const body = await req.json().catch(() => null);
-      if (!body || typeof body.viaPersonId !== "string" || typeof body.targetSlug !== "string") return j({ error: "viaPersonId and targetSlug required" }, 400);
+      if (body && typeof body.targetRef === "string" && typeof body.targetSlug !== "string") { const fo = await fofFor(env, owner), nd = fo.nodes.find(n => n.id === body.targetRef && n.slug); if (nd) body.targetSlug = nd.slug; }
+      if (!body || typeof body.viaPersonId !== "string" || typeof body.targetSlug !== "string") return j({ error: "Not available" }, 404);
       if (await overLimit(env, "intro/" + owner, 30, 86400)) return j({ error: "Too many intro requests today" }, 429);
       if (!(await profileStatus(env, owner)).complete) return j({ error: "Complete your profile first" }, 403);
       // One answer for every reason a via or target is unavailable, so the response never reveals whether a hidden person exists or shares.
@@ -1307,7 +1336,7 @@ const appHandler = {
       for (const it of all.slice(0, 20)) {
         if (it.status !== "pending") continue;
         const v = await introValid(env, it, owner); if (!v) continue;
-        out.push({ id: it.id, at: it.at, note: it.note, requester: { name: v.reqCard && v.reqCard.name }, target: { name: v.tgtCard && v.tgtCard.name } });
+        out.push({ id: it.id, at: it.at, note: it.note, requester: { name: v.reqCard && v.reqCard.name }, target: { name: v.tgtCard && v.tgtCard.name, headline: (await introConsent(env, v.tgtOwner)).headline ? (v.tgtCard && v.tgtCard.headline) || "" : undefined } });
       }
       return j({ intros: out });
     }
@@ -1319,8 +1348,9 @@ const appHandler = {
       const b = await req.json().catch(() => null);
       if (!b || typeof b.id !== "string") return j({ error: "id required" }, 400);
       const it = ((await getJSON(env.KV, "intr/" + owner)) || []).find(x => x.id === b.id);
-      if (!it || it.status !== "pending") return j({ error: "Not available" }, 404);
-      const c = await jpatch(env.KV, "intr/" + owner, { id: it.id, status: "pending" }, { status: b.forward === true ? "forwarding" : "declined" });
+      const staleF = it && it.status === "forwarding" && Date.now() - Date.parse(it.claimedAt || 0) > 60000;
+      if (!it || (it.status !== "pending" && !staleF)) return j({ error: "Not available" }, 404);
+      const c = await jpatch(env.KV, "intr/" + owner, { id: it.id, status: staleF ? "forwarding" : "pending" }, b.forward === true ? { status: "forwarding", claimedAt: new Date().toISOString() } : { status: "declined" });
       if (!c.patched) return j({ error: "Not available" }, 404);
       if (b.forward !== true) return j({ ok: true, status: "declined" });
       const v = await introValid(env, it, owner);
@@ -1347,10 +1377,15 @@ const appHandler = {
       const b = await req.json().catch(() => null);
       if (!b || typeof b.id !== "string") return j({ error: "id required" }, 400);
       const of = ((await getJSON(env.KV, "intf/" + owner)) || []).find(x => x.id === b.id);
-      if (!of || of.status !== "pending") return j({ error: "Not available" }, 404);
-      const c = await jpatch(env.KV, "intf/" + owner, { id: of.id, status: "pending" }, { status: b.accept === true ? "accepting" : "declined" });
+      const staleA = of && of.status === "accepting" && Date.now() - Date.parse(of.claimedAt || 0) > 60000;
+      if (!of || (of.status !== "pending" && !staleA)) return j({ error: "Not available" }, 404);
+      const c = await jpatch(env.KV, "intf/" + owner, { id: of.id, status: staleA ? "accepting" : "pending" }, b.accept === true ? { status: "accepting", claimedAt: new Date().toISOString() } : { status: "declined" });
       if (!c.patched) return j({ error: "Not available" }, 404);
       if (b.accept !== true) return j({ ok: true, status: "declined" });
+      { // A retry after a crash: if both saves already exist the work is done (they are direct connections now, so the intro rules no longer apply). Just record it.
+        const rr0 = await getJSON(env.KV, "card/" + of.requesterSlug);
+        if (rr0 && rr0.ownerToken && (await getPeople(env, owner)).some(x => x.slug === of.requesterSlug) && (await getPeople(env, rr0.ownerToken)).some(x => x.slug === mySlug)) {
+          await jpatch(env.KV, "intf/" + owner, { id: of.id }, { status: "accepted" }); return j({ ok: true, status: "accepted" }); } }
       const vr = await getJSON(env.KV, "card/" + of.viaSlug), v = vr && vr.ownerToken ? await introValid(env, { requesterSlug: of.requesterSlug, targetSlug: mySlug }, vr.ownerToken) : null;
       if (!v || v.tgtOwner !== owner || !(await profileStatus(env, owner)).complete) { await jpatch(env.KV, "intf/" + owner, { id: of.id }, { status: "withdrawn" }); return j({ error: "Not available" }, 404); }
       // The target agreed: save each other, marked as an introduction (not a meeting at an event).
