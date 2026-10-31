@@ -20,10 +20,10 @@ async function call(method, p, body, tok) { const r = await fetch(API_URL + p, {
 const shots = process.env.SHOTS || "";
 try {
   const mk = async (tok, stub) => { const x = await browser.createBrowserContext(); const P = await x.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 1, isMobile: true, hasTouch: true }); P.on("pageerror", e => console.log("PAGEERROR", e.message));
-    await P.evaluateOnNewDocument((api, tok, stub) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "na@tagg-test.invalid", name: "Pat Owner", kind: "email", emailVerified: false })); localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Pat Owner", headline: "Maker", detail: "Builds", links: {} })); localStorage.setItem("tagg.slug.v1", "mine");
-      if (stub) { var mkSub = function () { return { endpoint: "https://fcm.googleapis.com/fcm/send/ui-test", toJSON: function () { return { endpoint: this.endpoint, keys: { p256dh: "x", auth: "y" } }; }, unsubscribe: function () { subbed = null; localStorage.removeItem("__sub"); return Promise.resolve(true); } }; }; var subbed = localStorage.getItem("__sub") ? mkSub() : null; window.__perm = 0; Notification = { permission: "default", requestPermission: function () { window.__perm++; Notification.permission = "granted"; return Promise.resolve("granted"); } };
+    await P.evaluateOnNewDocument((api, tok, stub) => { localStorage.setItem("tagg.api", api); localStorage.setItem("tagg.owner.v1", tok); localStorage.setItem("tagg.profile.v1", JSON.stringify({ email: "na@tagg-test.invalid", name: "Pat Owner", kind: "email", emailVerified: false })); localStorage.setItem("tagg.card.v1", JSON.stringify(stub === "thin" ? { name: "Thin Profile", email: "ng@tagg-test.invalid", links: {} } : { name: "Pat Owner", headline: "Maker", detail: "Builds", links: {} })); localStorage.setItem("tagg.slug.v1", "mine");
+      if (stub === true) { var mkSub = function () { return { endpoint: "https://fcm.googleapis.com/fcm/send/ui-test", toJSON: function () { return { endpoint: this.endpoint, keys: { p256dh: "x", auth: "y" } }; }, unsubscribe: function () { subbed = null; localStorage.removeItem("__sub"); return Promise.resolve(true); } }; }; var subbed = localStorage.getItem("__sub") ? mkSub() : null; window.__perm = 0; Notification = { permission: "default", requestPermission: function () { window.__perm++; Notification.permission = "granted"; return Promise.resolve("granted"); } };
         var ps = { getSubscription: function () { return Promise.resolve(subbed); }, subscribe: function (o) { window.__key = o.applicationServerKey.length; subbed = mkSub(); localStorage.setItem("__sub", "1"); subbed.toJSON = function () { return { endpoint: this.endpoint, keys: { p256dh: "BAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".slice(0, 87), auth: "AAAAAAAAAAAAAAAAAAAAAA" } }; }; return Promise.resolve(subbed); } };
-        Object.defineProperty(navigator, "serviceWorker", { value: { ready: Promise.resolve({ pushManager: ps }), register: function () { return Promise.resolve({}); }, addEventListener: function () {} }, configurable: true }); window.PushManager = function () {}; } }, API_URL, tok, !!stub); return P; };
+        Object.defineProperty(navigator, "serviceWorker", { value: { ready: Promise.resolve({ pushManager: ps }), register: function () { return Promise.resolve({}); }, addEventListener: function () {} }, configurable: true }); window.PushManager = function () {}; } }, API_URL, tok, stub); return P; };
   const a = await call("POST", "/api/auth/signup", { email: "ne@tagg-test.invalid", password: "pw-secret-123", name: "Pat Owner" });
   const card = await call("POST", "/api/card", { ownerToken: a.ownerToken, card: { name: "Pat Owner", headline: "Maker", detail: "Builds", links: { linkedin: "https://www.linkedin.com/in/pat" } } }, a.ownerToken);
   const b = await call("POST", "/api/auth/signup", { email: "nf@tagg-test.invalid", password: "pw-secret-123", name: "Bob Li" });
@@ -41,6 +41,18 @@ try {
   await P.click("#gs-open"); await sleep(500); await P.click("#gs-yes"); await sleep(1500);
   t = await P.evaluate(() => (document.getElementById("netpeople") || {}).innerText || "");
   assert.ok(/No one to show yet/.test(t) && /you, your connection and that person all share/.test(t)); ok("once sharing is on and nobody else shares, it explains the all-share rule");
+  const M = await mk(a.ownerToken, false); await M.goto(base + "#/map", { waitUntil: "networkidle0" }); await sleep(3000);
+  let mt = await M.evaluate(() => (document.querySelector(".graphwrap + .hint") || {}).innerText || "");
+  assert.ok(/No one to show yet/.test(mt)); ok("Map explains the all-share rule when sharing is on and nobody else shares");
+  const poor = await call("POST", "/api/auth/signup", { email: "ng@tagg-test.invalid", password: "pw-secret-123", name: "Thin Profile" });
+  await call("POST", "/api/card", { ownerToken: poor.ownerToken, card: { name: "Thin Profile", email: "ng@tagg-test.invalid", links: {} } }, poor.ownerToken);
+  await call("POST", "/api/connect", { slug: bc.slug, requesterToken: poor.ownerToken, name: "Thin Profile" });
+  for (const q of (await call("GET", "/api/inbox", null, b.ownerToken)).requests) await call("POST", "/api/inbox/respond", { id: q.id, accept: true }, b.ownerToken);
+  await call("PUT", "/api/graph/sharing", { on: true }, poor.ownerToken);
+  const T = await mk(poor.ownerToken, "thin"); await T.goto(base + "#/map", { waitUntil: "networkidle0" }); await sleep(3000);
+  mt = await T.evaluate(() => (document.querySelector(".graphwrap + .hint") || {}).innerText || "");
+  assert.ok(/Fill in a few more details/.test(mt)); ok("Map tells a thin-profile account who chose Share why it sees nothing (the reported case)");
+  if (shots) { await T.evaluate(() => window.scrollTo(0, 400)); await T.screenshot({ path: shots + "/map-why.png" }); }
   console.log("\nNet empty UI checks passed:", n);
 } catch (e) { console.error("FAIL", e.stack.split("\n").slice(0, 3).join(" | ")); process.exitCode = 1; }
 await browser.close(); api.srv.close(); web.close(); process.exit(process.exitCode || 0);

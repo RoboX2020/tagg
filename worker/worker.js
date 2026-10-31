@@ -379,20 +379,21 @@ function notifyCopy(type, name) {
     text: "Hi " + n.split(" ")[0] + ",\n\nYour Tagg card is ready. Show your QR code when you meet someone, and Tagg keeps the time you met and anything you choose to add.\n\nOpen your card: " + NOTIFY_SITE + "card" + NOTIFY_FOOT };
   if (type === "request") return { title: "Connection request", line: n + " wants to connect.", subject: n + " wants to connect on Tagg",
     text: n + " sent you a connection request on Tagg.\n\nOpen Tagg to review it. You choose whether to accept.\n\nReview request: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
-  if (type === "scan") return { title: "Your card was opened", line: "Someone opened your Tagg card. They have not connected yet.", subject: "", text: "" };
+  if (type === "scan") return { title: "Your card was opened", line: "Someone opened your Tagg card.", subject: "Someone opened your Tagg card",
+    text: "Someone opened your Tagg card, for example after scanning your QR code.\n\nTagg cannot tell who it was. If they choose to connect, you will see a request in the app.\n\nOpen Tagg: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
   return { title: "Connected", line: n + " accepted your request.", subject: "You are now connected with " + n,
     text: n + " accepted your connection request on Tagg.\n\nView their profile: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
 }
 async function notify(env, owner, type, evId, name) {
   try {
     if (!owner || (await env.KV.get("cfg/notify")) !== "on") return { skipped: "off" };
-    // The scan alert is its own switch (cfg/notify-scan) because its wording is separate: in-app and push only, never email.
+    // The scan alert is its own switch (cfg/notify-scan) because its wording is separate.
     if (type === "scan" && (await env.KV.get("cfg/notify-scan")) !== "on") return { skipped: "scan-off" };
     const id = type + ":" + evId, c = notifyCopy(type, name), out = {};
     const list = (await getJSON(env.KV, "nt/" + owner)) || [];
     if (!list.some(x => x.id === id)) { list.unshift({ id, type, title: c.title, line: c.line, at: new Date().toISOString(), read: false }); await env.KV.put("nt/" + owner, JSON.stringify(list.slice(0, 30))); out.inapp = true; }
     const prefs = (await getJSON(env.KV, "npf/" + owner)) || {};
-    if (type !== "scan" && prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
+    if (prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
       const prof = await getJSON(env.KV, "prof/" + owner);
       const to = prof && normEmail(prof.email);
       if (to && (await env.KV.get("suppress/" + to)) === null && (await env.KV.get("nd/email/" + id)) === null) {
@@ -946,7 +947,7 @@ export default {
       list.unshift({ id: "s_" + rand(8), at: new Date().toISOString() });
       await env.KV.put("scn/" + rec.ownerToken, JSON.stringify(list.slice(0, 20)), { expirationTtl: 3600 });
       // Optional alert to the card's owner (OFF unless both cfg/notify and cfg/notify-scan are on). At most one per card per 30 minutes,
-      // never names anyone, never says they met, and not sent when the opener is the owner's own signed-in app.
+      // never names anyone, never says they met or have not connected, and not sent when the opener is the owner's own signed-in app.
       if (authOwner(req) !== rec.ownerToken && (await env.KV.get("nd/scan/" + slug)) === null) {
         if ((await notify(env, rec.ownerToken, "scan", slug + ":" + Math.floor(Date.now() / 1800000), "")).inapp) await env.KV.put("nd/scan/" + slug, "1", { expirationTtl: 1800 });
       }

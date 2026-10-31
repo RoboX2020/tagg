@@ -724,6 +724,11 @@
     document.getElementById("gs-no").addEventListener("click", function () { set(false); });
     document.getElementById("gs-later").addEventListener("click", function () { GS_SKIP = true; bg.remove(); if (done) done(); });
   }
+  function networkWhy(st) {
+    if (!st.profileComplete) return { msg: "Fill in a few more details on your card (a headline, a short description, a link or a photo) to use network sharing. Until then you will not see people your connections know. <a href=\"#/edit\" style=\"color:var(--accent);font-weight:600\">Edit my card</a>", share: false };
+    if (st.choice !== "on" && st.choice !== "on-until-you-choose") return { msg: st.choice === "off" ? "Network sharing is off, so you do not see people your connections know. Turn it on in Settings." : "You are not sharing your network yet, so you do not see people your connections know.", share: st.choice !== "off" };
+    return { msg: "No one to show yet. Someone appears here only when you, your connection and that person all share their network, and you and your connection have saved each other.", share: false };
+  }
   function mountNetworkPeople(box) {
     if (!ownerToken() || !box) return;
     var fresh = function () { return document.getElementById("netpeople") || box; };
@@ -735,10 +740,7 @@
         if (!rows.length) {
           box = fresh(); var met = (g.nodes || []).some(function (n) { return n.type === "person"; });
           if (!met) { box.innerHTML = ""; return; }
-          var msg, btn = "";
-          if (!st.profileComplete) msg = "Fill in a few more details on your card to use network sharing. Friends of friends stay hidden until your profile is filled in.";
-          else if (st.choice !== "on" && st.choice !== "on-until-you-choose") { msg = st.choice === "off" ? "Network sharing is off, so you do not see people your connections know. Turn it on in Settings." : "You are not sharing your network yet, so you do not see people your connections know."; if (st.choice !== "off") btn = '<button class="btn btn-accent" id="gs-open" style="margin-top:10px;width:auto;padding:9px 16px">Share my network</button>'; }
-          else msg = "No one to show yet. Someone appears here only when you, your connection and that person all share their network, and you and your connection have saved each other.";
+          var why = networkWhy(st), msg = why.msg, btn = why.share ? '<button class="btn btn-accent" id="gs-open" style="margin-top:10px;width:auto;padding:9px 16px">Share my network</button>' : "";
           box.innerHTML = '<h2 class="section">People your connections know</h2><div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">' + msg + btn + '</div></div></div></div>';
           var go = document.getElementById("gs-open"); if (go) go.addEventListener("click", function () { GS_SKIP = false; openGraphChoice(st, function () { mountNetworkPeople(fresh()); }); });
           return;
@@ -1993,6 +1995,15 @@
         var hint = document.querySelector(".graphwrap + .hint");
         if (hint) hint.style.cssText += ';font-size:13px;line-height:1.4;color:var(--text-2)';
         if (hint) hint.innerHTML = people.length + ' connection' + (people.length > 1 ? "s" : "") + ' so far, plus ' + fofCount + ' ' + (fofCount > 1 ? "people" : "person") + ' they know (hollow, dashed lines). Shown only because they chose to share their network.';
+      }
+      if (!fofCount) {
+        api("/api/graph/sharing").then(function (st) {
+          var hint = document.querySelector(".graphwrap + .hint"); if (!hint || !document.body.contains(hint)) return;
+          var why = networkWhy(st);
+          hint.style.cssText += ';font-size:13px;line-height:1.4;color:var(--text-2)';
+          hint.innerHTML = people.length + ' connection' + (people.length > 1 ? "s" : "") + ' so far.<br><br>' + why.msg + (why.share ? '<br><button class="btn btn-accent" id="gs-open-map" style="margin:10px auto 0;width:auto;padding:9px 16px">Share my network</button>' : "");
+          var go = document.getElementById("gs-open-map"); if (go) go.addEventListener("click", function () { GS_SKIP = false; openGraphChoice(st, function () { route(); }); });
+        }).catch(function () {});
       }
       for (var s = 0; s < 80; s++) step();
       kick(); draw();
