@@ -1,11 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Tagg">
+  <defs><clipPath id="t"><path d="M-190,0 L-112,-104 H138 Q182,-104 182,-60 V60 Q182,104 138,104 H-112 Z"/></clipPath></defs>
   <rect width="512" height="512" rx="112" fill="#2b2b30"/>
-  <g transform="translate(222 192) rotate(-22) scale(1.05)">
-    <path d="M-150,0 L-92,-82 H112 Q146,-82 146,-48 V48 Q146,82 112,82 H-92 Z" fill="#000" stroke="#fff" stroke-width="15" stroke-linejoin="round"/>
-    <circle cx="-84" cy="0" r="17" fill="none" stroke="#fff" stroke-width="12"/>
-  </g>
-  <g transform="translate(292 320) rotate(10) scale(1.05)">
-    <path d="M-150,0 L-92,-82 H112 Q146,-82 146,-48 V48 Q146,82 112,82 H-92 Z" fill="#ff7a1a" stroke="#000" stroke-width="16" stroke-linejoin="round"/>
-    <circle cx="-84" cy="0" r="17" fill="#000"/>
+  <g transform="translate(256 256) rotate(-24)">
+    <path d="M-190,0 L-112,-104 H138 Q182,-104 182,-60 V60 Q182,104 138,104 H-112 Z" fill="#000"/>
+    <g clip-path="url(#t)">
+      <path d="M-260,-170 L0,-170 L-64,170 L-260,170 Z" fill="#ff7a1a"/>
+      <path d="M0,-170 L-64,170" stroke="#fff" stroke-width="9"/>
+    </g>
+    <path d="M-190,0 L-112,-104 H138 Q182,-104 182,-60 V60 Q182,104 138,104 H-112 Z" fill="none" stroke="#fff" stroke-width="18" stroke-linejoin="round"/>
+    <circle cx="-104" cy="0" r="22" fill="#000" stroke="#fff" stroke-width="10"/>
   </g>
 </svg>
