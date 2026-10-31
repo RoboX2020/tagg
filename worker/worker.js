@@ -181,18 +181,27 @@ async function getPeople(env, owner) { return (await getJSON(env.KV, "ppl/" + ow
 // useful detail (what they study, where they work or a project). Phone, photo and social accounts are never required. A LinkedIn import
 // the owner already made also counts as the detail. Until then the SERVER withholds the other person's details: the saved record only
 // carries what the viewer already knows from meeting them (name, headline, event, time, place, their own note and selfie).
+// Silent unlock rule: a viewer is complete when ANY 3 of these 7 sections are filled, in any combination (Praj voice note, WhatsApp Oct 30 8:59 PM MST: "have three of seven sections, any three"):
+// name, headline (3+ characters), an about line (3+ characters), a photo, any link, a contact (email or phone), LinkedIn details (import).
+// No section is required. The count is never sent to the app or shown on the site; the app only says to add more to the profile.
+const PROFILE_SECTIONS_NEEDED = 3;
 async function profileStatus(env, owner) {
   const slug = await env.KV.get("own/" + owner);
   const rec = slug ? await getJSON(env.KV, "card/" + slug) : null;
   const c = rec && rec.card;
   const en = slug ? await getJSON(env.KV, "enrich/" + slug) : null;
   const li = en && en.linkedin;
-  const hasDetail = !!(c && c.detail && c.detail.trim().length >= 3) || !!(li && ((li.titles || []).length || (li.companies || []).length || (li.schools || []).length));
-  const missing = [];
-  if (!c || !c.name || c.name.trim().length < 1) missing.push("name");
-  if (!c || !c.headline || c.headline.trim().length < 3) missing.push("headline");
-  if (!hasDetail) missing.push("detail");
-  return { complete: missing.length === 0, missing };
+  const liDetail = !!(li && ((li.titles || []).length || (li.companies || []).length || (li.schools || []).length));
+  const has = (v, n) => typeof v === "string" && v.trim().length >= n;
+  let n = 0;
+  if (c && has(c.name, 1)) n++;
+  if (c && has(c.headline, 3)) n++;
+  if (c && has(c.detail, 3)) n++;
+  if (slug && (await env.KV.get("photo/" + slug)) !== null) n++;
+  if (c && c.links && Object.values(c.links).some(v => has(v, 1))) n++;
+  if (c && (has(c.email, 1) || has(c.phone, 1))) n++;
+  if (liDetail) n++;
+  return { complete: n >= PROFILE_SECTIONS_NEEDED };
 }
 function gatePerson(x, complete) {
   if (complete) return x;

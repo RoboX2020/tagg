@@ -420,7 +420,7 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   await call("POST", "/api/card", { ownerToken: gBt, card: { name: "Gate Bob", headline: "h", links: {} } }, gBt);
   globalThis.__rawCards = false;
   const st0 = await call("GET", "/api/profile/status", null, gBt);
-  ok("status says an incomplete profile is missing headline and detail", st0.status === 200 && st0.body.complete === false && st0.body.missing.includes("headline") && st0.body.missing.includes("detail"));
+  ok("status says an incomplete profile is missing headline and detail", st0.status === 200 && st0.body.complete === false && st0.body.missing === undefined && st0.body.score === undefined);
   ok("status needs sign in", (await call("GET", "/api/profile/status")).status === 401);
   const sv = await call("POST", "/api/people", { slug: gAc.body.slug, event: "Gate Expo", note: "bob private note", location: { lat: 33.1, lon: -111.9, label: "Gate Place", acc: 9 } }, gBt);
   const raw = JSON.stringify(sv.body);
@@ -567,6 +567,24 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   const lst2 = (await call("GET", "/api/people", null, viewer)).body.people;
   ok("owner can edit the place, which is then marked as typed by them", lst2[0].location.place === "Coffee with Sam" && lst2[0].location.guess === false && lst2[0].location.placeSource === "you" && lst2[0].location.lat === 33.41744);
   globalThis.fetch = realFetch3;
+}
+
+{
+  const mkc = async (card, photo) => { const tk = (await call("POST", "/api/owner", {})).body.ownerToken; globalThis.__rawCards = true; const c = await call("POST", "/api/card", { ownerToken: tk, card }, tk); globalThis.__rawCards = false; if (photo) await env.KV.put("photo/" + c.body.slug, "data:image/png;base64,AAAA"); return { tk, slug: c.body.slug }; };
+  const done = async (o) => (await call("GET", "/api/profile/status", null, o.tk)).body;
+  const name2 = await mkc({ name: "Any One", headline: "", links: {} });
+  ok("name alone is 1 of 7 sections: locked", (await done(name2)).complete === false);
+  const two = await mkc({ name: "Any Two", headline: "", email: "a@b.invalid", links: {} });
+  ok("name + contact is 2 of 7: still locked", (await done(two)).complete === false);
+  const a3 = await mkc({ name: "Any Three", headline: "", links: { github: "https://github.com/x" } }, true);
+  ok("name + link + photo is 3 of 7: unlocked, with no headline, about or contact", (await done(a3)).complete === true);
+  const b3 = await mkc({ name: "Any Four", headline: "Maker", phone: "+1 555 0100", links: {} });
+  ok("name + headline + phone is 3 of 7: unlocked with no social and no photo", (await done(b3)).complete === true);
+  const c3 = await mkc({ name: "Any Five", headline: "Hi", detail: "ab", links: {} });
+  ok("headline or about under their minimum length do not count", (await done(c3)).complete === false);
+  const d3 = await mkc({ name: "Any Six", headline: "Maker", detail: "Builds robots", links: {} });
+  ok("the old minimum (name + headline + about) still unlocks", (await done(d3)).complete === true);
+  ok("status exposes only complete, never a count or the missing sections", Object.keys(await done(a3)).join() === "complete");
 }
 
 srv.close();

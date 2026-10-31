@@ -849,8 +849,9 @@
         '<button class="btn btn-plain" id="li-remove" style="margin-top:4px">Remove imported details</button></div>';
     }
     function idle(li) {
-      box.innerHTML = (li ? summary(li) : "") + '<button class="btn btn-gray" id="li-open" style="margin:8px 0 4px">' + (li ? "Import again" : "Import school and work from LinkedIn") + '</button>';
-      document.getElementById("li-open").addEventListener("click", ask);
+      box.innerHTML = (li ? summary(li) : "") + '<button class="btn btn-gray" id="li-open" style="margin:8px 0 4px">Import profile from LinkedIn</button><div class="fineprint" id="li-oneerr" style="color:var(--danger,#c0392b);margin:0"></div><div class="fineprint" id="li-pastewrap" style="margin:4px 0 0;display:none"><a href="#" id="li-paste">Paste your profile text instead</a></div>';
+      document.getElementById("li-open").addEventListener("click", function () { oneClick(this); });
+      document.getElementById("li-paste").addEventListener("click", function (e) { e.preventDefault(); ask(); });
       var rp = document.getElementById("li-rmphoto");
       if (rp) rp.addEventListener("click", function () { api("/api/profile-photo", { method: "DELETE" }).then(function () { toast("Photo removed"); li.hasPhoto = false; idle(li); }).catch(function () { toast("Could not remove - try again"); }); });
       var ed = document.getElementById("li-edit");
@@ -858,6 +859,27 @@
       var rm = document.getElementById("li-remove");
       if (rm) rm.addEventListener("click", function () {
         api("/api/import/linkedin", { method: "DELETE" }).then(function () { toast("Imported details removed"); idle(null); }).catch(function () { toast("Could not remove - try again"); });
+      });
+    }
+    // One tap: the button is the trigger. Uses the LinkedIn link in the field above, saves the card, imports, and shows what came back.
+    // Whatever LinkedIn did not give (some profiles have no photo or roles) is simply absent; errors are shown as they are.
+    function oneClick(btn) {
+      var err = document.getElementById("li-oneerr"), c = collect(); err.textContent = "";
+      var pw = document.getElementById("li-pastewrap"); if (pw) pw.style.display = "block";
+      if (!c.name) { err.textContent = "Add your name above first."; return; }
+      Object.keys(c.links).forEach(function (k) { if (!c.links[k]) delete c.links[k]; });
+      if (!c.links.linkedin) { err.textContent = "Add your LinkedIn link above first."; return; }
+      btn.disabled = true; btn.textContent = "Importing...";
+      saveCard(c); lastSync = 0;
+      syncCard().then(function () {
+        return api("/api/import/linkedin/auto", { method: "POST", body: { url: c.links.linkedin, ownProfile: true, disclosure: "linkedin-auto-v2" } });
+      }).then(function (d) {
+        toast("Imported from LinkedIn");
+        if (d && d.linkedin && d.linkedin.headline) onHeadline(d.linkedin.headline);
+        load();
+      }).catch(function (e) {
+        btn.disabled = false; btn.textContent = "Import profile from LinkedIn";
+        err.textContent = (e && e.error) || "LinkedIn import did not work. Try again later.";
       });
     }
     function ask() {
@@ -1040,7 +1062,6 @@
       var prevLinks = (loadCard() || { links: {} }).links || {};
       var changed = [];
       if (c.links.linkedin && c.links.linkedin !== (prevLinks.linkedin || "")) changed.push("linkedin");
-      if (changed.length) { askAutoImport(c, changed); return; }
       saveCard(c);
       lastSync = 0;
       syncCard().then(function (d) {
@@ -1057,7 +1078,7 @@
     var el = document.createElement("section"); el.className = "linksec lockedsec";
     el.innerHTML = '<div class="lshead"><div class="lstitle"><i class="lsdot"></i>Complete your profile to see ' + first + "'s links and contact</div></div>" +
       '<div class="lockbars" aria-hidden="true"><i></i><i></i><i></i></div>' +
-      '<div class="lsline lsmute">You can still send a connection request. Add your name, a headline and one line about what you do, then their shared details unlock.</div>';
+      '<div class="lsline lsmute">You can still send a connection request. Add more to your profile to unlock their shared details.</div>';
     var h = document.querySelector("h1.largetitle"), ct = document.getElementById("connect-top");
     var anchor = ct && ct.nextElementSibling ? ct.nextElementSibling : h;
     if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(el, anchor.nextSibling);
@@ -1369,18 +1390,11 @@
       '<a class="btn btn-accent" id="websearch-go" href="https://www.google.com/search?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener" style="margin-top:8px">Search Google</a>' +
       '<div class="fineprint" style="margin:8px 0 0">Opens Google. Results may include other people with the same name.</div></section>';
   }
-  function missingLabels(st) {
-    var m = (st && st.missing) || ["detail"], out = [];
-    if (m.indexOf("name") >= 0) out.push("your name");
-    if (m.indexOf("headline") >= 0) out.push("a short headline");
-    if (m.indexOf("detail") >= 0) out.push("one line about what you study, work on or build");
-    return out;
-  }
   function lockedHtml(p) {
     var first = esc((p.card.name || "").split(" ")[0] || "This person");
     return '<section class="linksec lockedsec"><div class="lshead"><div class="lstitle"><i class="lsdot"></i>Complete your profile to see ' + first + "'s details</div></div>" +
       '<div class="lockbars" aria-hidden="true"><i></i><i></i><i></i></div>' +
-      '<div class="lsline lsmute">Add ' + missingLabels(PROFILE_STATUS).map(esc).join(", ") + '. Phone, photo and social accounts are not needed. As soon as you save, their shared details unlock.</div>' +
+      '<div class="lsline lsmute">Add more to your profile to unlock. As soon as you save, their shared details unlock.</div>' +
       '<a class="btn btn-accent" href="#/edit" style="margin-top:10px">Complete my profile</a></section>';
   }
   function renderPerson(id) {
@@ -1534,7 +1548,7 @@
           '<div class="detail" style="white-space:normal">' + esc([r.event || (r.location && r.location.label) || "", fmtDate(r.at)].filter(Boolean).join(" · ")) + (r.contact ? " · " + esc(r.contact) : "") + (r.hasCard ? " · has a Tagg card" : "") + (r.verified ? " · Google-verified" : " · unverified identity") + '</div></div></div>' +
           '<div class="row" style="gap:8px;border-bottom:none;padding-top:0"><button class="btn btn-accent small" data-acc="' + r.id + '" style="flex:1">Connect back</button><button class="btn btn-gray small" data-dec="' + r.id + '" style="flex:1">Not now</button></div>';
       }).join("") + '</div>' : "") +
-      (people.some(function (p) { return p.locked; }) ? '<a class="scanbanner" href="#/edit" style="text-decoration:none;color:inherit"><span><b>Complete your profile</b> to see the details people shared with you. It takes one line.</span></a>' : "") +
+      (people.some(function (p) { return p.locked; }) ? '<a class="scanbanner" href="#/edit" style="text-decoration:none;color:inherit"><span><b>Complete your profile</b> to see the details people shared with you. Add more to your profile to unlock.</span></a>' : "") +
       (people.length ? '<div class="group">' + people.map(function (p) {
         return '<a class="row" href="#/p/' + p.id + '">' +
           '<div class="avatar">' + esc(initial(p.card.name)) + '</div>' +

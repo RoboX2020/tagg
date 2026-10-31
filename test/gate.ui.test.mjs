@@ -36,6 +36,7 @@ try {
   await P.goto(base + "#/p/" + saved.id, { waitUntil: "networkidle0" }); await sleep(1200);
   t = await P.evaluate(() => document.body.innerText);
   assert.ok(t.includes("Complete your profile to see Alex's details") && t.includes("Robotics student") && t.includes("Gate Expo") && (await P.evaluate(() => [...document.querySelectorAll("textarea")].some(x => x.value.includes("BOB-PRIVATE-NOTE"))))); ok("locked person page keeps name, headline, event and the viewer's own note");
+  assert.ok(/Add more to your profile to unlock/.test(t) && !/headline|one line|\d+ ?%|of 7/i.test((await P.evaluate(() => (document.querySelector(".lockedsec") || {}).innerText || "")))); ok("locked copy is generic: no score, percentage or list of required sections");
   const html = await P.evaluate(() => document.documentElement.outerHTML);
   assert.ok(!/alex-secret|555 0142|alex-sample|robot arms/.test(html) && !(await P.evaluate(() => localStorage.getItem("tagg.people.v1") || "")).match(/alex-secret|555 0142|alex-sample/)); ok("hidden details are not in the page or in local storage");
   assert.ok(await P.$(".lockbars") && !(await P.$("#vcf"))); ok("placeholder bars and no Save to Contacts while locked");

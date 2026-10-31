@@ -78,6 +78,7 @@ try {
   // LinkedIn import: paste, review, add. Values not in the pasted text are dropped before review.
   await A.goto(base + "#/edit"); await sleep(600);
   await A.$eval("#li-open", e => e.click());
+  await A.$eval("#li-paste", e => e.click());
   await A.type("#li-text", "Alice Ng\nRobotics Engineering Student\nTempe, Arizona, United States\nExperience\nSoftware Engineering Intern\nAcme Robotics\nEducation\nArizona State University");
   await A.screenshot({ path: "/tmp/work/shot-li-paste.png", fullPage: true });
   await A.$eval("#li-read", e => e.click()); await waitText(A, "Continue", 5000); await A.screenshot({ path: "/tmp/work/shot-li-consent.png" });

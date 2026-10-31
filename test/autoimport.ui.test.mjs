@@ -29,14 +29,14 @@ try {
     localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Sam Rivera", headline: "Robotics student", detail: "Builds robots", links: {} })); }, API_URL, b.ownerToken, card.slug);
   await P.goto(base + "#/edit", { waitUntil: "networkidle0" }); await sleep(600);
   await P.type("#f-linkedin", "linkedin.com/in/sam-rivera");
-  await P.click("#save"); await waitText(P, "Fill your card from LinkedIn?");
-  assert.equal(apifyCalls, 0); ok("saving a new LinkedIn link shows the notice first and imports nothing yet");
-  assert.equal(await P.$eval("#ai-own", e => e.checked), false); assert.equal(await P.$eval("#ai-yes", e => e.disabled), true); ok("checkbox is not pre-ticked and import is disabled until ticked");
-  const t = await text(P); assert.ok(/shared card/.test(t) && /connect with/.test(t) && /edit or remove/.test(t) && /not verified/.test(t)); ok("notice says it fills the shared card, reaches connections, is editable and unverified");
-  if (shots) { await sleep(900); await P.screenshot({ path: shots + "/auto-1-notice.png" }); }
-  await P.click("#ai-own"); assert.equal(await P.$eval("#ai-yes", e => e.disabled), false);
-  P.on("response", async r => { if (r.url().includes("/auto") && r.request().method()==="POST") console.log("AUTO", r.status(), (await r.text()).slice(0,200)); }); await P.click("#ai-yes"); await waitText(P, "Imported from LinkedIn"); assert.equal(apifyCalls, 1);
-  const tt = await text(P); assert.ok(tt.includes("Arizona State University") && tt.includes("Lab Assistant")); ok("after accepting, details fill in and show on the edit page");
+  const pre = await text(P); assert.ok(!/fills your card from the public parts/.test(pre) && !(await P.$("#ai-own")) && /Import profile from LinkedIn/.test(pre)); ok("only an Import profile from LinkedIn button, no description or checkbox");
+  await P.click("#save"); await sleep(2500); assert.equal(apifyCalls, 0); ok("saving a LinkedIn link alone imports nothing");
+  await P.goto(base + "#/edit", { waitUntil: "networkidle0" }); await sleep(600);
+  if (shots) { await P.evaluate(() => document.getElementById("li-open").scrollIntoView({ block: "center" })); await sleep(300); await P.screenshot({ path: shots + "/auto-1-notice.png" }); }
+  P.on("response", async r => { if (r.url().includes("/auto") && r.request().method()==="POST") console.log("AUTO", r.status(), (await r.text()).slice(0,120)); });
+  await P.click("#li-open"); await waitText(P, "Imported from LinkedIn"); assert.equal(apifyCalls, 1);
+  assert.ok(!(await text(P)).includes("Fill your card from LinkedIn?")); ok("one click on the button imports, with no prompt, modal or checkbox");
+  const tt = await text(P); assert.ok(tt.includes("Arizona State University") && tt.includes("Lab Assistant")); ok("details fill in and show on the edit page");
   const pub = await call("GET", "/api/c/" + card.slug, null, b.ownerToken); assert.equal(pub.enriched.linkedin.source, "linkedin-link-import"); assert.equal(pub.enriched.linkedin.autoImported, true); ok("stored on the shared card with provenance");
   if (shots) { await P.evaluate(() => document.getElementById("liimport").scrollIntoView()); await sleep(300); await P.screenshot({ path: shots + "/auto-2-filled.png" }); }
   await P.click("#li-edit"); await waitText(P, "Cleared details stay cleared"); await P.$eval("#li-location", e => e.value = ""); 
