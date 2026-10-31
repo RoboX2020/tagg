@@ -269,7 +269,14 @@ function cleanLocation(l) {
   const label = typeof l.label === "string" ? l.label.slice(0, 200) : "";
   const place = typeof l.place === "string" ? l.place.slice(0, 160) : "";
   if (lat === null && lon === null && !label && !place) return null;
-  return { lat: lat === null || lon === null ? null : lat, lon: lat === null || lon === null ? null : lon, label, place };
+  const has = lat !== null && lon !== null;
+  // Device-reported accuracy radius in meters and the time of the GPS fix: kept only with real coordinates.
+  const acc = has && typeof l.acc === "number" && isFinite(l.acc) && l.acc >= 0 && l.acc <= 100000 ? Math.round(l.acc) : null;
+  const at = has && typeof l.at === "string" && !isNaN(Date.parse(l.at)) ? new Date(l.at).toISOString() : null;
+  const out = { lat: has ? lat : null, lon: has ? lon : null, label, place };
+  if (acc !== null) out.acc = acc;
+  if (at !== null) out.at = at;
+  return out;
 }
 // Link an identity key (google sub or email) to an owner token, adopting/merging the device identity.
 async function linkIdentity(env, authKey, deviceTok) {

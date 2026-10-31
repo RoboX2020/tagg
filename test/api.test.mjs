@@ -43,6 +43,13 @@ ok("connect request created pending", cr.status === 200 && cr.body.status === "p
 let inbox = await call("GET", "/api/inbox", null, aTok);
 ok("Alice sees the request with shared location", inbox.body.requests.length === 1 && inbox.body.requests[0].location.place === "Hearst Gym");
 ok("requester private note not exposed to Alice", !JSON.stringify(inbox.body).includes("Bob only"));
+{ const ft = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: ft, card: { name: "Fix Tester", headline: "h", links: {} } }, ft);
+  const tt = (await call("POST", "/api/owner", {})).body.ownerToken; const tc = await call("POST", "/api/card", { ownerToken: tt, card: { name: "Fix Target", headline: "h", links: {} } }, tt);
+  const sv1 = await call("POST", "/api/people", { slug: tc.body.slug, event: "Fix", location: { lat: 33.1, lon: -111.9, label: "x", acc: 12.4, at: "2026-10-30T18:00:00Z" } }, ft);
+  ok("location keeps device accuracy (meters) and fix time", sv1.body.person.location.acc === 12 && sv1.body.person.location.at === "2026-10-30T18:00:00.000Z");
+  const tt2 = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: tt2, card: { name: "Fix Two", headline: "h", links: {} } }, tt2);
+  const sv2 = await call("POST", "/api/people", { slug: tc.body.slug, event: "Fix2", location: { lat: 33.1, lon: -111.9, acc: -5, at: "garbage" } }, tt2);
+  ok("invalid accuracy or time is dropped, pin kept", sv2.body.person.location.lat === 33.1 && sv2.body.person.location.acc === undefined && sv2.body.person.location.at === undefined); }
 ok("bad coordinates are dropped", (await call("POST", "/api/connect", { slug, requesterToken: (await call("POST", "/api/owner", {})).body.ownerToken, name: "Eve", location: { lat: 999, lon: 5, label: "" } })).status === 200);
 let acc = await call("POST", "/api/inbox/respond", { id: inbox.body.requests[0].id, accept: true }, aTok);
 ok("Alice accepts", acc.body.status === "accepted");

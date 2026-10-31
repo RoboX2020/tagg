@@ -311,6 +311,9 @@
       navigator.geolocation.getCurrentPosition(function (pos) {
         // 5 decimals is about 1 meter: enough for "where we met" without storing a needlessly exact trail.
         var loc = { lat: +pos.coords.latitude.toFixed(5), lon: +pos.coords.longitude.toFixed(5), label: "", place: "" };
+        // Keep what the device reported: accuracy radius in meters and when the fix was taken (5 decimals is only the stored precision, not the accuracy).
+        if (typeof pos.coords.accuracy === "number" && isFinite(pos.coords.accuracy)) loc.acc = Math.round(pos.coords.accuracy);
+        if (pos.timestamp) loc.at = new Date(pos.timestamp).toISOString();
         onStatus("found", loc);
         var ctl = window.AbortController ? new AbortController() : null;
         var t = setTimeout(function () { if (ctl) ctl.abort(); finish(); }, 5000);
@@ -332,6 +335,13 @@
     });
   }
   function withLocation(cb) { locate().then(function (r) { cb(r.ok ? r.loc : null); }); }
+  function fixNote(loc) {
+    if (!loc || loc.lat == null) return "";
+    var parts = [];
+    if (typeof loc.acc === "number") parts.push("GPS fix, accurate to about " + (loc.acc >= 1000 ? (loc.acc / 1000).toFixed(1) + " km" : loc.acc + " m"));
+    if (loc.at) { var d = new Date(loc.at); if (!isNaN(d)) parts.push(d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })); }
+    return parts.join(" at ");
+  }
   function mapsUrl(loc) { return "https://www.google.com/maps/search/?api=1&query=" + loc.lat + "%2C" + loc.lon; }
   function locStatusHtml(kind, loc) {
     var retry = ' <a href="#" data-locretry="1">Try again</a>';
@@ -339,7 +349,7 @@
     if (kind === "found" || kind === "named") {
       var nm = loc && [loc.place, loc.label].filter(Boolean).join(", ");
       return "Location ready" + (nm ? ": " + esc(nm) : (kind === "found" ? ". Looking up the place name..." : ". Place name not available, the pin is saved.")) +
-        '<br><a href="' + mapsUrl(loc) + '" target="_blank" rel="noopener">Open in Google Maps</a> <span style="color:var(--text-3)">(' + loc.lat + ", " + loc.lon + ")</span>";
+        '<br><a href="' + mapsUrl(loc) + '" target="_blank" rel="noopener">Open in Google Maps</a> <span style="color:var(--text-3)">(' + loc.lat + ", " + loc.lon + ")</span>" + (fixNote(loc) ? '<br><span style="color:var(--text-3)">' + esc(fixNote(loc)) + "</span>" : "");
     }
     if (kind === "denied") return "Location is blocked for this site. On iPhone: Settings, Privacy and Security, Location Services, Safari Websites, set to While Using. Then" + retry + "." ;
     if (kind === "timeout") return "Could not get a location fix in time. Move near a window if you are indoors." + retry;
@@ -1262,6 +1272,15 @@
       a.href = "https://twitter.com/" + encodeURIComponent(el.getAttribute("data-xh")) + "?ref_src=twsrc%5Etfw"; a.textContent = "Posts by @" + el.getAttribute("data-xh");
       el.appendChild(a);
     });
+    // X's timeline can fail silently (its endpoint rate-limits and the frame stays empty). If nothing real appears, show a compact card instead of an empty box.
+    setTimeout(function () {
+      hs.forEach(function (el) {
+        var f = el.querySelector("iframe"), ok = f && f.getBoundingClientRect().height > 80;
+        if (ok) return;
+        var h = el.getAttribute("data-xh");
+        el.innerHTML = '<div class="lsline lsmute">X timeline is not available right now.</div><a class="ghcard" href="https://x.com/' + encodeURIComponent(h) + '" target="_blank" rel="noopener"><div><div style="font-weight:600">@' + esc(h) + '</div><div class="lssub">x.com/' + esc(h) + '</div></div></a>';
+      });
+    }, 9000);
     if (window.twttr && window.twttr.widgets) { window.twttr.widgets.load(); return; }
     var sc = document.createElement("script"); sc.async = true; sc.src = "https://platform.twitter.com/widgets.js"; document.body.appendChild(sc);
   }
@@ -1391,7 +1410,7 @@
     if (loc.lat != null && loc.lon != null) {
       var sv = "https://www.google.com/maps/@?api=1&map_action=pano&viewpoint=" + loc.lat + "," + loc.lon;
       parts.push('<span class="linklist"><a href="' + mapLink + '" target="_blank" rel="noopener">Open in Google Maps</a> · <a href="' + sv + '" target="_blank" rel="noopener">Place image</a></span>');
-      parts.push('<span style="color:var(--text-2);font-size:12px">' + loc.lat + ", " + loc.lon + '</span>');
+      parts.push('<span style="color:var(--text-2);font-size:12px">' + loc.lat + ", " + loc.lon + (fixNote(loc) ? "<br>" + esc(fixNote(loc)) : "") + '</span>');
     }
     return meta("Where", parts.join("<br>"));
   }

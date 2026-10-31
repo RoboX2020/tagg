@@ -184,6 +184,7 @@ try {
   await Cc.type("#f-event", "Phoenix Expo"); await Cc.type("#f-note", "Met at the booth, private");
   await waitText(Cc, "Location ready", 15000); ok("location is found automatically, with no tap");
   const maplink = await Cc.$eval("#locstatus a[href*='google.com/maps']", e => e.href);
+  assert.match(await text(Cc), /accurate to about 10 m/); ok("the GPS accuracy the device reported is shown with the pin");
   assert.match(maplink, /maps\/search\/\?api=1&query=33\.4484%2C-112\.074/); ok("location status shows ready with a Google Maps link and coordinates");
   await sleep(800); await Cc.$eval("#locstatus", e => e.scrollIntoView({ block: "center" })); await sleep(300); await Cc.screenshot({ path: "/tmp/work/shot-scan-location.png" });
   await Cc.$eval("#saveonly", e => e.scrollIntoView({ block: "center" })); await sleep(300); await Cc.screenshot({ path: "/tmp/work/shot-save-only.png" });

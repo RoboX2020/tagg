@@ -27,7 +27,7 @@ try {
   await api.env.KV.put("photo/" + card.slug, JSON.stringify({ ct: "image/png", b64: png(160, 160).toString("base64"), at: now, source: "linkedin" }));
   const b = await call("POST", "/api/auth/signup", { email: "pb@tagg-test.invalid", password: "bob-secret-12", name: "Bob Li" });
   await call("POST", "/api/card", { ownerToken: b.ownerToken, card: { name: "Bob Li", headline: "ML", links: {} } });
-  await call("POST", "/api/people", { slug: card.slug, event: "Sample Hack", note: "SECRET-NOTE-xyz", location: { lat: 33.42551, lon: -111.94, label: "Tempe, Arizona", place: "Test Venue" } }, b.ownerToken);
+  await call("POST", "/api/people", { slug: card.slug, event: "Sample Hack", note: "SECRET-NOTE-xyz", location: { lat: 33.42551, lon: -111.94, label: "Tempe, Arizona", place: "Test Venue", acc: 12.4, at: "2026-10-30T18:00:00.000Z" } }, b.ownerToken);
   const saved = (await call("GET", "/api/people", null, b.ownerToken)).people[0];
   const ctx = await browser.createBrowserContext(); const P = await ctx.newPage(); await P.setViewport({ width: 390, height: 844, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   P.on("pageerror", e => console.log("PAGEERROR", e.message));
@@ -48,7 +48,8 @@ try {
   assert.ok((await P.$eval(".ghcard img", e => e.src)).startsWith("https://github.com/alex-sample.png")); ok("GitHub preview image is the public GitHub picture URL for the handle");
   assert.ok((await P.$eval("iframe.embedframe", e => e.src)).startsWith("https://www.instagram.com/alexsample/embed")); ok("Instagram is an embedded profile frame");
   assert.ok(await P.$(".xembed .twitter-timeline, .xembed iframe")); ok("X section mounts the X timeline widget");
-  const mhref = await P.$eval(".metacard a[href*='google.com/maps']", e => e.href); assert.equal(mhref, "https://www.google.com/maps/search/?api=1&query=33.42551%2C-111.94"); ok("the Where tile links to Google Maps at the stored coordinates, not a place-name search");
+  const mhref = await P.$eval(".metacard a[href*='google.com/maps']", e => e.href); assert.equal(mhref, "https://www.google.com/maps/search/?api=1&query=33.42551%2C-111.94"); assert.ok(/accurate to about 12 m/.test(await P.evaluate(() => document.body.innerText))); ok("the fix accuracy is shown with the pin");
+  ok("the Where tile links to Google Maps at the stored coordinates, not a place-name search");
   const q = await P.$eval("#websearch-q", e => e.value); assert.ok(q.includes("Alex Sample") && q.includes("Sample University Lab") && !q.includes("SECRET") && !q.includes("Sample Hack")); ok("search query uses name and shared context only, never notes or meeting place");
   const href = await P.$eval("#websearch-go", e => e.href); assert.ok(href.startsWith("https://www.google.com/search?q=") && href.includes("Alex%20Sample")); ok("web search is a plain Google link, opened only on tap");
   await P.$eval("#websearch-q", e => { e.value = "Alex Sample robotics Tempe"; e.dispatchEvent(new Event("input")); }); assert.ok((await P.$eval("#websearch-go", e => e.href)).includes("robotics%20Tempe")); ok("the viewer can edit the search before opening it");
