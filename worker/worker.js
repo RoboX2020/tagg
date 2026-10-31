@@ -58,7 +58,7 @@ async function importViaApify(env, url) {
   const x = Array.isArray(items) ? items[0] : null;
   if (!x || x.error || (!x.experience && !x.education && !x.headline)) return null;
   const uniq = (arr, n) => asNames(arr.filter(Boolean), n);
-  const per = (o) => { const p = o && (o.duration || o.period || o.dateRange); if (typeof p === "string") return clip(p, 60); const s = o && o.startDate && (o.startDate.text || o.startDate.year), e = o && o.endDate && (o.endDate.text || o.endDate.year); return clip([s, e || (s ? "Present" : "")].filter(Boolean).join(" - "), 60); };
+  const per = (o) => { const s = o && o.startDate && (o.startDate.text || o.startDate.year), e = o && o.endDate && (o.endDate.text || o.endDate.year); if (s) return clip(s + " - " + (e || "Present"), 60); const p = o && (o.period || o.dateRange || o.duration); return typeof p === "string" ? clip(p, 60) : ""; };
   const experience = (Array.isArray(x.experience) ? x.experience : []).filter(e => e && (e.position || e.companyName)).slice(0, 8).map(e => ({ title: clip(e.position, 120), company: clip(e.companyName, 120), period: per(e), place: clip(e.location, 80), text: clip(e.description, 400) }));
   const education = (Array.isArray(x.education) ? x.education : []).filter(e => e && e.schoolName).slice(0, 5).map(e => ({ school: clip(e.schoolName, 120), degree: clip([e.degree, e.fieldOfStudy].filter(Boolean).join(", "), 140), period: per(e) }));
   const skills = asNames((Array.isArray(x.skills) ? x.skills : []).map(s => typeof s === "string" ? s : s && s.name), 12);
@@ -69,7 +69,7 @@ async function importViaApify(env, url) {
     companies: uniq((x.experience || []).map(e => e && e.companyName), 6),
     schools: uniq((x.education || []).map(e => e && e.schoolName), 6),
     location: clip(x.location && (x.location.linkedinText || (x.location.parsed && x.location.parsed.text)), 120),
-    photoUrl: (() => { const u = (x.profilePicture && x.profilePicture.url) || x.photo; return typeof u === "string" && /^https:\/\/[a-z0-9.-]*licdn\.com\//i.test(u) ? u : ""; })()
+    photoUrl: (() => { const pp = x.profilePicture || {}, sz = Array.isArray(pp.sizes) ? pp.sizes.filter(s => s && typeof s.url === "string" && s.width <= 400).sort((a, b) => b.width - a.width)[0] : null; const u = (sz && sz.url) || pp.url || x.photo; return typeof u === "string" && /^https:\/\/[a-z0-9.-]*licdn\.com\//i.test(u) ? u : ""; })()
   };
 }
 // Copies the profile picture the owner just imported (LinkedIn's CDN links expire). Only LinkedIn's image host, images only, max 400 KB.
