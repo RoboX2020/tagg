@@ -317,25 +317,32 @@
         if (typeof pos.coords.accuracy === "number" && isFinite(pos.coords.accuracy)) loc.acc = Math.round(pos.coords.accuracy);
         if (pos.timestamp) loc.at = new Date(pos.timestamp).toISOString();
         onStatus("found", loc);
-        var ctl = window.AbortController ? new AbortController() : null;
-        var t = setTimeout(function () { if (ctl) ctl.abort(); finish(); }, 5000);
-        var finished = false;
-        function finish() { if (finished) return; finished = true; clearTimeout(t); onStatus("named", loc); resolve({ ok: true, loc: loc }); }
-        // Nearby place name from the Tagg server (free OpenStreetMap lookup, cached, rate limited). It is a nearby guess, not a confirmed venue.
-        fetch(API + "/api/place?lat=" + loc.lat + "&lon=" + loc.lon, ctl ? { signal: ctl.signal } : undefined)
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            loc.place = d.place || ""; loc.label = d.label || "";
-            if (loc.place) { loc.placeSource = "OpenStreetMap"; loc.guess = true; }
-            finish();
-          }).catch(finish);
+        // The place-name lookup is NOT done here. It runs only when a meeting is saved, after the page has shown the disclosure.
+        onStatus("named", loc); resolve({ ok: true, loc: loc });
       }, function (err) {
         var reason = err && err.code === 1 ? "denied" : err && err.code === 3 ? "timeout" : "unavailable";
         onStatus(reason); resolve({ ok: false, reason: reason });
       }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 });
     });
   }
-  function withLocation(cb) { locate().then(function (r) { cb(r.ok ? r.loc : null); }); }
+  // Nearby place name from the Tagg server (free OpenStreetMap lookup, cached, paced). Called once, when a meeting is saved.
+  // It is a nearby guess, not a confirmed venue. Any failure just means no place name.
+  function lookupPlace(loc) {
+    if (!loc || loc.lat == null || loc.place) return Promise.resolve(loc);
+    return new Promise(function (resolve) {
+      var ctl = window.AbortController ? new AbortController() : null;
+      var t = setTimeout(function () { if (ctl) ctl.abort(); resolve(loc); }, 6000);
+      fetch(API + "/api/place?lat=" + loc.lat + "&lon=" + loc.lon, ctl ? { signal: ctl.signal } : undefined)
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          clearTimeout(t);
+          if (d && d.place) { loc.place = d.place; loc.placeSource = "OpenStreetMap"; loc.guess = true; }
+          if (d && d.label && !loc.label) loc.label = d.label;
+          resolve(loc);
+        }).catch(function () { clearTimeout(t); resolve(loc); });
+    });
+  }
+  function withLocation(cb) { locate().then(function (r) { return r.ok ? lookupPlace(r.loc) : null; }).then(function (l) { cb(l || null); }); }
   function fixNote(loc) {
     if (!loc || loc.lat == null) return "";
     var parts = [];
@@ -349,7 +356,7 @@
     if (kind === "asking") return "Finding your location. Allow access if your phone asks.";
     if (kind === "found" || kind === "named") {
       var nm = loc && [loc.place ? (loc.guess ? "Near " + loc.place : loc.place) : "", loc.label].filter(Boolean).join(", ");
-      return "Location ready" + (nm ? ": " + esc(nm) + (loc.guess ? ' <span style="color:var(--text-3)">(from OpenStreetMap, may not be the exact place)</span>' : "") : (kind === "found" ? ". Looking up the place name..." : ". Place name not available, the pin is saved.")) +
+      return "Location ready" + (nm ? ": " + esc(nm) + (loc.guess ? ' <span style="color:var(--text-3)">(from OpenStreetMap, may not be the exact place)</span>' : "") : ". A nearby place name is suggested when you save.") +
         '<br><a href="' + mapsUrl(loc) + '" target="_blank" rel="noopener">Open in Google Maps</a> <span style="color:var(--text-3)">(' + loc.lat + ", " + loc.lon + ")</span>" + (fixNote(loc) ? '<br><span style="color:var(--text-3)">' + esc(fixNote(loc)) + "</span>" : "");
     }
     if (kind === "denied") return "Location is blocked for this site. On iPhone: Settings, Privacy and Security, Location Services, Safari Websites, set to While Using. Then" + retry + "." ;
@@ -1144,7 +1151,7 @@
     locEl.addEventListener("click", function (e) {
       if (e.target && e.target.getAttribute && e.target.getAttribute("data-locretry")) { e.preventDefault(); startLoc(); }
     });
-    function getLoc() { return (locP || startLoc()).then(function (r) { return r.ok ? r.loc : null; }); }
+    function getLoc() { return (locP || startLoc()).then(function (r) { return r.ok ? lookupPlace(r.loc) : null; }); }
     startLoc();
     // Third option: just save them. No request, no email, no follow-up. Context and location stay private to the saver.
     document.getElementById("saveonly").addEventListener("click", function () {
@@ -1747,13 +1754,13 @@
       g.save(); g.translate(view.x, view.y); g.scale(view.k, view.k);
       links.forEach(function (l) {
         var A = nodes[l.a], B = nodes[l.b]; g.beginPath(); g.moveTo(A.x, A.y); g.lineTo(B.x, B.y);
-        g.strokeStyle = l.soft ? "rgba(217,115,61,0.55)" : mapLine; g.lineWidth = (l.soft ? 1.6 : 1) / view.k; g.stroke();
+        g.strokeStyle = l.soft ? "rgba(217,115,61,0.55)" : mapLine; g.lineWidth = (l.soft ? 1.6 : 1) / view.k; g.setLineDash(l.dashed ? [5 / view.k, 4 / view.k] : []); g.stroke(); g.setLineDash([]);
       });
       nodes.forEach(function (n) {
         g.beginPath(); g.arc(n.x, n.y, n.r, 0, 7);
         if (n.you) { var grd = g.createLinearGradient(n.x - 24, n.y - 24, n.x + 24, n.y + 24); grd.addColorStop(0, "#d9733d"); grd.addColorStop(1, "#e5954f"); g.fillStyle = grd; }
-        else g.fillStyle = mapNode;
-        g.fill(); if (!n.you) { g.strokeStyle = mapLine; g.lineWidth = 1 / view.k; g.stroke(); }
+        else g.fillStyle = n.fof ? "rgba(0,0,0,0)" : mapNode;
+        g.fill(); if (n.fof) { g.setLineDash([3 / view.k, 3 / view.k]); g.strokeStyle = "rgba(217,115,61,0.9)"; g.lineWidth = 1.4 / view.k; g.stroke(); g.setLineDash([]); } else if (!n.you) { g.strokeStyle = mapLine; g.lineWidth = 1 / view.k; g.stroke(); }
         g.fillStyle = n.you ? "#fff" : mapText; g.font = (n.you ? "700 15px " : "600 13px ") + font; g.textAlign = "center"; g.textBaseline = "middle";
         g.fillText(n.init, n.x, n.y);
         g.fillStyle = mapSub; g.font = "11px " + font; g.fillText(n.label, n.x, n.y + n.r + 12);
@@ -1811,7 +1818,33 @@
     bind("g-in", function () { zoomAt(W / 2, H / 2, 1.25); });
     bind("g-out", function () { zoomAt(W / 2, H / 2, 1 / 1.25); });
     bind("g-reset", function () { view = { x: W / 2, y: H / 2, k: 1 }; draw(); });
-    cv.tagg = { screen: function (i) { return { x: nodes[i].x * view.k + view.x, y: nodes[i].y * view.k + view.y }; } };
+    cv.tagg = { count: function () { return { nodes: nodes.length, fof: nodes.filter(function (n) { return n.fof; }).map(function (n) { return n.label; }), dashed: links.filter(function (l) { return l.dashed; }).length }; }, screen: function (i) { return { x: nodes[i].x * view.k + view.x, y: nodes[i].y * view.k + view.y }; } };
+    // Friends of friends, from the server's consent-based graph (names only, opaque ids). They are drawn as hollow nodes and cannot be
+    // opened: there is no card, contact or note behind them. Dashed lines mean "knows". Nothing is added when sharing is off.
+    var fofCount = 0;
+    if (ownerToken()) api("/api/graph").then(function (gr) {
+      if (!document.body.contains(cv) || !gr || !gr.nodes) return;
+      var idx = {}; nodes.forEach(function (n, i) { if (n.p) idx[n.p.id] = i; });
+      gr.nodes.forEach(function (n) {
+        if (n.type !== "friend-of-friend" || !n.name || idx[n.id] != null) return;
+        var nm = n.name.split(" ")[0];
+        nodes.push({ fof: true, x: (Math.random() - 0.5) * R0 * 0.2, y: (Math.random() - 0.5) * R0 * 0.2, vx: 0, vy: 0, r: 15, init: initial(n.name), label: nm.length > 10 ? nm.slice(0, 9) + "\u2026" : nm });
+        idx[n.id] = nodes.length - 1; fofCount++;
+      });
+      (gr.edges || []).forEach(function (e) {
+        if (e.kind !== "knows" || idx[e.from] == null || idx[e.to] == null) return;
+        var A = nodes[idx[e.from]], B = nodes[idx[e.to]];
+        if (B.fof && A.x != null && B.x * B.x + B.y * B.y < 1) { var ang = Math.random() * 6.28; B.x = A.x * 1.4 + 60 * Math.cos(ang); B.y = A.y * 1.4 + 60 * Math.sin(ang); }
+        links.push({ a: idx[e.from], b: idx[e.to], k: 0.02, len: 80, soft: false, dashed: true });
+      });
+      if (fofCount) {
+        var hint = document.querySelector(".graphwrap + .hint");
+        if (hint) hint.style.cssText += ';font-size:13px;line-height:1.4;color:var(--text-2)';
+        if (hint) hint.innerHTML = people.length + ' connection' + (people.length > 1 ? "s" : "") + ' so far, plus ' + fofCount + ' ' + (fofCount > 1 ? "people" : "person") + ' they know (hollow, dashed lines). Shown only because they chose to share their network.';
+      }
+      for (var s = 0; s < 80; s++) step();
+      kick(); draw();
+    }).catch(function () {});
     cv.setAttribute("role", "img"); cv.setAttribute("aria-label", "Network of the " + people.length + " people you have met. Drag to move, pinch or scroll to zoom.");
   }
 

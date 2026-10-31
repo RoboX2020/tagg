@@ -18,7 +18,8 @@ let n = 0; const ok = (m) => console.log("ok -", m, ++n && "");
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function call(method, p, body, tok) { const r = await fetch(API_URL + p, { method, headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: body ? JSON.stringify(body) : undefined }); return r.json(); }
 const realFetch = globalThis.fetch;
-globalThis.fetch = async (u, i) => String(u).startsWith("https://nominatim.openstreetmap.org/") ? new Response(JSON.stringify({ name: "Memorial Union", category: "amenity", type: "university", address: { city: "Tempe", state: "Arizona" } }), { status: 200 }) : realFetch(u, i);
+let upstream = 0;
+globalThis.fetch = async (u, i) => String(u).startsWith("https://nominatim.openstreetmap.org/") ? (upstream++, new Response(JSON.stringify({ name: "Memorial Union", category: "amenity", type: "university", address: { city: "Tempe", state: "Arizona" } }), { status: 200 })) : realFetch(u, i);
 try {
   const a = await call("POST", "/api/auth/signup", { email: "pa@tagg-test.invalid", password: "alice-secret-1", name: "Pat Owner" });
   const card = await call("POST", "/api/card", { ownerToken: a.ownerToken, card: { name: "Pat Owner", headline: "Maker", detail: "Builds", links: {} } }, a.ownerToken);
@@ -32,11 +33,12 @@ try {
     localStorage.setItem("tagg.card.v1", JSON.stringify({ name: "Bob Li", headline: "ML student", detail: "Studies ML", links: {} })); localStorage.setItem("tagg.slug.v1", "bobli"); }, API_URL, b.ownerToken);
   await P.goto(base + "#/c/" + card.slug, { waitUntil: "networkidle0" }); await sleep(2500);
   const t = await P.evaluate(() => document.body.innerText);
-  assert.ok(/Near Memorial Union/.test(t) && /OpenStreetMap, may not be the exact place/.test(t)); ok("scan page shows an uncertain Near label sourced from OpenStreetMap");
-  if (process.env.SHOTS) await P.screenshot({ path: process.env.SHOTS + "/place-scan.png" });
+  assert.ok(/sent to Tagg and to the free OpenStreetMap lookup/.test(t) && /Location ready/.test(t) && upstream === 0); ok("disclosure is on the page and no coordinates went to OpenStreetMap before saving");
+  await P.evaluate(() => { var e = document.getElementById("locstatus"); if (e) e.scrollIntoView({ block: "center" }); }); await sleep(300); if (process.env.SHOTS) await P.screenshot({ path: process.env.SHOTS + "/place-scan.png" });
   await P.click("#saveonly"); await sleep(1800);
   const people = (await call("GET", "/api/people", null, b.ownerToken)).people;
   const L = people[0] && people[0].location;
+  assert.ok(upstream === 1); ok("exactly one upstream lookup, made on save");
   assert.ok(L && L.place === "Memorial Union" && L.guess === true && L.placeSource === "OpenStreetMap" && L.acc === 15 && L.lat === 33.41744); ok("saved meeting stores the guess flag, GPS accuracy and coordinates");
   await P.goto(base + "#/p/" + people[0].id, { waitUntil: "networkidle0" }); await sleep(1200);
   const t2 = await P.evaluate(() => document.body.innerText);
