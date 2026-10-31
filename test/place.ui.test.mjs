@@ -33,6 +33,7 @@ try {
   await P.goto(base + "#/c/" + card.slug, { waitUntil: "networkidle0" }); await sleep(2500);
   const t = await P.evaluate(() => document.body.innerText);
   assert.ok(/Near Memorial Union/.test(t) && /OpenStreetMap, may not be the exact place/.test(t)); ok("scan page shows an uncertain Near label sourced from OpenStreetMap");
+  if (process.env.SHOTS) await P.screenshot({ path: process.env.SHOTS + "/place-scan.png" });
   await P.click("#saveonly"); await sleep(1800);
   const people = (await call("GET", "/api/people", null, b.ownerToken)).people;
   const L = people[0] && people[0].location;
@@ -40,11 +41,13 @@ try {
   await P.goto(base + "#/p/" + people[0].id, { waitUntil: "networkidle0" }); await sleep(1200);
   const t2 = await P.evaluate(() => document.body.innerText);
   assert.ok(/Near Memorial Union/.test(t2) && /may not be exact/.test(t2) && await P.$("#place-edit")); ok("person page shows Near label with an Edit control");
+  if (process.env.SHOTS) await P.screenshot({ path: process.env.SHOTS + "/place-person.png" });
   P.on("dialog", d => d.accept("Coffee with Sam"));
   await P.click("#place-edit"); await sleep(1500);
   const t3 = await P.evaluate(() => document.body.innerText);
   const L2 = (await call("GET", "/api/people", null, b.ownerToken)).people[0].location;
   assert.ok(/Coffee with Sam/.test(t3) && !/Near Coffee/.test(t3) && L2.place === "Coffee with Sam" && L2.guess === false && L2.lat === 33.41744 && L2.acc === 15); ok("editing the place replaces the guess and keeps coordinates and accuracy");
+  if (process.env.SHOTS) await P.screenshot({ path: process.env.SHOTS + "/place-edited.png" });
   console.log("\nPlace UI checks passed: " + n);
 } catch (e) { console.log("FAIL", e.message); process.exitCode = 1; }
 await browser.close(); api.srv.close(); web.close(); process.exit(process.exitCode || 0);

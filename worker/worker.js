@@ -378,6 +378,16 @@ async function linkIdentity(env, authKey, deviceTok) {
 export class RateLimiter {
   constructor(state) { this.state = state; }
   async fetch(req) {
+    if (new URL(req.url).pathname === "/pace") {
+      // Exact global pacing: hands out time slots at least gapMs apart. One Durable Object handles one call at a time, so
+      // parallel callers across all Worker instances each get their own later slot.
+      const { gapMs, maxWaitMs } = await req.json();
+      const t = Date.now(), last = (await this.state.storage.get("last")) || 0;
+      const slot = Math.max(t, last + gapMs);
+      if (slot - t > maxWaitMs) return Response.json({ refused: true });
+      await this.state.storage.put("last", slot);
+      return Response.json({ waitMs: slot - t });
+    }
     const { max, windowSec } = await req.json();
     const now = Date.now();
     let r = await this.state.storage.get("r");
@@ -1180,12 +1190,13 @@ export default {
       const ck = "place/" + lat.toFixed(4) + "," + lon.toFixed(4);
       const hit = await getJSON(env.KV, ck);
       if (hit) return j({ ...hit, cached: true });
-      // Nominatim allows at most 1 request per second in total. KV has no atomic counter, so this is a best-effort pacing gate: a
-      // lookup is refused if another one went upstream in the last 2 seconds, and at most 20 go upstream per minute overall.
-      // Nothing else calls this: only the one-time lookup when a meeting is saved, never typing or autocomplete.
-      const last = parseInt(await env.KV.get("place/last") || "0", 10);
-      if (Date.now() - last < 2000 || await overLimit(env, "place/global", 20, 60)) return j({ error: "Place lookup is busy, the place name can be added by hand", retry: true }, 429);
-      await env.KV.put("place/last", String(Date.now()), { expirationTtl: 60 });
+      // Nominatim allows at most 1 request per second in total. A single Durable Object hands out upstream time slots at least
+      // 1.1 s apart (exact, across every Worker instance). A caller whose slot is more than 3 s away is refused, and the place
+      // can be typed by hand. No Durable Object binding means no upstream call at all. Only called once per saved meeting.
+      if (!env.RL || await overLimit(env, "place/global", 20, 60)) return j({ error: "Place lookup is busy, the place name can be added by hand", retry: true }, 429);
+      const pr = await (await env.RL.get(env.RL.idFromName("place/pace")).fetch("https://rl/pace", { method: "POST", body: JSON.stringify({ gapMs: 1100, maxWaitMs: 3000 }) })).json();
+      if (pr.refused) return j({ error: "Place lookup is busy, the place name can be added by hand", retry: true }, 429);
+      if (pr.waitMs > 0) await new Promise(r => setTimeout(r, pr.waitMs));
       let d = null;
       try {
         const r = await fetch("https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=" + lat.toFixed(5) + "&lon=" + lon.toFixed(5), { headers: { "User-Agent": "Tagg/1.0 (https://robox2020.github.io/tagg/; github.com/RoboX2020/tagg)", "Accept-Language": "en" } });

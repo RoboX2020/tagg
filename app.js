@@ -554,6 +554,7 @@
         '<div class="row"><div class="grow"><div class="title">What is stored</div><div class="detail" style="white-space:normal">The card you create (name, headline, links, contact details you choose to share) and the people you save, with when, where, and at what event you met them, plus your private notes.</div></div></div>' +
         '<div class="row"><div class="grow"><div class="title">Where it lives</div><div class="detail" style="white-space:normal">In your own Tagg database (Cloudflare KV) tied to your identity, plus a cache on your device. Your notes and photos are private to your account.</div></div></div>' +
         '<div class="row"><div class="grow"><div class="title">Google sign-in</div><div class="detail" style="white-space:normal">If you sign in with Google, Tagg stores your Google account ID and email to link your database to you. Nothing is posted to Google and no other Google data is read.</div></div></div>' +
+        '<div class="row"><div class="grow"><div class="title">Place names</div><div class="detail" style="white-space:normal">When you save a meeting with location on, the coordinates are sent through Tagg to OpenStreetMap Nominatim to suggest a nearby place name, once per saved meeting. Tagg keeps only the resulting name, cached by an approximate position and not linked to you. OpenStreetMap contributors. You can edit or remove the name.</div></div></div>' +
         '<div class="row"><div class="grow"><div class="title">Sharing</div><div class="detail" style="white-space:normal">Your card is public to anyone you show your QR code or link to - that is the point of the app. Your people list, notes, and location history are never shared.</div></div></div>' +
         '</div>' +
         '<p class="footer-note">Contact: prajval.2029@gmail.com</p>');
@@ -1104,6 +1105,7 @@
       '<textarea class="input" id="f-note" placeholder="What are you two talking about?"></textarea></div>' +
       '<div style="height:8px"></div><button class="btn btn-gray" id="f-dictate">' + IC.mic + ' Dictate</button>' +
       '<div class="locstatus" id="locstatus">Finding where you are...</div>' +
+      '<div class="fineprint" style="margin:6px 0 0">To suggest a place name, your approximate location is sent to Tagg and to the free OpenStreetMap lookup. It is not tied to your name.</div>' +
       '<label class="row" id="shareloc-row" style="margin-top:8px;gap:12px;cursor:pointer"><input type="checkbox" id="f-loc" style="width:18px;height:18px;accent-color:var(--accent)">' +
       '<span class="grow"><span class="title" style="display:block">Also send the place to ' + first + '</span><span class="detail" style="white-space:normal">The place is saved in your own record automatically. It goes to ' + first + ' only if you tick this and share your card. Save only never sends it.</span></span></label>' +
       '';

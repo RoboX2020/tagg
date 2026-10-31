@@ -531,10 +531,10 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
 }
 
 {
-  const realFetch3 = globalThis.fetch; let nomCalls = 0, lastUA = "";
+  const realFetch3 = globalThis.fetch; let nomCalls = 0, lastUA = ""; const nomTimes = [];
   globalThis.fetch = async (u, init) => {
     if (!String(u).startsWith("https://nominatim.openstreetmap.org/reverse")) return realFetch3(u, init);
-    nomCalls++; lastUA = (init && init.headers && init.headers["User-Agent"]) || "";
+    nomCalls++; nomTimes.push(Date.now()); lastUA = (init && init.headers && init.headers["User-Agent"]) || "";
     const q = new URL(u).searchParams;
     const body = q.get("lat").startsWith("33.41") ? { name: "Memorial Union", category: "amenity", type: "university", address: { amenity: "Memorial Union", city: "Tempe", state: "Arizona" } }
       : { name: "Mill Avenue", category: "highway", type: "residential", address: { road: "Mill Avenue", city: "Tempe", state: "Arizona" } };
@@ -547,9 +547,12 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   ok("place lookup sends a real User-Agent", /Tagg/.test(lastUA));
   const a2 = await call("GET", "/api/place?lat=33.417441&lon=-111.934689");
   ok("nearby repeat is served from cache without another upstream call", a2.body.cached === true && nomCalls === 1);
-  const busy = await call("GET", "/api/place?lat=41.5&lon=-100.5");
-  ok("a second upstream lookup within 2 seconds is refused instead of bursting", busy.status === 429 && nomCalls === 1);
-  await env.KV.delete("place/last");
+  nomTimes.length = 0;
+  const burst = await Promise.all([1, 2, 3, 4, 5].map(i => call("GET", "/api/place?lat=" + (50 + i) + ".1&lon=-100.5")));
+  const okN = burst.filter(x => x.status === 200).length, refused = burst.filter(x => x.status === 429).length;
+  const gaps = nomTimes.slice(1).map((t, i) => t - nomTimes[i]);
+  ok("a parallel burst is paced to at least 1 second between upstream calls", okN >= 2 && gaps.length === okN - 1 && gaps.every(g => g >= 1000));
+  ok("calls whose slot is too far away are refused, not sent upstream", refused >= 1 && okN + refused === 5);
   const r1 = await call("GET", "/api/place?lat=40.00001&lon=-100.5");
   ok("a road is not presented as a venue", r1.body.poi === false && r1.body.place === "Mill Avenue");
   const ot3 = (await call("POST", "/api/owner", {})).body.ownerToken;
