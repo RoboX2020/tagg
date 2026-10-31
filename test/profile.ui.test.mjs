@@ -41,7 +41,7 @@ try {
   const img = await P.evaluate(() => { const i = document.querySelector("img.avatar-img"); return i && { w: i.naturalWidth, ok: i.complete && i.naturalWidth > 0, src: i.src }; }); assert.ok(img && img.ok && img.src.includes("/api/photo/")); ok("profile picture loads from Tagg's own copy");
   const body = await P.evaluate(() => document.body.innerText);
   assert.ok(body.includes("Sample State University") && body.includes("Builds robot arms") && body.includes("12 followers")); ok("imported LinkedIn and GitHub details are laid out in the sections");
-  assert.ok(/cannot be shown inside Tagg/.test(body) && !/Instagram feed|timeline/i.test(body)); ok("unsupported sites say so instead of faking an embed");
+  assert.ok(/Preview unavailable/.test(body) && !/Instagram feed|timeline/i.test(body)); ok("unsupported sites say so instead of faking an embed");
   const q = await P.$eval("#websearch-q", e => e.value); assert.ok(q.includes("Alex Sample") && q.includes("Sample University Lab") && !q.includes("SECRET") && !q.includes("Sample Hack")); ok("search query uses name and shared context only, never notes or meeting place");
   const href = await P.$eval("#websearch-go", e => e.href); assert.ok(href.startsWith("https://www.google.com/search?q=") && href.includes("Alex%20Sample")); ok("web search is a plain Google link, opened only on tap");
   await P.$eval("#websearch-q", e => { e.value = "Alex Sample robotics Tempe"; e.dispatchEvent(new Event("input")); }); assert.ok((await P.$eval("#websearch-go", e => e.href)).includes("robotics%20Tempe")); ok("the viewer can edit the search before opening it");

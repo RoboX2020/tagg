@@ -1234,7 +1234,7 @@
           row("Roles", lst(li.titles) || esc(li.title || "")) + row("Work", lst(li.companies) || esc(li.company || "")) + row("School", lst(li.schools) || esc(li.school || "")) + row("Place", esc(li.location || "")) +
           '<div class="fineprint" style="margin:8px 0 0">Entered by the card owner. Tagg has not verified it.</div>';
       } else if (k === "linkedin") {
-        body = '<div class="lsline lsmute">No details added to Tagg. LinkedIn does not allow its profiles to be shown inside other apps, so Open takes you to LinkedIn.</div>';
+        body = '<div class="lsline lsmute">No details imported to Tagg. Preview unavailable. Open profile takes you to LinkedIn.</div>';
       } else if (k === "github" && g) {
         body = '<div class="ghrow">' + (g.avatar ? '<img class="avatar-img" src="' + esc(g.avatar) + '" alt="" style="width:44px;height:44px">' : "") +
           '<div><div style="font-weight:600">' + esc(g.name || g.login) + '</div>' + (g.bio ? '<div class="lssub" style="margin-top:2px">' + esc(g.bio) + '</div>' : "") + '</div></div>' +
@@ -1242,7 +1242,7 @@
           row("Public", (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? ", " + g.repos + " repos" : "")) +
           '<div class="fineprint" style="margin:8px 0 0">Public GitHub details the owner imported. Tagg has not verified them.</div>';
       } else {
-        body = '<div class="lsline lsmute">' + (k === "website" ? "Opens in your browser." : "Opens on " + esc(kd[1]) + ".") + ' It cannot be shown inside Tagg.</div>';
+        body = '<div class="lsline lsmute">' + (k === "website" ? "Opens in your browser." : "Opens on " + esc(kd[1]) + ".") + ' Preview unavailable.</div>';
       }
       out += sec(esc(kd[1]), esc(linkLabel(k, u)), body, u);
     });
