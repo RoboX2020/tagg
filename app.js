@@ -582,6 +582,7 @@
     app.innerHTML =
       '<div class="topbar"><div class="wordmark"><img class="mark" src="icon.svg" alt="" width="30" height="30">Tagg</div>' +
       '<div class="sub">Meet once. Tagg remembers.</div></div>' +
+      ((card && INBOX_COUNT && active !== "people") ? '<a class="reqbar" href="#/people"><span><b>' + INBOX_COUNT + (INBOX_COUNT > 1 ? ' connection requests' : ' connection request') + '</b> waiting</span><span class="reqgo">Review</span></a>' : '') +
       '<div class="content">' + inner + '</div>' +
       (card ? tabbarHtml(active) : "");
   }
@@ -1057,8 +1058,9 @@
     el.innerHTML = '<div class="lshead"><div class="lstitle"><i class="lsdot"></i>Complete your profile to see ' + first + "'s links and contact</div></div>" +
       '<div class="lockbars" aria-hidden="true"><i></i><i></i><i></i></div>' +
       '<div class="lsline lsmute">You can still send a connection request. Add your name, a headline and one line about what you do, then their shared details unlock.</div>';
-    var h = document.querySelector("h1.largetitle");
-    if (h && h.parentNode) h.parentNode.insertBefore(el, h.nextSibling);
+    var h = document.querySelector("h1.largetitle"), ct = document.getElementById("connect-top");
+    var anchor = ct && ct.nextElementSibling ? ct.nextElementSibling : h;
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(el, anchor.nextSibling);
   }
   function renderScannedRoute(id) {
     if (/^[a-z0-9]{6,10}$/.test(id)) {
@@ -1121,6 +1123,9 @@
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
       (slug ? '<p class="fineprint" style="margin:-4px 0 12px">' + (verified ? 'Signed in with Google' : (c.email ? 'Identity not verified - the name and email on this card are what they typed.' : 'Identity not verified - this name is what they typed.')) + '</p>' : '') +
       '<p class="lead">' + (signedIn ? 'Share your card - ' + first + ' gets a request, and once they accept you both save the moment.' : 'Create your Tagg to connect. ' + first + ' gets your card and you both keep each other.') + '</p>' +
+      (slug ? (signedIn
+        ? '<button class="btn btn-accent" id="connect-top">Connect with ' + first + '</button><p class="fineprint" style="margin:6px 0 12px;text-align:center">Your Tagg card goes with it. A nearby place name is suggested from your location (sent to Tagg and OpenStreetMap, not tied to your name).</p>'
+        : '<button class="btn btn-accent" id="connect-top">Create your Tagg to connect</button><div style="height:10px"></div>') : '') +
       cardHtml(c) + enrichHtml({ enriched: enriched, card: c, slug: slug }) +
       '<div style="height:18px"></div>' +
       '<div id="connectzone">' +
@@ -1137,6 +1142,12 @@
       '</div>' +
       '<p class="footer-note">Your contact details are not shared until you choose to share them.</p>'
     );
+    var topBtn = document.getElementById("connect-top");
+    if (topBtn) topBtn.addEventListener("click", function () {
+      var real = document.getElementById("connect");
+      if (real) { real.click(); return; }
+      var az = document.getElementById("authzone") || document.getElementById("connectzone"); if (az) az.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
     setupDictate(null, "f-dictate", "f-note");
     // Location is requested the moment the box is ticked (so the phone's permission prompt is answered
     // before Share is pressed) and the status stays visible. The result is reused when sending or saving.
