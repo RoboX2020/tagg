@@ -689,13 +689,116 @@ export default {
       for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
       if (slug) keys.push("card/" + slug, "enrich/" + slug, "photo/" + slug);
       keys.push("gsh/" + owner);
-      for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) keys.push("mcp/" + t.h);
+      for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) { keys.push("mcp/" + t.h); if (t.rh) keys.push("oref/" + t.rh); }
       keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner, "nt/" + owner, "npf/" + owner);
       for (const k of keys) await env.KV.delete(k);
       return j({ deleted: true });
     }
 
 
+
+    // ---- OAuth 2.1 for Claude connectors (authorization code + PKCE S256, dynamic client registration, rotating refresh tokens).
+    // The owner approves inside the Tagg app (their owner token never leaves the app); the Worker only issues read-only MCP grants.
+    const ORIGIN = url.origin, APP = "https://robox2020.github.io/tagg/";
+    const oerr = (error, desc, status = 400) => new Response(JSON.stringify({ error, error_description: desc }), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS } });
+    const redirOk = (u) => { try { const x = new URL(u); if (x.hash) return false; if (x.protocol === "https:" && x.host === "claude.ai" && x.pathname === "/api/mcp/auth_callback") return true; if (x.protocol === "http:" && (x.hostname === "localhost" || x.hostname === "127.0.0.1") && x.pathname === "/callback") return true; return false; } catch (e) { return false; } };
+    const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    if (req.method === "GET" && (p === "/.well-known/oauth-protected-resource" || p === "/.well-known/oauth-protected-resource/api/mcp")) {
+      return j({ resource: ORIGIN + "/api/mcp", authorization_servers: [ORIGIN], scopes_supported: ["tagg.read"], bearer_methods_supported: ["header"], resource_name: "Tagg" });
+    }
+    if (req.method === "GET" && (p === "/.well-known/oauth-authorization-server" || p === "/.well-known/oauth-authorization-server/api/mcp" || p === "/.well-known/openid-configuration")) {
+      return j({ issuer: ORIGIN, authorization_endpoint: ORIGIN + "/oauth/authorize", token_endpoint: ORIGIN + "/oauth/token", registration_endpoint: ORIGIN + "/oauth/register",
+        response_types_supported: ["code"], grant_types_supported: ["authorization_code", "refresh_token"], code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"], scopes_supported: ["tagg.read"] });
+    }
+    if (p === "/oauth/register" && req.method === "POST") {
+      if (await overLimit(env, "oreg/" + (req.headers.get("CF-Connecting-IP") || "x"), 30, 3600)) return oerr("temporarily_unavailable", "Too many registrations", 429);
+      const b = await req.json().catch(() => null);
+      const uris = b && Array.isArray(b.redirect_uris) ? b.redirect_uris.filter(x => typeof x === "string").slice(0, 5) : [];
+      if (!uris.length || !uris.every(redirOk)) return oerr("invalid_redirect_uri", "Only Claude's callback URL (https://claude.ai/api/mcp/auth_callback) or a local loopback /callback is allowed");
+      const cid = "tgc_" + rand(24);
+      const name = typeof b.client_name === "string" ? b.client_name.replace(/[^\w .-]/g, "").trim().slice(0, 40) || "Claude" : "Claude";
+      await env.KV.put("oc/" + cid, JSON.stringify({ name, uris, at: Date.now() }), { expirationTtl: 7776000 });
+      return new Response(JSON.stringify({ client_id: cid, client_name: name, redirect_uris: uris, grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none", client_id_issued_at: Math.floor(Date.now() / 1000) }), { status: 201, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS } });
+    }
+    if (p === "/oauth/authorize" && req.method === "GET") {
+      const q = url.searchParams, cid = q.get("client_id") || "", ru = q.get("redirect_uri") || "";
+      const cl = /^tgc_[a-z0-9]{24}$/.test(cid) ? await getJSON(env.KV, "oc/" + cid) : null;
+      // Unknown client or unregistered redirect: never redirect, show an error instead.
+      if (!cl || !cl.uris.includes(ru)) return new Response("This sign-in link is not valid. Go back to Claude and try connecting again.", { status: 400, headers: { "Content-Type": "text/plain" } });
+      const back = (e) => { const r = new URL(ru); r.searchParams.set("error", e); if (q.get("state")) r.searchParams.set("state", q.get("state")); return Response.redirect(r.toString(), 302); };
+      if (q.get("response_type") !== "code") return back("unsupported_response_type");
+      if (!q.get("code_challenge") || q.get("code_challenge_method") !== "S256" || !/^[A-Za-z0-9_-]{43,128}$/.test(q.get("code_challenge"))) return back("invalid_request");
+      const rid = rand(24);
+      await env.KV.put("oa/" + rid, JSON.stringify({ cid, ru, state: q.get("state") || "", ch: q.get("code_challenge"), name: cl.name }), { expirationTtl: 600 });
+      return Response.redirect(APP + "#/connect-claude?req=" + rid, 302);
+    }
+    if (p === "/api/oauth/request" && req.method === "GET") {
+      const rid = url.searchParams.get("req") || "";
+      const r = /^[a-z0-9]{24}$/.test(rid) ? await getJSON(env.KV, "oa/" + rid) : null;
+      if (!r) return j({ error: "This connection request expired. Go back to Claude and connect again." }, 404);
+      return j({ name: r.name, host: new URL(r.ru).host });
+    }
+    if (p === "/api/oauth/approve" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const b = await req.json().catch(() => null);
+      const rid = b && typeof b.req === "string" ? b.req : "";
+      const r = /^[a-z0-9]{24}$/.test(rid) ? await getJSON(env.KV, "oa/" + rid) : null;
+      if (!r) return j({ error: "This connection request expired. Go back to Claude and connect again." }, 404);
+      await env.KV.delete("oa/" + rid);
+      const back = new URL(r.ru); if (r.state) back.searchParams.set("state", r.state);
+      if (!b.approve) { back.searchParams.set("error", "access_denied"); return j({ redirect: back.toString() }); }
+      const list = ((await getJSON(env.KV, "mcpl/" + owner)) || []).filter(t => t.exp > Date.now());
+      const keep = [];
+      for (const t of list) { if (t.oauth && t.name === r.name) { await env.KV.delete("mcp/" + t.h); if (t.rh) await env.KV.delete("oref/" + t.rh); } else keep.push(t); }
+      if (keep.length >= 5) return j({ error: "You can have 5 agent connections. Remove one in Settings first." }, 400);
+      const code = "tgcode_" + token() + token();
+      await env.KV.put("ocd/" + (await sha256hex(code)), JSON.stringify({ owner, cid: r.cid, ru: r.ru, ch: r.ch, name: r.name, scope: b.notes === true ? "people+notes" : "people" }), { expirationTtl: 300 });
+      await env.KV.put("mcpl/" + owner, JSON.stringify(keep));
+      back.searchParams.set("code", code);
+      return j({ redirect: back.toString() });
+    }
+    if (p === "/oauth/token" && req.method === "POST") {
+      const raw = await req.text();
+      const f = new URLSearchParams(raw.length < 4000 ? raw : "");
+      const gt = f.get("grant_type");
+      const issue = async (owner, scope, name, grantId, prev) => {
+        const now = Date.now(), at = "tgm_" + token() + token(), rt = "tgr_" + token() + token();
+        const ah = await sha256hex(at), rh = await sha256hex(rt), AT = 3600000;
+        await env.KV.put("mcp/" + ah, JSON.stringify({ owner, id: grantId, scope, exp: now + AT, oauth: true }), { expirationTtl: 7200 });
+        await env.KV.put("oref/" + rh, JSON.stringify({ owner, id: grantId, scope, name }), { expirationTtl: Math.floor(MCP_TTL_MS / 1000) });
+        const list = (await getJSON(env.KV, "mcpl/" + owner)) || [];
+        const i = list.findIndex(t => t.id === grantId);
+        if (prev && i < 0) return null;
+        if (i >= 0) { await env.KV.delete("mcp/" + list[i].h); list[i].h = ah; list[i].rh = rh; list[i].exp = now + MCP_TTL_MS; }
+        else list.push({ id: grantId, name, scope, created: now, exp: now + MCP_TTL_MS, h: ah, rh, oauth: true });
+        await env.KV.put("mcpl/" + owner, JSON.stringify(list));
+        return { access_token: at, token_type: "Bearer", expires_in: 3600, refresh_token: rt, scope: "tagg.read" };
+      };
+      if (gt === "authorization_code") {
+        const code = f.get("code") || "", ver = f.get("code_verifier") || "";
+        const ck = "ocd/" + (await sha256hex(code));
+        const rec = code.length < 200 ? await getJSON(env.KV, ck) : null;
+        if (!rec) return oerr("invalid_grant", "Code is invalid or expired");
+        await env.KV.delete(ck);
+        if (f.get("redirect_uri") !== rec.ru || f.get("client_id") !== rec.cid) return oerr("invalid_grant", "Redirect or client does not match");
+        if (!/^[A-Za-z0-9._~-]{43,128}$/.test(ver) || b64u(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ver))) !== rec.ch) return oerr("invalid_grant", "PKCE check failed");
+        const out = await issue(rec.owner, rec.scope, rec.name, rand(10), false);
+        return new Response(JSON.stringify(out), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS } });
+      }
+      if (gt === "refresh_token") {
+        const rt = f.get("refresh_token") || "";
+        const rk = "oref/" + (await sha256hex(rt));
+        const rec = rt.length < 200 ? await getJSON(env.KV, rk) : null;
+        if (!rec) return oerr("invalid_grant", "Refresh token is invalid or revoked");
+        await env.KV.delete(rk);
+        const out = (await env.KV.get("own/" + rec.owner)) !== null ? await issue(rec.owner, rec.scope, rec.name, rec.id, true) : null;
+        if (!out) return oerr("invalid_grant", "This connection was removed");
+        return new Response(JSON.stringify(out), { headers: { "Content-Type": "application/json", "Cache-Control": "no-store", ...CORS } });
+      }
+      return oerr("unsupported_grant_type", "Use authorization_code or refresh_token");
+    }
     // ---- Agent access tokens (owner-managed) and the read-only MCP endpoint (token-only).
     if (p === "/api/tokens" && (req.method === "GET" || req.method === "POST")) {
       const owner = authOwner(req);
@@ -725,16 +828,19 @@ export default {
       const list = (await getJSON(env.KV, "mcpl/" + owner)) || [];
       const t = list.find(q => q.id === tm[1]);
       if (!t) return j({ error: "not found" }, 404);
-      await env.KV.delete("mcp/" + t.h);
+      await env.KV.delete("mcp/" + t.h); if (t.rh) await env.KV.delete("oref/" + t.rh);
       await env.KV.put("mcpl/" + owner, JSON.stringify(list.filter(q => q.id !== tm[1])));
       return j({ revoked: true });
     }
     if (p === "/api/mcp") {
-      if (req.method !== "POST") return j({ error: "POST JSON-RPC only" }, 405);
       const h = req.headers.get("Authorization") || "";
       const tok = h.startsWith("Bearer tgm_") ? h.slice(7) : "";
       const rec = tok && tok.length < 200 ? await getJSON(env.KV, "mcp/" + (await sha256hex(tok))) : null;
-      if (!rec || rec.exp < Date.now() || (await env.KV.get("own/" + rec.owner)) === null) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": "Bearer", ...CORS } });
+      let okRec = !!rec && rec.exp > Date.now() && (await env.KV.get("own/" + rec.owner)) !== null;
+      // A grant made through OAuth stops working the moment the owner removes it in Settings.
+      if (okRec && rec.oauth) okRec = (((await getJSON(env.KV, "mcpl/" + rec.owner)) || []).some(t => t.id === rec.id));
+      if (!okRec) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": 'Bearer resource_metadata="' + url.origin + '/.well-known/oauth-protected-resource"', ...CORS } });
+      if (req.method !== "POST") return j({ error: "POST JSON-RPC only" }, 405);
       if (await overLimit(env, "mcp/" + rec.id, 120, 3600)) return j({ error: "rate limited" }, 429);
       const m = await req.json().catch(() => null);
       if (!m || m.jsonrpc !== "2.0" || typeof m.method !== "string") return j({ jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request" } }, 400);

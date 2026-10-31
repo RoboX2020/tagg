@@ -550,6 +550,30 @@
     document.documentElement.setAttribute("data-theme", t === "dark" ? "dark" : "light");
     var m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", t === "dark" ? "#0a0a0b" : "#f4f4f6");
   }
+  /* Consent screen for the Claude connector. The sign-in happens here in the app; the owner token never leaves it. */
+  function renderConnectClaude() {
+    var rid = (location.hash.split("req=")[1] || "").split("&")[0];
+    shell("settings", '<h1 class="largetitle">Connect Claude</h1><div class="panel" id="cc"><div class="fineprint" style="margin:0">Loading...</div></div>');
+    var el = document.getElementById("cc");
+    function fail(msg) { el.innerHTML = '<div class="fineprint" style="margin:0 0 12px">' + esc(msg) + '</div><a class="btn btn-gray" href="#/settings">Back to Settings</a>'; }
+    if (!rid) return fail("This page opens from Claude. In Claude, add Tagg as a connector and tap Connect.");
+    if (!ownerToken()) return fail("Make your Tagg card first, then connect Claude from Settings.");
+    api("/api/oauth/request?req=" + encodeURIComponent(rid)).then(function (r) {
+      el.innerHTML = '<div style="font-weight:600;font-size:17px;margin-bottom:6px">Let ' + esc(r.name) + ' read your Tagg people?</div>' +
+        '<div class="fineprint" style="margin:0 0 10px">' + esc(r.name) + ' (opening from ' + esc(r.host) + ') will be able to search and read the people you have met: names, headlines, where and when you met, and any details they chose to share. It cannot change anything, and it cannot see anyone else\'s account.</div>' +
+        '<label class="row" style="padding:8px 0;display:flex;gap:10px;align-items:flex-start"><input type="checkbox" id="cc-notes" style="margin-top:3px"><span class="fineprint" style="margin:0">Also include my private notes. Claude will see them.</span></label>' +
+        '<div class="fineprint" style="margin:6px 0 12px">You can remove this connection any time in Settings, and it stops working right away. Details from LinkedIn are not verified by Tagg.</div>' +
+        '<button class="btn btn-accent" id="cc-yes">Allow</button><div style="height:8px"></div><button class="btn btn-gray" id="cc-no">Cancel</button><div class="fineprint" id="cc-err" style="color:var(--danger,#c0392b);margin:8px 0 0"></div>';
+      function go(approve) {
+        var y = document.getElementById("cc-yes"), n = document.getElementById("cc-no"); y.disabled = n.disabled = true;
+        api("/api/oauth/approve", { method: "POST", body: { req: rid, approve: approve, notes: !!document.getElementById("cc-notes").checked } })
+          .then(function (d) { location.href = d.redirect; })
+          .catch(function (e) { y.disabled = n.disabled = false; document.getElementById("cc-err").textContent = (e && e.error) || "Could not finish. Go back to Claude and try again."; });
+      }
+      document.getElementById("cc-yes").addEventListener("click", function () { go(true); });
+      document.getElementById("cc-no").addEventListener("click", function () { go(false); });
+    }).catch(function (e) { fail((e && e.error) || "This connection request expired. Go back to Claude and connect again."); });
+  }
   function route() {
     var h = location.hash || "#/";
     window.scrollTo(0, 0);
@@ -568,6 +592,7 @@
         '<p class="footer-note">Contact: prajval.2029@gmail.com</p>');
       return;
     }
+    if (h.indexOf("#/connect-claude") === 0) return renderConnectClaude();
     if (h === "#/edit") return renderEdit();
     if (h === "#/people") { refreshSoon(); return renderPeople(); }
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
@@ -768,7 +793,8 @@
       function draw(list) {
         if (!document.body.contains(el)) return;
         el.innerHTML = '<div class="fineprint" style="margin:0 0 10px">Let an AI agent you choose search the people you have met. Read-only. Each connection has its own key that you can remove at any time, and it stops working immediately.</div>' +
-          '<div class="fineprint" style="margin:0 0 10px">Server address (MCP over HTTP, Bearer key): <code>' + esc(API + "/api/mcp") + '</code><br>Works with clients that accept a custom server URL and Authorization header. It does not use sign-in pages, so apps that only offer one-click connectors will not work with it yet.</div>' +
+          '<div style="font-weight:600;margin:0 0 6px">Connect to Claude</div><ol class="fineprint" style="margin:0 0 12px;padding-left:20px;line-height:1.5"><li>In Claude, open Settings, then Connectors, then Add custom connector.</li><li>Name it Tagg and paste this address:<br><code id="mcpurl">' + esc(API + "/api/mcp") + '</code> <button class="btn btn-tinted small" id="mcpcopy" type="button">Copy</button></li><li>Tap Connect. Tagg opens and asks you to allow it. Tap Allow.</li></ol>' +
+          '<div class="fineprint" style="margin:0 0 10px">Using another agent that takes a key instead? Create a key below. Server address (MCP over HTTP, Bearer key): <code>' + esc(API + "/api/mcp") + '</code></div>' +
           (shown ? '<div class="tokenbox"><b>Copy this key now. It is shown once.</b><code id="tokval">' + esc(shown.token) + '</code><div class="fineprint" style="margin:6px 0">Send the key as a Bearer token. Anyone holding it can read what you allowed below.</div><button class="btn btn-tinted" id="tokcopy">Copy key</button> <button class="btn btn-gray" id="tokdone" style="margin-top:8px">I saved it</button></div>' : "") +
           (list.length ? list.map(function (t) {
             return '<div class="row" style="padding:8px 0"><div class="grow"><div class="title">' + esc(t.name) + '</div><div class="detail">' + (t.scope === "people+notes" ? "People and your private notes" : "People only, no notes") + ' - last used ' + fmt(t.lastUsed) + ' - expires ' + fmt(t.expires) + '</div></div><button class="btn btn-gray" data-rev="' + esc(t.id) + '" style="width:auto;padding:0 14px">Remove</button></div>';
@@ -788,6 +814,8 @@
           api("/api/tokens", { method: "POST", body: { name: name, scope: scope } }).then(function (d) { shown = d; load(); })
             .catch(function (e) { add.disabled = false; toast((e && e.error) || "Could not create it"); });
         });
+        var mc = el.querySelector("#mcpcopy");
+        if (mc) mc.addEventListener("click", function () { (navigator.clipboard ? navigator.clipboard.writeText(API + "/api/mcp") : Promise.reject()).then(function () { toast("Address copied"); }, function () { toast("Copy failed - select and copy the address"); }); });
         var tc = el.querySelector("#tokcopy");
         if (tc) tc.addEventListener("click", function () { (navigator.clipboard ? navigator.clipboard.writeText(shown.token) : Promise.reject()).then(function () { toast("Key copied"); }, function () { toast("Copy failed - select and copy the key"); }); });
         var td = el.querySelector("#tokdone"); if (td) td.addEventListener("click", function () { shown = null; load(); });
