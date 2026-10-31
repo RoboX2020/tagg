@@ -318,6 +318,17 @@ async function introVia(env, viewer, viaPersonId, targetSlug) {
     return viaRec.ownerToken;
   } catch (e) { return null; }
 }
+// Re-check a stored intro against the current rules. Returns the owner tokens involved, or null if anything changed (opt-out, un-save, deletion).
+async function introValid(env, it, viaOwner) {
+  try {
+    const rr = await getJSON(env.KV, "card/" + it.requesterSlug); if (!rr || !rr.ownerToken) return null;
+    const viaSlug = await env.KV.get("own/" + viaOwner); if (!viaSlug) return null;
+    const vp = (await getPeople(env, rr.ownerToken)).find(x => x.slug === viaSlug); if (!vp) return null;
+    if ((await introVia(env, rr.ownerToken, vp.id, it.targetSlug)) !== viaOwner) return null;
+    const tr = await getJSON(env.KV, "card/" + it.targetSlug); if (!tr || !tr.ownerToken) return null;
+    return { reqOwner: rr.ownerToken, tgtOwner: tr.ownerToken, viaSlug, reqCard: rr.card, tgtCard: tr.card };
+  } catch (e) { return null; }
+}
 async function putPeople(env, owner, list) { await env.KV.put("ppl/" + owner, JSON.stringify(list.slice(0, 500))); }
 function authOwner(req) { const h = req.headers.get("Authorization") || ""; return h.startsWith("Bearer ") ? h.slice(7) : null; }
 
@@ -1269,7 +1280,7 @@ const appHandler = {
     // Owner accepts or declines; accept saves the connection both ways.
     // Intro requests (PREP ONLY). Off unless the KV flag cfg/intro is "on"; while off every intro route answers 404 and nothing is stored. Even when on, this sends no
     // email, push or in-app alert: it only records the request in the middle person's separate intro list. Accepting, forwarding and alerts are not built.
-    if ((p === "/api/intro" || p === "/api/intros") && (await env.KV.get("cfg/intro")) !== "on") return j({ error: "not found" }, 404);
+    if ((p === "/api/intro" || p === "/api/intros" || p === "/api/intros/respond" || p === "/api/intro-offers" || p === "/api/intro-offers/respond") && (await env.KV.get("cfg/intro")) !== "on") return j({ error: "not found" }, 404);
     if (p === "/api/intro" && req.method === "POST") {
       const owner = authOwner(req), mySlug = owner ? await env.KV.get("own/" + owner) : null;
       if (!mySlug) return j({ error: "unauthorized" }, 401);
@@ -1295,14 +1306,59 @@ const appHandler = {
       const all = (await getJSON(env.KV, "intr/" + owner)) || [], out = [];
       for (const it of all.slice(0, 20)) {
         if (it.status !== "pending") continue;
-        const rr = await getJSON(env.KV, "card/" + it.requesterSlug); if (!rr || !rr.ownerToken) continue;
-        const mySlug = await env.KV.get("own/" + owner);
-        const viaPerson = (await getPeople(env, rr.ownerToken)).find(x => x.slug === mySlug);
-        if (!viaPerson || (await introVia(env, rr.ownerToken, viaPerson.id, it.targetSlug)) !== owner) continue;
-        const tr = await getJSON(env.KV, "card/" + it.targetSlug);
-        out.push({ id: it.id, at: it.at, note: it.note, requester: { name: rr.card && rr.card.name }, target: { name: tr && tr.card && tr.card.name } });
+        const v = await introValid(env, it, owner); if (!v) continue;
+        out.push({ id: it.id, at: it.at, note: it.note, requester: { name: v.reqCard && v.reqCard.name }, target: { name: v.tgtCard && v.tgtCard.name } });
       }
       return j({ intros: out });
+    }
+    // Middle person answers an intro. Decline just closes it. Forward re-checks every rule first, then stores an offer in the TARGET's own list. Nothing is sent to
+    // anyone: no email, push or in-app alert. The target only sees the offer if they open /api/intro-offers, and only name, headline and the note the requester wrote.
+    if (p === "/api/intros/respond" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const b = await req.json().catch(() => null);
+      if (!b || typeof b.id !== "string") return j({ error: "id required" }, 400);
+      const it = ((await getJSON(env.KV, "intr/" + owner)) || []).find(x => x.id === b.id);
+      if (!it || it.status !== "pending") return j({ error: "Not available" }, 404);
+      const c = await jpatch(env.KV, "intr/" + owner, { id: it.id, status: "pending" }, { status: b.forward === true ? "forwarding" : "declined" });
+      if (!c.patched) return j({ error: "Not available" }, 404);
+      if (b.forward !== true) return j({ ok: true, status: "declined" });
+      const v = await introValid(env, it, owner);
+      if (!v) { await jpatch(env.KV, "intr/" + owner, { id: it.id }, { status: "withdrawn" }); return j({ error: "Not available" }, 404); }
+      await jpush(env.KV, "intf/" + v.tgtOwner, { id: it.id, viaSlug: v.viaSlug, requesterSlug: it.requesterSlug, note: it.note, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { id: it.id } });
+      await jpatch(env.KV, "intr/" + owner, { id: it.id }, { status: "forwarded" });
+      return j({ ok: true, status: "forwarded" });
+    }
+    if (p === "/api/intro-offers" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const out = [];
+      for (const of of (((await getJSON(env.KV, "intf/" + owner)) || []).slice(0, 20))) {
+        if (of.status !== "pending") continue;
+        const vr = await getJSON(env.KV, "card/" + of.viaSlug), v = vr && vr.ownerToken ? await introValid(env, { requesterSlug: of.requesterSlug, targetSlug: await env.KV.get("own/" + owner) }, vr.ownerToken) : null;
+        if (!v || v.tgtOwner !== owner || !(await profileStatus(env, owner)).complete) continue;
+        out.push({ id: of.id, at: of.at, note: of.note, from: { name: v.reqCard && v.reqCard.name, headline: v.reqCard && v.reqCard.headline }, via: { name: vr.card && vr.card.name } });
+      }
+      return j({ offers: out });
+    }
+    if (p === "/api/intro-offers/respond" && req.method === "POST") {
+      const owner = authOwner(req), mySlug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!mySlug) return j({ error: "unauthorized" }, 401);
+      const b = await req.json().catch(() => null);
+      if (!b || typeof b.id !== "string") return j({ error: "id required" }, 400);
+      const of = ((await getJSON(env.KV, "intf/" + owner)) || []).find(x => x.id === b.id);
+      if (!of || of.status !== "pending") return j({ error: "Not available" }, 404);
+      const c = await jpatch(env.KV, "intf/" + owner, { id: of.id, status: "pending" }, { status: b.accept === true ? "accepting" : "declined" });
+      if (!c.patched) return j({ error: "Not available" }, 404);
+      if (b.accept !== true) return j({ ok: true, status: "declined" });
+      const vr = await getJSON(env.KV, "card/" + of.viaSlug), v = vr && vr.ownerToken ? await introValid(env, { requesterSlug: of.requesterSlug, targetSlug: mySlug }, vr.ownerToken) : null;
+      if (!v || v.tgtOwner !== owner || !(await profileStatus(env, owner)).complete) { await jpatch(env.KV, "intf/" + owner, { id: of.id }, { status: "withdrawn" }); return j({ error: "Not available" }, 404); }
+      // The target agreed: save each other, marked as an introduction (not a meeting at an event).
+      const now = new Date().toISOString(), mk = (slug, card, ow) => ({ id: "p_" + rand(10), slug, card, metAt: now, event: "Introduced by " + ((vr.card && vr.card.name) || "a mutual connection"), location: null, note: "", enriched: null });
+      await jpush(env.KV, "ppl/" + owner, mk(of.requesterSlug, v.reqCard), { cap: 500, dedupe: { slug: of.requesterSlug } });
+      await jpush(env.KV, "ppl/" + v.reqOwner, mk(mySlug, v.tgtCard), { cap: 500, dedupe: { slug: mySlug } });
+      await jpatch(env.KV, "intf/" + owner, { id: of.id }, { status: "accepted" });
+      return j({ ok: true, status: "accepted" });
     }
     if (p === "/api/inbox/respond" && req.method === "POST") {
       const owner = authOwner(req);

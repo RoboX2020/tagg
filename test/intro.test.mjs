@@ -45,4 +45,46 @@ L = await call("GET", "/api/intros", null, M.t); ok(L.intros.length === 0, "midd
 await kv.put("ppl/" + M.t, JSON.stringify(ppl.filter(x => x.slug !== T.slug))); L = await call("GET", "/api/intros", null, M.t); ok(L.intros.length === 0, "middle un-saving target hides it"); await kv.put("ppl/" + M.t, JSON.stringify(ppl));
 // requester incomplete cannot request
 const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, true); { const rec = JSON.parse(await kv.get("card/" + I.slug)); rec.card.detail = ""; rec.card.email = ""; await kv.put("card/" + I.slug, JSON.stringify(rec)); } const vi = ((await call("GET", "/api/people", null, I.t)).people || []).find(p => p.card && p.card.name === "InMia").id; r = await intro(I, vi, T); ok(r.s === 403, "incomplete requester refused " + r.s);
+
+// ---- respond / forward / target consent ----
+{
+  const A2 = await mk("RqAlice"), M2 = await mk("RqMia"), T2 = await mk("RqTara"), Z = await mk("RqZed");
+  await save(A2, M2); await save(M2, A2); await save(M2, T2); await save(T2, M2); await save(M2, Z); await save(Z, M2);
+  for (const w of [A2, M2, T2, Z]) await sh(w, true);
+  const via2 = await idOf(A2, M2);
+  const nt0 = ["nt/" + T2.t, "nt/" + M2.t, "nt/" + A2.t].map(k => kv.data ? 0 : 0); const mails0 = sent.length;
+  await kv.put("cfg/intro", "off");
+  ok((await call("POST", "/api/intros/respond", { id: "x", forward: true }, M2.t)).s === 404 && (await call("GET", "/api/intro-offers", null, T2.t)).s === 404 && (await call("POST", "/api/intro-offers/respond", { id: "x", accept: true }, T2.t)).s === 404, "new routes 404 while flag off");
+  await kv.put("cfg/intro", "on");
+  const rq = await intro(A2, via2, T2, { note: "Would love to meet" }); ok(rq.s === 200, "request ok");
+  const id = (await call("GET", "/api/intros", null, M2.t)).intros[0].id;
+  ok((await call("POST", "/api/intros/respond", { id, forward: true }, A2.t)).s === 404, "requester cannot respond to intro addressed to via");
+  ok((await call("POST", "/api/intros/respond", { id, forward: true }, Z.t)).s === 404, "other owner cannot respond");
+  ok((await call("GET", "/api/intro-offers", null, T2.t)).offers.length === 0, "target sees nothing before forward");
+  const fw = await call("POST", "/api/intros/respond", { id, forward: true }, M2.t); ok(fw.s === 200 && fw.status === "forwarded", "forwarded " + fw.s);
+  ok((await call("POST", "/api/intros/respond", { id, forward: true }, M2.t)).s === 404, "second forward refused");
+  let off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers.length === 1 && off.offers[0].from.name === "RqAlice" && off.offers[0].note === "Would love to meet", "target sees offer");
+  const shown = JSON.stringify(off); ok(!/@in\.invalid|ownerToken|slug|phone|linkedin/i.test(shown), "offer exposes name, headline and note only");
+  ok((await call("GET", "/api/intro-offers", null, A2.t)).offers.length === 0 && (await call("GET", "/api/intro-offers", null, Z.t)).offers.length === 0, "others see no offer");
+  await sh(A2, false); ok((await call("GET", "/api/intro-offers", null, T2.t)).offers.length === 0, "requester opt-out hides the offer"); await sh(A2, true);
+  ok((await call("GET", "/api/intro-offers", null, T2.t)).offers.length === 1, "offer returns with consent");
+  await sh(T2, false); const ra = await call("POST", "/api/intro-offers/respond", { id, accept: true }, T2.t); ok(ra.s === 404, "target opted out cannot accept"); await sh(T2, true);
+  ok((await call("GET", "/api/intro-offers", null, T2.t)).offers.length === 0, "withdrawn offer stays gone after a failed revalidation");
+  ok(!(await ((await call("GET", "/api/people", null, A2.t)).people || []).find(p => p.card && p.card.name === "RqTara")), "nothing saved when revalidation failed");
+}
+{
+  const A3 = await mk("RcAlice"), M3 = await mk("RcMia"), T3 = await mk("RcTara");
+  await save(A3, M3); await save(M3, A3); await save(M3, T3); await save(T3, M3); for (const w of [A3, M3, T3]) await sh(w, true);
+  await intro(A3, await idOf(A3, M3), T3); const id = (await call("GET", "/api/intros", null, M3.t)).intros[0].id;
+  await call("POST", "/api/intros/respond", { id, forward: true }, M3.t);
+  const m0 = sent.length; const [x, y] = await Promise.all([call("POST", "/api/intro-offers/respond", { id, accept: true }, T3.t), call("POST", "/api/intro-offers/respond", { id, accept: true }, T3.t)]);
+  ok([x.s, y.s].filter(q => q === 200).length >= 1, "simultaneous accept on the KV fallback (not atomic): at least one wins " + x.s + "," + y.s);
+  const pa = (await call("GET", "/api/people", null, A3.t)).people.filter(p => p.card.name === "RcTara"), pt = (await call("GET", "/api/people", null, T3.t)).people.filter(p => p.card.name === "RcAlice");
+  ok(pa.length === 1 && pt.length === 1 && /Introduced by RcMia/.test(pa[0].event), "mutual saves marked as introduction, one each");
+  ok(sent.length === m0, "no email at any step");
+  const dI = await mk("RdAlice"), dM = await mk("RdMia"), dT = await mk("RdTara"); await save(dI, dM); await save(dM, dI); await save(dM, dT); await save(dT, dM); for (const w of [dI, dM, dT]) await sh(w, true);
+  await intro(dI, await idOf(dI, dM), dT); const id2 = (await call("GET", "/api/intros", null, dM.t)).intros[0].id;
+  ok((await call("POST", "/api/intros/respond", { id: id2, forward: false }, dM.t)).status === "declined", "via declines");
+  ok((await call("GET", "/api/intro-offers", null, dT.t)).offers.length === 0, "declined intro never reaches target");
+}
 console.log(`intro checks: ${pass} pass, ${fail} fail`); process.exit(fail ? 1 : 0);
