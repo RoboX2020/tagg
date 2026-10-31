@@ -612,6 +612,7 @@ export default {
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
       for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
       if (slug) keys.push("card/" + slug, "enrich/" + slug, "photo/" + slug);
+      keys.push("gsh/" + owner);
       for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) keys.push("mcp/" + t.h);
       keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner);
       for (const k of keys) await env.KV.delete(k);
