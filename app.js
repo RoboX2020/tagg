@@ -712,7 +712,8 @@
   var GS_SKIP = false;
   var GS_TEXT = "If you share your network, people you are connected with can see the names of people you are connected with, and you can see theirs. Only names and who knows whom. Never your notes, where you met, or anyone's phone or email. A person only appears if they share too, and you can turn this off any time in Settings.";
   function openGraphChoice(st, done) {
-    var bg = document.createElement("div"); bg.className = "sheet-bg";
+    if (document.getElementById("gs-sheet")) return;
+    var bg = document.createElement("div"); bg.className = "sheet-bg"; bg.id = "gs-sheet";
     var fresh = st && (st.isNew || st.cohort);
     bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Share your network?</h3><p class="hint">' + esc(GS_TEXT) + '</p>' +
       '<p class="hint">' + (st && st.cohort ? "Your network is already shared with people you are connected with, because this account is part of the test group. Tap Share to confirm, or keep it private." : fresh ? "Sharing is selected for new accounts. Tap Share to confirm, or keep it private." : "You have not chosen yet, so nothing of yours is shared.") + '</p>' +
@@ -721,16 +722,27 @@
     function set(on) { api("/api/graph/sharing", { method: "PUT", body: { on: on } }).then(function () { bg.remove(); toast(on ? "Network sharing is on" : "Network sharing is off"); if (done) done(); }).catch(function () { toast("Could not save - try again"); }); }
     document.getElementById("gs-yes").addEventListener("click", function () { set(true); });
     document.getElementById("gs-no").addEventListener("click", function () { set(false); });
-    document.getElementById("gs-later").addEventListener("click", function () { GS_SKIP = true; bg.remove(); });
+    document.getElementById("gs-later").addEventListener("click", function () { GS_SKIP = true; bg.remove(); if (done) done(); });
   }
   function mountNetworkPeople(box) {
     if (!ownerToken() || !box) return;
+    var fresh = function () { return document.getElementById("netpeople") || box; };
     api("/api/graph/sharing").then(function (st) {
-      if (st && st.needsChoice && !GS_SKIP && st.profileComplete) { openGraphChoice(st, function () { mountNetworkPeople(box); }); return; }
+      if (st && st.needsChoice && !GS_SKIP && st.profileComplete) { openGraphChoice(st, function () { mountNetworkPeople(fresh()); }); return; }
       return api("/api/graph").then(function (g) {
         var nm = {}; (g.nodes || []).forEach(function (n) { nm[n.id] = n.name; });
         var rows = (g.edges || []).filter(function (e) { return e.kind === "knows" && nm[e.to] && (g.nodes || []).some(function (n) { return n.id === e.to && n.type === "friend-of-friend"; }); });
-        if (!rows.length) { box.innerHTML = ""; return; }
+        if (!rows.length) {
+          box = fresh(); var met = (g.nodes || []).some(function (n) { return n.type === "person"; });
+          if (!met) { box.innerHTML = ""; return; }
+          var msg, btn = "";
+          if (!st.profileComplete) msg = "Fill in a few more details on your card to use network sharing. Friends of friends stay hidden until your profile is filled in.";
+          else if (st.choice !== "on" && st.choice !== "on-until-you-choose") { msg = st.choice === "off" ? "Network sharing is off, so you do not see people your connections know. Turn it on in Settings." : "You are not sharing your network yet, so you do not see people your connections know."; if (st.choice !== "off") btn = '<button class="btn btn-accent" id="gs-open" style="margin-top:10px;width:auto;padding:9px 16px">Share my network</button>'; }
+          else msg = "No one to show yet. Someone appears here only when you, your connection and that person all share their network, and you and your connection have saved each other.";
+          box.innerHTML = '<h2 class="section">People your connections know</h2><div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">' + msg + btn + '</div></div></div></div>';
+          var go = document.getElementById("gs-open"); if (go) go.addEventListener("click", function () { GS_SKIP = false; openGraphChoice(st, function () { mountNetworkPeople(fresh()); }); });
+          return;
+        }
         box.innerHTML = '<h2 class="section">People your connections know</h2><div class="group">' + rows.map(function (e) { return '<div class="row"><div class="grow"><div class="title">' + esc(nm[e.to]) + '</div><div class="detail">Knows ' + esc(nm[e.from] || "someone you know") + '</div></div></div>'; }).join("") + '</div><p class="fineprint">Shown because everyone involved shares their network. Names only.</p>';
       });
     }).catch(function () {});

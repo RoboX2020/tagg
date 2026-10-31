@@ -666,6 +666,24 @@ if (env) {
   ok("unsubscribe removes the device", (await call("DELETE", "/api/push/subscribe", { endpoint: sub.endpoint }, PA.o)).body.push === 0);
   delete env.VAPID_JWK;
   ok("without keys, push is reported unavailable and subscribing is refused", (await call("GET", "/api/notify/prefs", null, PA.o)).body.pushAvailable === false && (await call("POST", "/api/push/subscribe", { subscription: sub }, PA.o)).status === 503);
+  // ---- Scan alert: separate switch, in-app and push only, anonymous wording, throttled ----
+  const SO = await mkv("scan-o@n.invalid", "Ola Park", true); const pushes = []; env.PUSH_SINK = async (sb, pay) => { pushes.push(pay); return "ok"; };
+  await call("POST", "/api/push/subscribe", { subscription: { endpoint: "https://fcm.googleapis.com/fcm/send/scan-ep", keys: { p256dh: Buffer.from(new Uint8Array(65).fill(4)).toString("base64url"), auth: Buffer.from(new Uint8Array(16).fill(1)).toString("base64url") } } }, SO.o);
+  box.length = 0; const nBefore = (await call("GET", "/api/notify", null, SO.o)).body.items.length;
+  await call("POST", "/api/scan", { slug: SO.slug });
+  ok("scan alert is OFF by default even with notifications on (no item, no push, no email)", (await call("GET", "/api/notify", null, SO.o)).body.items.length === nBefore && pushes.length === 0 && box.length === 0);
+  await env.KV.put("cfg/notify-scan", "on");
+  await env.KV.delete("nd/scan/" + SO.slug);
+  await call("POST", "/api/scan", { slug: SO.slug });
+  const sItems = (await call("GET", "/api/notify", null, SO.o)).body.items.filter(x => x.type === "scan");
+  ok("scan alert (switch on): the card owner gets one in-app item with anonymous wording", sItems.length === 1 && sItems[0].title === "Your card was opened" && sItems[0].line === "Someone opened your Tagg card. They have not connected yet.");
+  ok("scan alert pushes the same short text and sends no email", pushes.length === 1 && pushes[0].body === sItems[0].line && box.length === 0);
+  await call("POST", "/api/scan", { slug: SO.slug });
+  ok("a second scan within 30 minutes does not alert again", (await call("GET", "/api/notify", null, SO.o)).body.items.filter(x => x.type === "scan").length === 1 && pushes.length === 1);
+  await env.KV.delete("nd/scan/" + SO.slug);
+  await call("POST", "/api/scan", { slug: SO.slug }, SO.o);
+  ok("the owner opening their own card while signed in does not alert", (await call("GET", "/api/notify", null, SO.o)).body.items.filter(x => x.type === "scan").length === 1);
+  await env.KV.delete("cfg/notify-scan"); delete env.PUSH_SINK;
   await env.KV.delete("cfg/notify");
 }
 

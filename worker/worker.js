@@ -379,17 +379,20 @@ function notifyCopy(type, name) {
     text: "Hi " + n.split(" ")[0] + ",\n\nYour Tagg card is ready. Show your QR code when you meet someone, and Tagg keeps the time you met and anything you choose to add.\n\nOpen your card: " + NOTIFY_SITE + "card" + NOTIFY_FOOT };
   if (type === "request") return { title: "Connection request", line: n + " wants to connect.", subject: n + " wants to connect on Tagg",
     text: n + " sent you a connection request on Tagg.\n\nOpen Tagg to review it. You choose whether to accept.\n\nReview request: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
+  if (type === "scan") return { title: "Your card was opened", line: "Someone opened your Tagg card. They have not connected yet.", subject: "", text: "" };
   return { title: "Connected", line: n + " accepted your request.", subject: "You are now connected with " + n,
     text: n + " accepted your connection request on Tagg.\n\nView their profile: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
 }
 async function notify(env, owner, type, evId, name) {
   try {
     if (!owner || (await env.KV.get("cfg/notify")) !== "on") return { skipped: "off" };
+    // The scan alert is its own switch (cfg/notify-scan) because its wording is separate: in-app and push only, never email.
+    if (type === "scan" && (await env.KV.get("cfg/notify-scan")) !== "on") return { skipped: "scan-off" };
     const id = type + ":" + evId, c = notifyCopy(type, name), out = {};
     const list = (await getJSON(env.KV, "nt/" + owner)) || [];
     if (!list.some(x => x.id === id)) { list.unshift({ id, type, title: c.title, line: c.line, at: new Date().toISOString(), read: false }); await env.KV.put("nt/" + owner, JSON.stringify(list.slice(0, 30))); out.inapp = true; }
     const prefs = (await getJSON(env.KV, "npf/" + owner)) || {};
-    if (prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
+    if (type !== "scan" && prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
       const prof = await getJSON(env.KV, "prof/" + owner);
       const to = prof && normEmail(prof.email);
       if (to && (await env.KV.get("suppress/" + to)) === null && (await env.KV.get("nd/email/" + id)) === null) {
@@ -401,7 +404,7 @@ async function notify(env, owner, type, evId, name) {
       const subs = (await getJSON(env.KV, "ps/" + owner)) || [];
       if (subs.length) {
         await env.KV.put("nd/push/" + id, "1", { expirationTtl: 2592000 });
-        const keep = [], pay = { title: c.title, body: c.line, url: NOTIFY_SITE + (type === "request" || type === "connected" ? "people" : "card"), tag: type };
+        const keep = [], pay = { title: c.title, body: c.line, url: NOTIFY_SITE + (type === "request" || type === "connected" || type === "scan" ? "people" : "card"), tag: type };
         for (const sb of subs) { let r = "fail"; try { r = await sendPush(env, sb, pay); } catch (e) {} if (r !== "gone") keep.push(sb); if (r === "ok") out.push = (out.push || 0) + 1; }
         if (keep.length !== subs.length) await env.KV.put("ps/" + owner, JSON.stringify(keep));
       }
@@ -942,6 +945,11 @@ export default {
       const list = ((await getJSON(env.KV, "scn/" + rec.ownerToken)) || []).filter(x => Date.now() - Date.parse(x.at) < 900000);
       list.unshift({ id: "s_" + rand(8), at: new Date().toISOString() });
       await env.KV.put("scn/" + rec.ownerToken, JSON.stringify(list.slice(0, 20)), { expirationTtl: 3600 });
+      // Optional alert to the card's owner (OFF unless both cfg/notify and cfg/notify-scan are on). At most one per card per 30 minutes,
+      // never names anyone, never says they met, and not sent when the opener is the owner's own signed-in app.
+      if (authOwner(req) !== rec.ownerToken && (await env.KV.get("nd/scan/" + slug)) === null) {
+        if ((await notify(env, rec.ownerToken, "scan", slug + ":" + Math.floor(Date.now() / 1800000), "")).inapp) await env.KV.put("nd/scan/" + slug, "1", { expirationTtl: 1800 });
+      }
       return j({ ok: true });
     }
     // Save someone privately: adds their public card to MY people with my context. Nothing is sent to them.
