@@ -209,9 +209,10 @@ if (env) {
   let geminiCalls = 0, linkedinCalls = 0, apifyCalls = 0, ghCalls = 0;
   globalThis.fetch = async (u, init) => {
     const us = String(u);
-    if (us.includes("api.apify.com")) { apifyCalls++; if (init && init.method === "POST") return new Response(JSON.stringify([{ headline: "Student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); }
+    if (us.includes("api.apify.com")) { apifyCalls++; if (init && init.method === "POST") return new Response(JSON.stringify([{ headline: "Student", experience: [{ position: "Lab Assistant", companyName: "ASU" }], education: [{ schoolName: "Arizona State University" }], profilePicture: { url: "https://media.licdn.com/dms/image/test.jpg" }, location: { linkedinText: "Phoenix, Arizona" } }]), { status: 200 }); }
     if (us.includes("api.github.com/users/")) { ghCalls++; const h = us.split("/users/")[1]; if (h === "nobody-here") return new Response("{}", { status: 404 }); if (h === "limited-user") return new Response("{}", { status: 403 }); if (h === "down-user") throw new Error("net");
       return new Response(JSON.stringify({ login: h, name: "Gh Person", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, public_repos: 7, avatar_url: "https://avatars.githubusercontent.com/u/1", blog: "" }), { status: 200 }); }
+    if (us.includes("media.licdn.com")) return new Response(new Uint8Array([255, 216, 255, 224, 0, 16, 74, 70]), { status: 200, headers: { "content-type": "image/jpeg" } });
     if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
     return realFetch2(u, init);
   };
@@ -286,6 +287,16 @@ if (env) {
   const lk2 = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: lk2, card: { name: "Both", headline: "h", links: {} } }, lk2);
   await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/both-person", ownProfile: true, disclosure: "linkedin-auto-v1" }, lk2); await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/both-person" }, lk2);
   const bothSlug = await env.KV.get("own/" + lk2); const bothE = JSON.parse(await env.KV.get("enrich/" + bothSlug)); ok("github import keeps LinkedIn details in the same record", !!bothE.linkedin && !!bothE.github);
+  // Profile picture: only with the v2 notice, copied from LinkedIn's image host, served from Tagg, removable.
+  const pTok = (await call("POST", "/api/owner", {})).body.ownerToken; const pc = await call("POST", "/api/card", { ownerToken: pTok, card: { name: "Pic Person", headline: "h", links: {} } }, pTok);
+  const v1 = await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/pic-v1", ownProfile: true, disclosure: "linkedin-auto-v1" }, pTok);
+  ok("v1 notice imports no photo", v1.status === 200 && v1.body.linkedin.hasPhoto === false && (await fetch(url + "/api/photo/" + pc.body.slug)).status === 404);
+  const v2 = await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/pic-v2", ownProfile: true, disclosure: "linkedin-auto-v2" }, pTok);
+  const pr = await fetch(url + "/api/photo/" + pc.body.slug);
+  ok("v2 notice copies the picture and Tagg serves it", v2.status === 200 && v2.body.linkedin.hasPhoto === true && pr.status === 200 && pr.headers.get("content-type") === "image/jpeg" && (await pr.arrayBuffer()).byteLength === 8);
+  ok("photo response never leaks the provider url", !JSON.stringify(v2.body).includes("licdn"));
+  ok("owner can remove only the photo", (await call("DELETE", "/api/profile-photo", null, pTok)).status === 200 && (await fetch(url + "/api/photo/" + pc.body.slug)).status === 404 && (await call("GET", "/api/c/" + pc.body.slug)).body.enriched.linkedin.schools.length > 0);
+  ok("photo removal needs sign in", (await call("DELETE", "/api/profile-photo")).status === 401);
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;

@@ -325,3 +325,14 @@ textarea.input { resize: vertical; min-height: 72px; line-height:1.45; }
 .tokenbox{background:var(--accent-soft);border-radius:12px;padding:12px;margin:0 0 12px}
 .tokenbox code{display:block;word-break:break-all;font-size:12.5px;margin:8px 0;user-select:all}
 .btn[disabled]{opacity:.45;cursor:default}
+.avatar-img{border-radius:50%;object-fit:cover;background:var(--card-2);flex:none;display:block}
+.linksec{background:var(--bg-elev);border:1px solid var(--sep);border-radius:20px;padding:16px;margin:12px 0}
+.lshead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}
+.lstitle{font-weight:600;font-size:16px}
+.lssub{color:var(--text-2);font-size:13px;word-break:break-all}
+.lsline{font-size:14px;line-height:1.45;margin:4px 0}
+.lsmute{color:var(--text-2)}
+.prow{display:flex;gap:12px;font-size:13.5px;line-height:1.5;margin-top:4px}
+.prow .pl{color:var(--text-2);width:64px;flex:none}
+.prow .pv{flex:1;min-width:0;overflow-wrap:anywhere}
+.ghrow{display:flex;gap:12px;align-items:center;margin-bottom:6px}

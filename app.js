@@ -690,7 +690,7 @@
         if (!el || !document.body.contains(el)) return;
         var links = Object.keys(card.links || {}).join(", ");
         el.innerHTML = '<div class="fineprint" style="margin:0 0 8px">This is your card as someone sees it after they scan your code and save you.</div>' +
-          cardHtml(card) + enrichHtml({ enriched: en }) +
+          cardHtml(card) + enrichHtml({ enriched: en, card: card, slug: cardSlug() }) +
           '<h3 style="font-size:15px;margin:14px 0 4px">Shared</h3><div class="fineprint" style="margin:0">Name, headline' + (links ? ", links (" + esc(links) + ")" : "") + (card.email ? ", email" : "") + (card.phone ? ", phone" : "") + (en && en.linkedin ? ", the LinkedIn details above" : "") + '.</div>' +
           '<h3 style="font-size:15px;margin:10px 0 4px">Private to you</h3><div class="fineprint" style="margin:0">Your notes, places and photos about people, who you saved, and your Ask questions. Never shown to anyone you meet.</div>' +
           '<a class="btn btn-gray" href="#/edit" style="margin-top:10px">Edit shared details</a>';
@@ -779,6 +779,7 @@
     function list(a) { return (a || []).filter(Boolean).join(", "); }
     function summary(li) {
       return '<div class="panel"><div style="font-weight:600">Imported from LinkedIn</div>' +
+        (li.hasPhoto && cardSlug() ? '<div style="display:flex;align-items:center;gap:12px;margin-top:8px"><img class="avatar-img" src="' + esc(API + "/api/photo/" + cardSlug() + "?v=" + encodeURIComponent(li.importedAt || "")) + '" alt="" style="width:48px;height:48px"><button class="btn btn-plain" id="li-rmphoto" style="margin:0">Remove photo</button></div>' : "") +
         '<div style="color:var(--text-2);font-size:13px;margin-top:4px;line-height:1.5">' +
         [li.titles && li.titles.length ? list(li.titles) : li.title, list(li.companies && li.companies.length ? li.companies : [li.company]), list(li.schools && li.schools.length ? li.schools : [li.school]), li.location].filter(Boolean).map(esc).join("<br>") +
         '</div><div class="fineprint" style="margin-top:6px">Shown to people who scan your code and used when you ask Tagg who you met.</div>' +
@@ -788,6 +789,8 @@
     function idle(li) {
       box.innerHTML = (li ? summary(li) : "") + '<button class="btn btn-gray" id="li-open" style="margin:8px 0 4px">' + (li ? "Import again" : "Import school and work from LinkedIn") + '</button>';
       document.getElementById("li-open").addEventListener("click", ask);
+      var rp = document.getElementById("li-rmphoto");
+      if (rp) rp.addEventListener("click", function () { api("/api/profile-photo", { method: "DELETE" }).then(function () { toast("Photo removed"); li.hasPhoto = false; idle(li); }).catch(function () { toast("Could not remove - try again"); }); });
       var ed = document.getElementById("li-edit");
       if (ed && li) ed.addEventListener("click", function () { review({ fields: li, edit: true }); });
       var rm = document.getElementById("li-remove");
@@ -862,8 +865,8 @@
   function askAutoImport(c, which) {
     var li = which.indexOf("linkedin") >= 0, gh = which.indexOf("github") >= 0;
     var reads = [];
-    if (li) reads.push("LinkedIn: Tagg asks a data service (Apify) to read the public parts of your profile (headline, roles, employers, schools, place)");
-    if (gh) reads.push("GitHub: Tagg reads your public GitHub profile (name, bio, company, place, follower and repository counts) from GitHub's public API");
+    if (li) reads.push("LinkedIn: Tagg asks a data service (Apify) to read the public parts of your profile (headline, roles, employers, schools, place, profile picture)");
+    if (gh) reads.push("GitHub: Tagg reads your public GitHub profile (name, bio, company, place, picture, follower and repository counts) from GitHub's public API");
     var bg = document.createElement("div");
     bg.className = "sheet-bg";
     bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Fill your card from ' + (li && gh ? "LinkedIn and GitHub" : li ? "LinkedIn" : "GitHub") + '?</h3>' +
@@ -884,7 +887,7 @@
       persist().then(function () {
         return which.reduce(function (chain, k) {
           return chain.then(function () {
-            return api("/api/import/" + k + "/auto", { method: "POST", body: { url: c.links[k], ownProfile: true, disclosure: k + "-auto-v1" } }).then(function () { did++; }).catch(function (e) { if (!firstErr) firstErr = (e && e.error) || "Could not import right now."; });
+            return api("/api/import/" + k + "/auto", { method: "POST", body: { url: c.links[k], ownProfile: true, disclosure: k === "linkedin" ? "linkedin-auto-v2" : "github-auto-v1" } }).then(function () { did++; }).catch(function (e) { if (!firstErr) firstErr = (e && e.error) || "Could not import right now."; });
           });
         }, Promise.resolve());
       }).then(function () {
@@ -1047,7 +1050,7 @@
       '<h1 class="largetitle">' + esc(c.name) + '</h1>' +
       (slug ? '<p class="fineprint" style="margin:-4px 0 12px">' + (verified ? 'Signed in with Google' : 'Identity not verified - the name and email on this card are what they typed.') + '</p>' : '') +
       '<p class="lead">' + (signedIn ? 'Share your card - ' + first + ' gets a request, and once they accept you both save the moment.' : 'Create your Tagg to connect. ' + first + ' gets your card and you both keep each other.') + '</p>' +
-      cardHtml(c) + enrichHtml({ enriched: enriched }) +
+      cardHtml(c) + enrichHtml({ enriched: enriched, card: c, slug: slug }) +
       '<div style="height:18px"></div>' +
       '<div id="connectzone">' +
       (signedIn
@@ -1196,31 +1199,67 @@
   }
 
   /* ================= person detail ================= */
+  /* Profile sections. Each link the person shared gets its own rounded section. Only GitHub and the details the owner imported are
+     shown inside the page; other sites cannot be shown inside Tagg, so those sections open the profile. Nothing here is fetched from a third party. */
+  function photoUrlFor(p) {
+    var li = p.enriched && p.enriched.linkedin, g = p.enriched && p.enriched.github;
+    if (li && li.hasPhoto && p.slug) return API + "/api/photo/" + p.slug + "?v=" + encodeURIComponent(li.importedAt || "");
+    return g && g.avatar ? g.avatar : "";
+  }
+  function avatarHtml(p, size) {
+    var u = photoUrlFor(p), st = "width:" + size + "px;height:" + size + "px;font-size:" + Math.round(size * 0.4) + "px";
+    return u ? '<img class="avatar-img" src="' + esc(u) + '" alt="" style="width:' + size + 'px;height:' + size + 'px" onerror="this.outerHTML=\'<div class=&quot;avatar&quot; style=&quot;' + st + '&quot;>' + esc(initial(p.card.name)) + '</div>\'">' :
+      '<div class="avatar" style="' + st + '">' + esc(initial(p.card.name)) + '</div>';
+  }
+  function linkLabel(k, u) {
+    var m = String(u).replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "");
+    return m.length > 42 ? m.slice(0, 41) + "..." : m;
+  }
   function enrichHtml(p) {
-    var li = p.enriched && p.enriched.linkedin;
+    var en = p.enriched || {}, li = en.linkedin, g = en.github, c = p.card || { links: {} };
     function lst(x) { return (x || []).filter(Boolean).map(esc).join(", "); }
-    var liHtml = li ?
-      '<h2 class="section">Added from LinkedIn</h2>' +
-      '<div class="panel" style="margin-top:0">' +
-      (li.headline ? '<div style="font-weight:600">' + esc(li.headline) + '</div>' : "") +
-      '<div style="color:var(--text-2);font-size:13px;margin-top:6px;line-height:1.55">' +
-      (lst(li.titles) || esc(li.title || "") ? '<div>Roles: ' + (lst(li.titles) || esc(li.title)) + '</div>' : "") +
-      (lst(li.companies) || esc(li.company || "") ? '<div>Work: ' + (lst(li.companies) || esc(li.company)) + '</div>' : "") +
-      (lst(li.schools) || esc(li.school || "") ? '<div>School: ' + (lst(li.schools) || esc(li.school)) + '</div>' : "") +
-      (li.location ? '<div>Place: ' + esc(li.location) + '</div>' : "") + '</div>' +
-      '<div class="fineprint" style="margin:8px 0 0">Entered or reviewed by the card owner. Tagg has not verified it.</div></div>' : "";
-    var g = p.enriched && p.enriched.github;
-    var gHtml = g ?
-      '<h2 class="section">From their public GitHub</h2>' +
-      '<div class="taggcard"><div style="display:flex;gap:14px;align-items:center">' +
-      (g.avatar ? '<img src="' + esc(g.avatar) + '" alt="" style="width:52px;height:52px;border-radius:50%">' : "") +
-      '<div><div style="font-weight:600">' + esc(g.name || g.login) + '</div>' +
-      (g.bio ? '<div style="color:var(--text-2);font-size:14px;margin-top:2px">' + esc(g.bio) + '</div>' : "") +
-      '<div style="color:var(--text-2);font-size:13px;margin-top:4px">' +
-      (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? " · " + g.repos + " public repos" : "") +
-      (g.location ? " · " + esc(g.location) : "") + '</div>' +
-      '</div></div></div>' : "";
-    return liHtml + gHtml;
+    function row(label, val) { return val ? '<div class="prow"><span class="pl">' + label + '</span><span class="pv">' + val + '</span></div>' : ""; }
+    function sec(title, sub, body, href) {
+      return '<section class="linksec"><div class="lshead"><div><div class="lstitle">' + title + '</div>' + (sub ? '<div class="lssub">' + sub + '</div>' : "") + '</div>' +
+        (href ? '<a class="chip" href="' + esc(href) + '" target="_blank" rel="noopener">Open</a>' : "") + '</div>' + (body || "") + '</section>';
+    }
+    var out = "";
+    var lk = c.links || {};
+    LINK_DEFS.forEach(function (kd) {
+      var k = kd[0], u = lk[k];
+      if (!u) return;
+      var body = "";
+      if (k === "linkedin" && li) {
+        body = (li.headline ? '<div class="lsline" style="font-weight:600">' + esc(li.headline) + '</div>' : "") +
+          row("Roles", lst(li.titles) || esc(li.title || "")) + row("Work", lst(li.companies) || esc(li.company || "")) + row("School", lst(li.schools) || esc(li.school || "")) + row("Place", esc(li.location || "")) +
+          '<div class="fineprint" style="margin:8px 0 0">Entered by the card owner. Tagg has not verified it.</div>';
+      } else if (k === "linkedin") {
+        body = '<div class="lsline lsmute">No details added to Tagg. LinkedIn does not allow its profiles to be shown inside other apps, so Open takes you to LinkedIn.</div>';
+      } else if (k === "github" && g) {
+        body = '<div class="ghrow">' + (g.avatar ? '<img class="avatar-img" src="' + esc(g.avatar) + '" alt="" style="width:44px;height:44px">' : "") +
+          '<div><div style="font-weight:600">' + esc(g.name || g.login) + '</div>' + (g.bio ? '<div class="lssub" style="margin-top:2px">' + esc(g.bio) + '</div>' : "") + '</div></div>' +
+          row("Company", esc(g.company || "")) + row("Place", esc(g.location || "")) +
+          row("Public", (g.followers != null ? g.followers + " followers" : "") + (g.repos != null ? ", " + g.repos + " repos" : "")) +
+          '<div class="fineprint" style="margin:8px 0 0">Public GitHub details the owner imported. Tagg has not verified them.</div>';
+      } else {
+        body = '<div class="lsline lsmute">' + (k === "website" ? "Opens in your browser." : "Opens on " + esc(kd[1]) + ".") + ' It cannot be shown inside Tagg.</div>';
+      }
+      out += sec(esc(kd[1]), esc(linkLabel(k, u)), body, u);
+    });
+    // GitHub details stored from an earlier import for a person whose card no longer lists the link.
+    if (g && !lk.github) out += sec("GitHub", "", '<div class="lsline">' + esc(g.name || g.login) + (g.bio ? " - " + esc(g.bio) : "") + '</div>', "");
+    return out;
+  }
+  /* Contextual web search: built from shared fields only, sent to Google only when the viewer taps. Results are Google's and are not confirmed to be this person. */
+  function searchHtml(p) {
+    var li = p.enriched && p.enriched.linkedin, c = p.card, parts = [c.name];
+    var ctx = (li && ((li.companies && li.companies[0]) || li.company || (li.schools && li.schools[0]) || li.school)) || (c.headline || "");
+    if (ctx) parts.push(ctx);
+    var q = parts.join(" ").slice(0, 120);
+    return '<section class="linksec"><div class="lshead"><div><div class="lstitle">Search the web</div><div class="lssub">Google results for this name and context</div></div></div>' +
+      '<input class="input" id="websearch-q" value="' + esc(q) + '" aria-label="Search query">' +
+      '<a class="btn btn-gray" id="websearch-go" href="https://www.google.com/search?q=' + encodeURIComponent(q) + '" target="_blank" rel="noopener" style="margin-top:8px">Search Google</a>' +
+      '<div class="fineprint" style="margin:8px 0 0">Opens Google in a new tab. Nothing is sent until you tap. Results come from Google and may be about someone else with the same name; they are not confirmed to be this person. Your notes and meeting place are never used.</div></section>';
   }
   function renderPerson(id) {
     var people = loadPeople();
@@ -1232,7 +1271,7 @@
     var mapLink = loc && loc.lat != null ? mapsUrl(loc) : null;
     shell("people",
       '<div style="display:flex;align-items:center;gap:16px;margin:6px 0 14px">' +
-      '<div class="avatar" style="width:60px;height:60px;font-size:24px">' + esc(initial(p.card.name)) + '</div>' +
+      avatarHtml(p, 76) +
       '<div><h1 class="largetitle" style="font-size:26px;margin:0">' + esc(p.card.name) + '</h1>' +
       (p.card.headline ? '<div style="color:var(--text-2);font-size:14px;margin-top:2px">' + esc(p.card.headline) + '</div>' : '') +
       '</div></div>' +
@@ -1241,10 +1280,10 @@
       meta("At", p.event || "-") +
       whereMeta(loc, mapLink) +
       '</div>' +
-      '<h2 class="section">Links</h2>' +
-      '<div class="fineprint" id="cardstate" style="margin:0 0 8px"></div>' +
-      '<div class="taggcard"><div class="tc-links" style="margin-top:0">' + (chipsHtml(p.card) || '<span style="color:var(--text-2);font-size:14px">No links shared</span>') + '</div></div>' +
-      enrichHtml(p) +
+      '<div class="fineprint" id="cardstate" style="margin:10px 0 4px"></div>' +
+      ((p.card.email || p.card.phone) ? '<div class="tc-links" style="margin:6px 0 4px">' + (p.card.email ? '<a class="chip" href="mailto:' + esc(p.card.email) + '">Email</a>' : "") + (p.card.phone ? '<a class="chip" href="tel:' + esc(p.card.phone) + '">Call</a>' : "") + '</div>' : "") +
+      (enrichHtml(p) || '<section class="linksec"><div class="lsline lsmute">No links shared</div></section>') +
+      searchHtml(p) +
       '<div style="height:12px"></div>' +
       '<button class="btn btn-tinted" id="vcf">Save to Contacts (Apple)</button>' +
       '<h2 class="section">Why keep in touch</h2>' +
@@ -1261,8 +1300,11 @@
       '<h2 class="section">Follow up</h2>' +
       '<button class="btn btn-tinted" id="followup">Ask Tagg to set up a call</button>' +
       '<div style="height:14px"></div>' +
-      '<button class="btn btn-plain" id="del" style="color:#ff6961">Remove from Tagg</button>'
+      '<button class="btn btn-plain" id="del" style="color:#ff6961">Remove from Tagg</button>' +
+      '<div style="height:110px" aria-hidden="true"></div>'
     );
+    var wq = document.getElementById("websearch-q");
+    if (wq) wq.addEventListener("input", function () { document.getElementById("websearch-go").href = "https://www.google.com/search?q=" + encodeURIComponent(wq.value.slice(0, 200)); });
     // Refresh the shared card from the server every time this person is opened. Private notes, place and photo stay yours.
     if (ownerToken() && p.slug) {
       api("/api/people/" + id).then(function (d) {

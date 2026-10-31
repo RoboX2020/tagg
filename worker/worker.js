@@ -63,8 +63,22 @@ async function importViaApify(env, url) {
     titles: uniq((x.experience || []).map(e => e && e.position), 5),
     companies: uniq((x.experience || []).map(e => e && e.companyName), 6),
     schools: uniq((x.education || []).map(e => e && e.schoolName), 6),
-    location: clip(x.location && (x.location.linkedinText || (x.location.parsed && x.location.parsed.text)), 120)
+    location: clip(x.location && (x.location.linkedinText || (x.location.parsed && x.location.parsed.text)), 120),
+    photoUrl: (() => { const u = (x.profilePicture && x.profilePicture.url) || x.photo; return typeof u === "string" && /^https:\/\/[a-z0-9.-]*licdn\.com\//i.test(u) ? u : ""; })()
   };
+}
+// Copies the profile picture the owner just imported (LinkedIn's CDN links expire). Only LinkedIn's image host, images only, max 400 KB.
+async function fetchPhoto(url) {
+  try {
+    if (!/^https:\/\/[a-z0-9.-]*licdn\.com\//i.test(url)) return null;
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const ct = (r.headers.get("content-type") || "").split(";")[0];
+    if (!r.ok || !/^image\/(jpeg|png|webp)$/.test(ct)) return null;
+    const buf = new Uint8Array(await r.arrayBuffer());
+    if (!buf.length || buf.length > 400000) return null;
+    let bin = ""; for (let i = 0; i < buf.length; i += 8192) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 8192));
+    return { ct, b64: btoa(bin) };
+  } catch (e) { return null; }
 }
 const AI_MODELS = ["@cf/meta/llama-3.3-70b-instruct-fp8-fast", "@cf/meta/llama-3.1-8b-instruct-fast", "@cf/meta/llama-3.2-3b-instruct", "@cf/mistralai/mistral-small-3.1-24b-instruct", "@cf/google/gemma-3-12b-it", "@cf/qwen/qwen3-30b-a3b-fp8"];
 const norm = (x) => x.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
@@ -514,7 +528,7 @@ export default {
       const slug = await env.KV.get("own/" + owner);
       const inbox = (await getJSON(env.KV, "cin/" + owner)) || [];
       for (const x of inbox) if (x && x.id) keys.push("crt/" + x.id);
-      if (slug) keys.push("card/" + slug, "enrich/" + slug);
+      if (slug) keys.push("card/" + slug, "enrich/" + slug, "photo/" + slug);
       for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) keys.push("mcp/" + t.h);
       keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner);
       for (const k of keys) await env.KV.delete(k);
@@ -833,7 +847,7 @@ export default {
         let res = null; try { res = await importViaApify(env, url); } catch (e) { res = { unavailable: "network" }; }
         if (res && res.unavailable !== undefined) return j({ error: "Could not read that profile right now. Paste your profile text instead.", reason: res.unavailable }, 503);
         if (!res) return j({ error: "Could not read that profile. Is it public? You can paste your profile text instead." }, 422);
-        data = res; source = "linkedin-link-import";
+        delete res.photoUrl; data = res; source = "linkedin-link-import";
       } else {
         if (text.length < 40) return j({ error: "Paste the text of your LinkedIn profile first" }, 400);
         if (!env.AI) return j({ error: "Import is unavailable right now" }, 503);
@@ -873,7 +887,7 @@ export default {
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
       const body = await req.json().catch(() => null);
-      if (!body || body.ownProfile !== true || body.disclosure !== "linkedin-auto-v1") return j({ error: "Accept the notice about importing your profile first" }, 400);
+      if (!body || body.ownProfile !== true || !["linkedin-auto-v1", "linkedin-auto-v2"].includes(body.disclosure)) return j({ error: "Accept the notice about importing your profile first" }, 400);
       const url = typeof body.url === "string" ? parseLinkedinUrl(body.url) : null;
       if (!url) return j({ error: "Paste a link like linkedin.com/in/yourname" }, 400);
       if (env.APIFY_ENABLED !== "1" || !env.APIFY_TOKEN) return j({ error: "Import from a link is unavailable right now. You can paste your profile text instead.", code: "unavailable" }, 503);
@@ -884,12 +898,14 @@ export default {
       if (res && res.unavailable !== undefined) return j({ error: "Could not read that profile right now. Your link is saved. You can paste your profile text instead.", code: "unavailable" }, 503);
       if (!res) return j({ error: "Could not read that profile. Is it public? Your link is saved. You can paste your profile text instead.", code: "unreadable" }, 422);
       const now = new Date().toISOString();
+      let hasPhoto = false;
+      if (body.disclosure === "linkedin-auto-v2" && res.photoUrl) { const ph = await fetchPhoto(res.photoUrl); if (ph) { await env.KV.put("photo/" + slug, JSON.stringify({ ct: ph.ct, b64: ph.b64, at: now, source: "linkedin" })); hasPhoto = true; } }
       existing.linkedin = Object.assign({ headline: res.headline, titles: res.titles, companies: res.companies, schools: res.schools, location: res.location },
-        { source: "linkedin-link-import", url, importedAt: now, confirmedAt: now, autoImported: true, disclosure: "linkedin-auto-v1",
+        { source: "linkedin-link-import", url, importedAt: now, confirmedAt: now, autoImported: true, disclosure: body.disclosure, hasPhoto,
           company: res.companies[0] || null, title: res.titles[0] || null, school: res.schools[0] || null });
       delete existing.linkedinRemoved;
       await env.KV.put("enrich/" + slug, JSON.stringify(existing));
-      await env.KV.put("impconsent/" + owner, JSON.stringify({ version: "linkedin-auto-v1", at: now, url }));
+      await env.KV.put("impconsent/" + owner, JSON.stringify({ version: body.disclosure, at: now, url }));
       return j({ ok: true, linkedin: existing.linkedin });
     }
     // The owner edits imported details. Anything they clear stays cleared: it is not refilled from the provider.
@@ -963,13 +979,31 @@ export default {
       await env.KV.put("enrich/" + slug, JSON.stringify(existing));
       return j({ ok: true });
     }
+    // Imported profile picture: public like the card itself, served from our own copy.
+    const phm = p.match(/^\/api\/photo\/([a-z0-9]+)$/);
+    if (phm && req.method === "GET") {
+      const en = await getJSON(env.KV, "enrich/" + phm[1]);
+      const ph = en && en.linkedin && en.linkedin.hasPhoto ? await getJSON(env.KV, "photo/" + phm[1]) : null;
+      if (!ph) return new Response("not found", { status: 404, headers: CORS });
+      const bin = Uint8Array.from(atob(ph.b64), c => c.charCodeAt(0));
+      return new Response(bin, { status: 200, headers: { ...CORS, "Content-Type": ph.ct, "Cache-Control": "public, max-age=300", "X-Content-Type-Options": "nosniff" } });
+    }
+    if (p === "/api/profile-photo" && req.method === "DELETE") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+      if (existing.linkedin) { existing.linkedin.hasPhoto = false; await env.KV.put("enrich/" + slug, JSON.stringify(existing)); }
+      await env.KV.delete("photo/" + slug);
+      return j({ ok: true });
+    }
     if (p === "/api/import/linkedin" && req.method === "DELETE") {
       const owner = authOwner(req);
       const slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!slug) return j({ error: "unauthorized" }, 401);
       const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
       if (existing.linkedin && existing.linkedin.url) existing.linkedinRemoved = { url: existing.linkedin.url, at: new Date().toISOString() };
-      delete existing.linkedin;
+      delete existing.linkedin; await env.KV.delete("photo/" + slug);
       await env.KV.put("enrich/" + slug, JSON.stringify(existing));
       return j({ ok: true });
     }
