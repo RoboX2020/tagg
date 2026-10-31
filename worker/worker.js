@@ -1252,6 +1252,27 @@ const appHandler = {
     }
 
     // Owner accepts or declines; accept saves the connection both ways.
+    // Intro requests (PREP ONLY). Off unless the KV flag cfg/intro is "on"; while off every intro route answers 404 and nothing is stored. Even when on, this sends no
+    // email, push or in-app alert: it only records the request in the middle person's separate intro list. Accepting, forwarding and alerts are not built.
+    if ((p === "/api/intro" || p === "/api/intros") && (await env.KV.get("cfg/intro")) !== "on") return j({ error: "not found" }, 404);
+    if (p === "/api/intro" && req.method === "POST") {
+      const owner = authOwner(req), mySlug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!mySlug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      if (!body || typeof body.viaPersonId !== "string" || typeof body.targetSlug !== "string") return j({ error: "viaPersonId and targetSlug required" }, 400);
+      if (await overLimit(env, "intro/" + owner, 5, 86400)) return j({ error: "Too many intro requests today" }, 429);
+      if (!(await profileStatus(env, owner)).complete) return j({ error: "Complete your profile first" }, 403);
+      const mine = await getPeople(env, owner), via = mine.find(x => x.id === body.viaPersonId && x.slug);
+      if (!via) return j({ error: "That person is not in your saved list" }, 404);
+      const viaRec = await getJSON(env.KV, "card/" + via.slug), viaOwner = viaRec && viaRec.ownerToken && (await env.KV.get("own/" + viaRec.ownerToken)) !== null ? viaRec.ownerToken : null;
+      if (!viaOwner) return j({ error: "That person cannot receive intro requests" }, 400);
+      const theirs = await getPeople(env, viaOwner);
+      if (!theirs.some(x => x.slug === mySlug)) return j({ error: "You need to be saved by that person first" }, 403);
+      if (!theirs.some(x => x.slug === body.targetSlug) || body.targetSlug === mySlug) return j({ error: "That person is not someone they have saved" }, 404);
+      const note = typeof body.note === "string" ? body.note.slice(0, 500) : "";
+      const r = await jpush(env.KV, "intr/" + viaOwner, { id: "i_" + rand(10), requesterSlug: mySlug, targetSlug: body.targetSlug, note, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { requesterSlug: mySlug, targetSlug: body.targetSlug, status: "pending" } });
+      return j({ ok: true, duplicate: !!r.dup });
+    }
     if (p === "/api/inbox/respond" && req.method === "POST") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
