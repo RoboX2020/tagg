@@ -54,6 +54,7 @@ export class Store {
         this.sql.exec("INSERT INTO kv (k,v,exp) VALUES (?,?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", op.k, JSON.stringify(o), r ? r.exp : null); out.push({ merged: true });
       }
       else if (op.o === "list") { out.push([...this.sql.exec("SELECT k FROM kv WHERE k LIKE ? ESCAPE '\\' AND (exp IS NULL OR exp > ?) ORDER BY k LIMIT ?", String(op.prefix).replace(/[\\%_]/g, "\\$&") + "%", now, Math.min(op.limit || 1000, 1000))].map(r => r.k)); }
+      else throw new Error("unknown store op: " + String(op.o).slice(0, 20)); // an older Store build must fail loudly, never skip an op and shift the results
     }
     return Response.json({ out });
   }

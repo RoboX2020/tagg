@@ -51,4 +51,6 @@ try { await replay(); } catch (e) { exhausted = /limit exceeded/.test(e.message)
 ok(exhausted && done === 25, "rollback replay stopped at the write budget after " + done + " of " + changed.length + " keys");
 rb.writes = 0; rb.budget = 1000; await replay(); // next day
 let same2 = true; for (const k of changed) same2 = same2 && (await rb.get(k)) === (await dget(k)); ok(done === 40 && same2, "next day resume converges to the new side's state, deletes included");
+// 6. an older Store build (unknown op) fails loudly instead of skipping and shifting results
+{ const d = mkStore(); let threw = false; try { await d.st.fetch(new Request("http://x", { method: "POST", body: JSON.stringify({ ops: [{ o: "bogus" }] }) })); } catch (e) { threw = /unknown store op/.test(e.message); } ok(threw, "unknown store op throws"); }
 console.log(`migrate rehearsal checks: ${pass} pass, ${fail} fail`); process.exit(fail ? 1 : 0);

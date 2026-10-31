@@ -11,7 +11,7 @@ Production = worker.js at 7f01a99 (tag deployed-prod) on KV. The DO build (worke
 | Storage-layer write freeze, KV key `cfg/freeze` = "on" | built, tested (API suite, KV and DO mode): refuses put, delete and the atomic json ops from ANY route or background task. 21 routes incl. scan ping, login, connect, respond change no key when frozen; a control shows they do change keys when not frozen |
 | `worker/migrate-worker.js`: separate temporary Worker, copies KV to the Store inside Cloudflare, pages of 50, idempotent, resumable, with verify | built, tested locally (test/migrate.test.mjs, 13 checks) |
 | Encrypted offline safety snapshot via the KV REST API, vault-held key | model tested (test/backup.test.mjs); the operator script is NOT BUILT |
-| Real Cloudflare rehearsal with a synthetic KV namespace and the staging DO | NOT DONE |
+| Real Cloudflare rehearsal: synthetic KV namespace (61 keys) to the staging DO through a temporary migration Worker | DONE 2026-10-31: 2 pages, copy 0.44 s and 0.29 s, verify 0.28 s and 0.18 s, 0 mismatches, staging rows 1745 to 1806 (+61), repeat copy idempotent (still 1806), 404 without token, Worker deleted afterwards. Tiny sample: not a volume measurement |
 | Live export or copy | NOT DONE, held for the user's decision |
 
 ## Why a separate migration Worker and no import endpoint on the app
@@ -24,7 +24,7 @@ The app Worker gets no import route. The migration Worker is a separate script b
 - KV Free: 1,000 writes/day, 100,000 reads/day, 1,000 operations per Worker invocation (developers.cloudflare.com/kv/platform/limits).
 - Workers Free: 10 ms CPU and 50 subrequests per request (developers.cloudflare.com/workers/platform/limits). The migration Worker therefore uses pages of 50 keys. Raise it only after measuring.
 - KV reads are eventually consistent: a change can take up to 60 seconds or more to show in other locations (developers.cloudflare.com/kv/concepts/how-kv-works).
-- DO SQLite Free: 5 GB per account, 1 GB per object per the limits page when the cap is hit writes fail but reads and deletes still work (developers.cloudflare.com/durable-objects/platform/limits).
+- DO SQLite Free: 5 GB per account, with the per-object cap reached writes fail but reads and deletes still work (developers.cloudflare.com/durable-objects/platform/limits).
 - The copy reads KV, which is not capped by the 1,000 writes/day. The rollback replay WRITES KV and is capped.
 
 ## Procedure
@@ -47,7 +47,7 @@ Not estimated as a promise. What is known: the freeze, the 120 s wait, the doubl
 ## Remaining blockers
 
 1. The user's cutover decision.
-2. Real Cloudflare rehearsal (synthetic KV namespace, migration Worker, staging DO) including measured copy time per page.
+2. A volume rehearsal (thousands of synthetic keys) to measure copy time; the 61-key run only shows about 0.3 to 0.4 s per page of 50. The rehearsal also found that the DO Store must be deployed with the new migration ops BEFORE the migration Worker runs (an older Store silently skipped them); Store now throws on an unknown op and the migration Worker checks result counts.
 3. Operator snapshot script (KV REST export, encrypted).
 4. Decision on the KV write budget rule above.
 5. The existing KV lost-update window and 1,000 writes/day signup cap remain until the cutover.

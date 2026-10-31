@@ -14,7 +14,7 @@ export default {
     const h = req.headers.get("Authorization") || "";
     if (!(await same(h, "Bearer " + env.MIGRATE_TOKEN))) return nf();
     const stub = env.STORE.get(env.STORE.idFromName("main"));
-    const store = async (ops) => (await (await stub.fetch("https://store/batch", { method: "POST", body: JSON.stringify({ ops }) })).json()).out;
+    const store = async (ops) => { const r = await stub.fetch("https://store/batch", { method: "POST", body: JSON.stringify({ ops }) }); if (!r.ok) throw new Error("store " + r.status); const out = (await r.json()).out; if (!Array.isArray(out) || out.length !== ops.length) throw new Error("store answered " + (out && out.length) + " results for " + ops.length + " ops (is the Store build current?)"); return out; };
     const p = new URL(req.url).pathname, body = await req.json().catch(() => ({}));
     if (p === "/count") return Response.json({ dst: (await store([{ o: "count" }]))[0] });
     if (p !== "/copy" && p !== "/verify") return nf();
