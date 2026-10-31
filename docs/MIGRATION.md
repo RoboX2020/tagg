@@ -57,19 +57,30 @@ Not estimated as a promise. What is known: the freeze, the 120 s wait, the doubl
 
 A KV flag alone is weak for consistency: other KV locations can lag 60 seconds or more, each isolate caches the flag for 5 s, and identical snapshots only show that nothing changed during one minute. Two stronger options, both built or buildable without touching KV state:
 
-1. Deploy-time variable (BUILT, tested): the app Worker reads `FREEZE_WRITES="on"` from its own bindings. It ships atomically with the Worker version, with no KV read, no cache and no propagation lag. Deploying the same code plus that variable freezes every mutation at the storage layer. In-flight requests of the previous version finish (give them 60 s, the waitUntil and request limits), then no code that can write is left running.
+1. Deploy-time variable (BUILT, tested locally): the app Worker reads `FREEZE_WRITES="on"` from its own bindings, with no KV read and no flag cache. The docs say a deploy puts a new version on 100% of traffic in one step, but they do not state a global propagation time or what happens to in-flight requests and background tasks of the old version, so treat the cutover as NOT instantaneous: the drain wait and the double snapshot are mandatory, not optional, and the real behaviour must be observed on staging first. Deploying the same code plus that variable freezes every mutation at the storage layer. In-flight requests of the previous version finish (give them 60 s, the waitUntil and request limits), then no code that can write is left running.
 2. Maintenance Worker (not needed if 1 is used): replace the script with a static 503 page. Safer against a code bug in the guard, but ALL reads stop too (cards unreadable) for the whole window. Option 1 keeps reads up.
 
 Recommendation: use option 1 for the freeze, then the double snapshot (B and B2 one minute apart, identical) as the check, then copy. The snapshot reads go through the KV REST API, which reflects writes already committed; the 60 s wait covers the cache lag of the app's own last reads. This is evidence of quiescence, not a proof of strong consistency, and the runbook says so.
 
-## Quota facts (read from the Cloudflare GraphQL analytics, 2026-10-31 UTC day, production KV namespace)
+## Quota facts (owner pricing page: developers.cloudflare.com/kv/platform/pricing, read 2026-10-31)
 
-writes 421, deletes 347, lists 129, reads 4,893 at 9:25 AM Arizona time. The daily window is the UTC day (resets 5 PM Arizona). The 61 rehearsal writes went to a separate throwaway namespace (since deleted) but count against the same account cap, and were not yet visible in that query. So production has used about 421 to 482 of 1,000 writes today. Treat the remaining budget as roughly 500 and verify in the dashboard before any live step.
+Free plan, each its own daily quota that resets at 00:00 UTC (5 PM Arizona): keys read 100,000, keys written 1,000, keys deleted 1,000, list requests 1,000. Exceeding one makes further operations of THAT type fail. REST API and dashboard operations count the same as Worker operations; bulk reads are billed per key.
+Observed (Cloudflare GraphQL analytics, production namespace, UTC day 2026-10-31, read 9:25 AM Arizona): writes 421, deletes 347, lists 129, reads 4,893. The 61 rehearsal writes went to a throwaway namespace (now deleted) on the same account, so the verified minimum for writes today is 482 of 1,000. Analytics can lag and other namespaces were not totalled, so the remaining budget is NOT verified. Deletes and lists are separate quotas; whether deleting a namespace's keys counted as 347 deletes is not defined in the docs I read.
+Snapshot cost: each snapshot reads every key (bulk read, per key) plus one list request per 1,000 keys. Three snapshots (A, B, B2) of 5,000 keys is 15,000 reads, which is meaningful against the 100,000 daily reads shared with live traffic. Plan the number of snapshots against the day's observed reads.
 
 ## Rollback rule and the user-facing tradeoff
 
 Rolling back to KV replays every changed key into KV, one write each, against the 1,000/day Free cap (shared with normal traffic). If that exceeds the budget, the replay stops and the site stays frozen until the cap resets, which can be up to a day. Do not mark the plan ready while this is unapproved. Options for the user, with cost:
 - A. Cut over right after the 5 PM Arizona reset, so the full cap is available during the riskiest first hours, and fix forward on the new store if a problem appears. Cost: none. Risk: a late rollback beyond about 900 changed keys means extended frozen time.
-- B. Workers Paid plan ($5 a month plus usage, from the plan page; verify current KV and DO pricing in the owner docs first) removes the KV write cap, so a rollback never waits for the budget. Needs the user's approval. Not recommended or enabled here.
+- B. Workers Paid: the pricing page lists KV writes as 1 million a month included, then $5.00 per million, with no daily cap listed. That may avoid waiting for the budget but it is not a guarantee (rate, cost and storage limits still apply, and the real budget needed is unknown). Plan price and current DO pricing must be re-verified in the owner docs before it is offered. Needs the user's approval. Not recommended or enabled.
 - C. Stay on KV and accept the lost-update window and the signup cap. No downtime, no cutover.
-Expected visible downtime for a cutover is minutes of write-refused time (freeze, 60 to 120 s drain, double snapshot, copy at about 0.3 to 0.4 s per 50 keys, verify, deploy), reads stay up. Not a measured guarantee.
+Downtime is NOT promised. Known pieces: freeze deploy, a drain of 60 to 120 s, snapshots, a page copy and a verify pass, all with writes refused and reads up. Only 61 real rows and 5,000 local synthetic rows were timed, and the per-page CPU on workerd at volume is unmeasured.
+
+
+## Local volume run (synthetic, no Cloudflare, no KV writes)
+
+test/migrate-volume.mjs: 5,000 synthetic keys through the migration Worker code and the SQLite Store, 100 pages of 50, 132 ms wall, verify 0 mismatches, count 5,000. CPU per page averaged 1.56 ms, first page 24 ms (warm-up). Node, not workerd: it does not prove the 10 ms Free CPU limit per page. Lower the page size if a real page hits the limit.
+
+## Recommendation
+
+Not ready for a live cutover. Safe now: stay on KV with the current hardening (nothing changes). Before any user cutover question can be final: (1) observe the FREEZE_WRITES deploy and drain behaviour on staging, (2) measure per-page CPU on real workerd with a few hundred synthetic DO-only rows (no KV writes), (3) re-verify paid pricing if option B is offered, (4) the user picks rollback option A, B or C and approves sandbox use of the vault passphrase for the live snapshot, (5) CPU risk on logins (PBKDF2 P99 about 15 to 16 ms vs the 10 ms Free limit, no exceedances in 24 h) is accepted or handled by a separate decision.
