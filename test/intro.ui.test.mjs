@@ -49,6 +49,14 @@ try {
   await P.$eval("button[data-act=offer-accept]", e => e.click()); await sleep(1200);
   const pa = (await call("GET", "/api/people", null, A.t)).people.filter(p => p.card.name === "Tess Kim"), pt = (await call("GET", "/api/people", null, T.t)).people.filter(p => p.card.name === "Ava Lee");
   assert.equal(pa.length, 1); assert.equal(pt.length, 1); assert.ok(/Introduced by Max Ortiz/.test(pa[0].event)); ok("the target accepts and both are saved, marked as introduced"); await shot(P, "intro-target-done"); await P.close();
+  // headline consent: a second target who allows the headline shows a short bio on People and in the list
+  { const U = await mk("Uma Cho"); await save(M, U); await save(U, M); await call("PUT", "/api/graph/sharing", { on: true }, U.t); await call("PUT", "/api/intro/consent", { on: true, headline: true }, U.t);
+    P = await open(A, "#/people"); await sleep(600); t = await text(P); assert.ok(t.includes("Uma Cho") && t.includes("Uma Cho headline") && t.includes("A headline appears only for people who chose to show theirs"), "people bio: " + t.slice(-400)); await shot(P, "intro-people-bio");
+    if (shots) await P.screenshot({ path: shots + "/intro-people-bio-viewport.png" });
+    ok("People shows the headline only for the person who allowed it, with a matching explanation"); await P.close();
+    P = await open(A, "#/intros"); await sleep(400); t = await text(P); assert.ok(t.includes("Uma Cho headline")); await P.evaluate(() => window.scrollTo(0, document.body.scrollHeight)); await sleep(400);
+    const gap = await P.evaluate(() => { const nav = document.querySelector(".tabbar").getBoundingClientRect(), links = [...document.querySelectorAll(".content a, .content .footer-note")], last = links[links.length - 1].getBoundingClientRect(); return { navTop: nav.top, lastBottom: last.bottom, vh: innerHeight }; });
+    assert.ok(gap.lastBottom <= gap.navTop - 8, "last content must clear the fixed nav: " + JSON.stringify(gap)); if (shots) await P.screenshot({ path: shots + "/intro-scrolled-bottom-viewport.png" }); ok("scrolled to the bottom, the last line clears the fixed nav (" + Math.round(gap.navTop - gap.lastBottom) + " px)"); await P.close(); }
   // settings link and the opt-out
   P = await open(M, "#/settings"); t = await text(P); assert.ok(t.includes("Introductions")); ok("Settings links to Introductions when the switch is on"); await P.close();
   console.log("\nIntro UI checks passed:", n);
