@@ -39,7 +39,9 @@ async function enrichGithub(env, slug, card) {
       login: u.login, name: u.name || null, bio: u.bio || null, company: u.company || null,
       avatar: u.avatar_url || null, followers: u.followers ?? null, repos: u.public_repos ?? null,
       location: u.location || null, blog: u.blog || null } };
-    await env.KV.put("enrich/" + slug, JSON.stringify(enriched));
+    // Merge, never replace: the owner's confirmed LinkedIn details live in the same record.
+    const existing = (await getJSON(env.KV, "enrich/" + slug)) || {};
+    await env.KV.put("enrich/" + slug, JSON.stringify(Object.assign(existing, enriched)));
   } catch (e) { /* enrichment is best-effort */ }
 }
 // LinkedIn import (user-initiated, reviewed). LinkedIn's robots.txt and User Agreement forbid automated reading of profile pages

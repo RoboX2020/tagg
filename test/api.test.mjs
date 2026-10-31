@@ -259,6 +259,12 @@ if (env) {
   ok("owner edits are kept and cleared fields are recorded", ed.status === 200 && ed.body.linkedin.titles.length === 0 && ed.body.linkedin.suppressed.includes("titles") && ed.body.linkedin.headline === "Mine");
   ok("remove then same link is still not re-imported", (await call("DELETE", "/api/import/linkedin", null, bTok0)).status === 200 && (await call("POST", "/api/import/linkedin/auto", au, bTok0)).status === 409);
   ok("a different link imports again", (await call("POST", "/api/import/linkedin/auto", { ...au, url: "linkedin.com/in/auto-person-2" }, bTok0)).status === 200);
+  // GitHub enrichment on card save must not wipe confirmed LinkedIn details.
+  const gTok = (await call("POST", "/api/owner", {})).body.ownerToken; const gc = await call("POST", "/api/card", { ownerToken: gTok, card: { name: "Gh Person", headline: "h", links: {} } }, gTok);
+  await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/gh-person", ownProfile: true, disclosure: "linkedin-auto-v1" }, gTok);
+  await call("POST", "/api/card", { ownerToken: gTok, card: { name: "Gh Person", headline: "h", links: { github: "https://github.com/octocat" } } }, gTok); await new Promise(r => setTimeout(r, 200));
+  const gp = await call("GET", "/api/c/" + gc.body.slug);
+  ok("saving a card with a GitHub link keeps confirmed LinkedIn details", gp.body.enriched && gp.body.enriched.linkedin && gp.body.enriched.linkedin.schools[0] === "Arizona State University");
   let rl; for (let i = 0; i < 7; i++) rl = await call("POST", "/api/import/linkedin", { text }, aTok);
   ok("imports are rate limited", rl.status === 429);
   globalThis.fetch = realFetch2;
