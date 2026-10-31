@@ -306,6 +306,39 @@ async function mailBudgetOk(env, to) {
   if (await overLimit(env, "mail/to/" + to, 5, 86400)) return false;
   return true;
 }
+
+// ---- Notifications (built, OFF by default). Nothing in this block sends anything unless KV key cfg/notify equals "on".
+// Audiences: welcome -> the new user only; request -> the person who RECEIVES it; connected -> the person who SENT the request.
+// Email goes only to a verified address, at most once per event, within the existing mail caps. Push is not built yet.
+const NOTIFY_SITE = "https://robox2020.github.io/tagg/#/";
+const NOTIFY_FOOT = "\n\nYou get this email because alerts are on for your Tagg account. Turn them off in Settings: " + NOTIFY_SITE + "settings";
+function notifyCopy(type, name) {
+  const n = String(name || "Someone").replace(/[\r\n]+/g, " ").slice(0, 80).trim() || "Someone";
+  if (type === "welcome") return { title: "Welcome to Tagg", line: "Your card is ready. Share your QR when you meet someone.", subject: "Welcome to Tagg",
+    text: "Hi " + n.split(" ")[0] + ",\n\nYour Tagg card is ready. Show your QR code when you meet someone, and Tagg keeps the time you met and anything you choose to add.\n\nOpen your card: " + NOTIFY_SITE + "card" + NOTIFY_FOOT };
+  if (type === "request") return { title: "Connection request", line: n + " wants to connect.", subject: n + " wants to connect on Tagg",
+    text: n + " sent you a connection request on Tagg.\n\nOpen Tagg to review it. You choose whether to accept.\n\nReview request: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
+  return { title: "Connected", line: n + " accepted your request.", subject: "You are now connected with " + n,
+    text: n + " accepted your connection request on Tagg.\n\nView their profile: " + NOTIFY_SITE + "people" + NOTIFY_FOOT };
+}
+async function notify(env, owner, type, evId, name) {
+  try {
+    if (!owner || (await env.KV.get("cfg/notify")) !== "on") return { skipped: "off" };
+    const id = type + ":" + evId, c = notifyCopy(type, name), out = {};
+    const list = (await getJSON(env.KV, "nt/" + owner)) || [];
+    if (!list.some(x => x.id === id)) { list.unshift({ id, type, title: c.title, line: c.line, at: new Date().toISOString(), read: false }); await env.KV.put("nt/" + owner, JSON.stringify(list.slice(0, 30))); out.inapp = true; }
+    const prefs = (await getJSON(env.KV, "npf/" + owner)) || {};
+    if (prefs.email !== false && mailEnabled(env) && (await isVerified(env, owner))) {
+      const prof = await getJSON(env.KV, "prof/" + owner);
+      const to = prof && normEmail(prof.email);
+      if (to && (await env.KV.get("suppress/" + to)) === null && (await env.KV.get("nd/email/" + id)) === null) {
+        await env.KV.put("nd/email/" + id, "1", { expirationTtl: 2592000 });
+        if (await mailBudgetOk(env, to)) { await sendMail(env, to, c.subject, c.text); out.email = true; }
+      }
+    }
+    return out;
+  } catch (e) { return { error: String(e && e.message || e) }; }
+}
 // Resend webhook (Svix-signed). Bounces and spam complaints put the address on a suppression list so we never mail it again.
 async function verifyWebhook(env, req, raw) {
   const sec = env.RESEND_WEBHOOK_SECRET; if (!sec) return false;
@@ -438,9 +471,11 @@ export default {
       let owner = typeof body.ownerToken === "string" && body.ownerToken.length > 10 ? body.ownerToken : null;
       let slug = owner ? await env.KV.get("own/" + owner) : null;
       if (!owner) { owner = token(); }
+      const firstCard = !slug;
       if (!slug) { slug = rand(8); await env.KV.put("own/" + owner, slug); }
       const rec = { card, ownerToken: owner, slug, updatedAt: new Date().toISOString(), createdAt: (await getJSON(env.KV, "card/" + slug))?.createdAt || new Date().toISOString() };
       await env.KV.put("card/" + slug, JSON.stringify(rec));
+      if (firstCard) await notify(env, owner, "welcome", owner.slice(0, 12), card.name);
       return j({ ownerToken: owner, slug });
     }
 
@@ -655,7 +690,7 @@ export default {
       if (slug) keys.push("card/" + slug, "enrich/" + slug, "photo/" + slug);
       keys.push("gsh/" + owner);
       for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) keys.push("mcp/" + t.h);
-      keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner);
+      keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner, "nt/" + owner, "npf/" + owner);
       for (const k of keys) await env.KV.delete(k);
       return j({ deleted: true });
     }
@@ -783,6 +818,7 @@ export default {
       prof.emailVerified = true;
       await env.KV.put("prof/" + owner, JSON.stringify(prof));
       await env.KV.delete("vcode/" + owner);
+      { const sl = await env.KV.get("own/" + owner), cr = sl ? await getJSON(env.KV, "card/" + sl) : null; if (cr) await notify(env, owner, "welcome", owner.slice(0, 12), cr.card && cr.card.name); }
       return j({ verified: true });
     }
 
@@ -868,6 +904,7 @@ export default {
         requesterNote: typeof body.note === "string" ? body.note.slice(0, 2000) : "" });
       await env.KV.put("cin/" + rec.ownerToken, JSON.stringify(inbox.slice(0, 50)));
       await env.KV.put("crt/" + id, JSON.stringify({ owner: rec.ownerToken, id }));
+      await notify(env, rec.ownerToken, "request", id, name || (reqSlug && (await getJSON(env.KV, "card/" + reqSlug))?.card?.name));
       return j({ requestId: id, requestToken: rt, status: "pending" });
     }
 
@@ -887,6 +924,28 @@ export default {
         out.personId = rq.requesterPersonId || null;
       }
       return j(out);
+    }
+
+    // Notifications: the owner's own in-app list and preferences. Empty while cfg/notify is off.
+    if (p === "/api/notify" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const items = (await getJSON(env.KV, "nt/" + owner)) || [];
+      return j({ items, unread: items.filter(x => !x.read).length });
+    }
+    if (p === "/api/notify/read" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const items = ((await getJSON(env.KV, "nt/" + owner)) || []).map(x => ({ ...x, read: true }));
+      await env.KV.put("nt/" + owner, JSON.stringify(items));
+      return j({ ok: true });
+    }
+    if (p === "/api/notify/prefs" && (req.method === "GET" || req.method === "POST")) {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      let pr = (await getJSON(env.KV, "npf/" + owner)) || {};
+      if (req.method === "POST") { const b = await req.json().catch(() => null); if (!b || typeof b.email !== "boolean") return j({ error: "email must be true or false" }, 400); pr = { email: b.email }; await env.KV.put("npf/" + owner, JSON.stringify(pr)); }
+      return j({ email: pr.email !== false, push: false, pushAvailable: false });
     }
 
     // Owner's connection-request inbox.
@@ -951,6 +1010,7 @@ export default {
       }
       rq.status = "accepted"; rq.ownerPersonId = op.id; rq.requesterPersonId = requesterPersonId;
       await env.KV.put("cin/" + owner, JSON.stringify(inbox));
+      { const myc = await getJSON(env.KV, "card/" + (await env.KV.get("own/" + owner))); await notify(env, rq.requesterToken, "connected", rq.id, myc && myc.card && myc.card.name); }
       return j({ ok: true, status: "accepted", personId: op.id });
     }
 

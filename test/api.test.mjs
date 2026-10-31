@@ -587,5 +587,45 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   ok("status exposes only complete, never a count or the missing sections", Object.keys(await done(a3)).join() === "complete");
 }
 
+// ---- Notifications: built but OFF. Audience, dedup, wording, verified-address rule. (Local only: env exists.) ----
+if (env) {
+  const box = []; env.MAIL_SINK = async (to, subject, text) => { box.push({ to, subject, text }); };
+  const mkv = async (email, name, verified) => { const o = (await call("POST", "/api/owner", {})).body.ownerToken; await env.KV.put("prof/" + o, JSON.stringify({ email, name, picture: "", sub: "email:" + email, emailVerified: verified })); const c = await call("POST", "/api/card", { ownerToken: o, card: { name, headline: "Maker", detail: "Builds things", links: {} } }, o); return { o, slug: c.body.slug }; };
+  // OFF (default): a full request and accept sends nothing and records nothing.
+  const offA = await mkv("off-a@n.invalid", "Off Alice", true), offB = await mkv("off-b@n.invalid", "Off Bob", true);
+  const offReq = await call("POST", "/api/connect", { slug: offA.slug, requesterToken: offB.o }, null);
+  const offInbox = (await call("GET", "/api/inbox", null, offA.o)).body.requests;
+  await call("POST", "/api/inbox/respond", { id: offInbox[0].id, accept: true }, offA.o);
+  ok("notifications OFF: no email sent and no in-app item for request or accept", box.length === 0 && (await call("GET", "/api/notify", null, offA.o)).body.items.length === 0 && (await call("GET", "/api/notify", null, offB.o)).body.items.length === 0);
+  // ON
+  await env.KV.put("cfg/notify", "on");
+  const A = await mkv("on-a@n.invalid", "Maya Chen", true), B = await mkv("on-b@n.invalid", "Sam Roe", true), U = await mkv("on-u@n.invalid", "Una Unverified", false);
+  const welcomes = box.filter(m => /^Welcome to Tagg$/.test(m.subject));
+  ok("welcome emails: verified users only (2 of 3 new users), each to their own address, exact wording", welcomes.length === 2 && welcomes.map(m => m.to).sort().join() === "on-a@n.invalid,on-b@n.invalid" && welcomes[0].text.includes("Your Tagg card is ready.") && !welcomes[0].text.includes("Nothing is shared"));
+  ok("welcome shows in-app for the unverified user too, but no email", (await call("GET", "/api/notify", null, U.o)).body.items.length === 1);
+  box.length = 0;
+  await call("POST", "/api/connect", { slug: A.slug, requesterToken: B.o }, null);
+  ok("request: only the receiver is emailed, with the sender's name", box.length === 1 && box[0].to === "on-a@n.invalid" && box[0].subject === "Sam Roe wants to connect on Tagg" && box[0].text.includes("https://robox2020.github.io/tagg/#/people") && box[0].text.includes("Turn them off in Settings"));
+  await call("POST", "/api/connect", { slug: A.slug, requesterToken: B.o }, null);
+  ok("a duplicate request does not send again", box.length === 1);
+  const inb = (await call("GET", "/api/inbox", null, A.o)).body.requests;
+  box.length = 0;
+  await call("POST", "/api/inbox/respond", { id: inb[0].id, accept: true }, A.o);
+  ok("accepted: only the requester is emailed, the accepter is not", box.length === 1 && box[0].to === "on-b@n.invalid" && box[0].subject === "You are now connected with Maya Chen" && box[0].text.startsWith("Maya Chen accepted your connection request"));
+  ok("no email leaks location, notes, contact or headline", box.every(m => !/Maker|Builds things|location|note/i.test(m.text)));
+  await call("POST", "/api/notify/prefs", { email: false }, B.o);
+  const C = await mkv("on-c@n.invalid", "Cy Dee", true);
+  box.length = 0;
+  await call("POST", "/api/connect", { slug: B.slug, requesterToken: C.o }, null);
+  ok("email preference off: in-app only, no email", box.length === 0 && (await call("GET", "/api/notify", null, B.o)).body.items.some(x => x.type === "request"));
+  ok("unauthenticated notify read is refused", (await call("GET", "/api/notify")).status === 401);
+  box.length = 0;
+  await call("POST", "/api/auth/email/request", {}, U.o);
+  const codeMail = box.find(m => /Your Tagg code is \d{6}/.test(m.text));
+  await call("POST", "/api/auth/email/confirm", { code: codeMail && codeMail.text.match(/\d{6}/)[0] }, U.o);
+  ok("verifying the email sends the welcome email once (it could not go earlier)", box.filter(m => m.subject === "Welcome to Tagg").length === 1 && box.find(m => m.subject === "Welcome to Tagg").to === "on-u@n.invalid" && (await call("GET", "/api/notify", null, U.o)).body.items.filter(x => x.type === "welcome").length === 1);
+  await env.KV.delete("cfg/notify");
+}
+
 srv.close();
 console.log("\n" + passed + " checks passed");
