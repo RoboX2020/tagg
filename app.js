@@ -236,6 +236,8 @@
     google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
   }
   var lastSync = 0, syncing = false, INBOX = [], INBOX_COUNT = 0, SCANS = [];
+  var NOTIF_UNREAD = 0;
+  var BELL = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>';
   function refreshSoon(force) {
     if (syncing || (!force && Date.now() - lastSync < 10000)) return;
     syncing = true; lastSync = Date.now();
@@ -243,7 +245,7 @@
       if (!ownerToken()) return;
       return api("/api/inbox").then(function (d) {
         INBOX = d.requests || []; INBOX_COUNT = INBOX.length; SCANS = d.scans || [];
-      }).catch(function () {});
+      }).catch(function () {}).then(function () { return api("/api/notify").then(function (n) { NOTIF_UNREAD = n.unread || 0; }).catch(function () {}); });
     }).then(function () { syncing = false; route(); }, function () { syncing = false; });
   }
   // Live view for the card owner: while the home screen is open, check for scans and requests every 4 seconds
@@ -593,6 +595,7 @@
       return;
     }
     if (h.indexOf("#/connect-claude") === 0) return renderConnectClaude();
+    if (h === "#/notifications") { refreshSoon(); return renderNotifications(); }
     if (h === "#/edit") return renderEdit();
     if (h === "#/people") { refreshSoon(); return renderPeople(); }
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
@@ -607,7 +610,8 @@
     var card = loadCard();
     app.innerHTML =
       '<div class="topbar"><div class="wordmark"><img class="mark" src="icon.svg" alt="" width="30" height="30">Tagg</div>' +
-      '<div class="sub">Meet once. Tagg remembers.</div></div>' +
+      '<div class="sub">Meet once. Tagg remembers.</div>' +
+      (card ? '<a class="bell" href="#/notifications" aria-label="Notifications' + (NOTIF_UNREAD ? ', ' + NOTIF_UNREAD + ' unread' : '') + '">' + BELL + (NOTIF_UNREAD ? '<span class="bellbadge">' + (NOTIF_UNREAD > 9 ? "9+" : NOTIF_UNREAD) + '</span>' : '') + '</a>' : '') + '</div>' +
       ((card && INBOX_COUNT && active !== "people") ? '<a class="reqbar" href="#/people"><span><b>' + INBOX_COUNT + (INBOX_COUNT > 1 ? ' connection requests' : ' connection request') + '</b> waiting</span><span class="reqgo">Review</span></a>' : '') +
       '<div class="content">' + inner + '</div>' +
       (card ? tabbarHtml(active) : "");
@@ -744,6 +748,72 @@
       document.getElementById("gs-off").addEventListener("click", function () { set(false); });
     }).catch(function () { box.innerHTML = '<div class="fineprint" style="margin:0">Could not load.</div>'; });
   }
+  function timeAgo(iso) {
+    var m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+    if (m < 1) return "just now"; if (m < 60) return m + " min ago";
+    var h = Math.round(m / 60); if (h < 24) return h + (h === 1 ? " hour ago" : " hours ago");
+    var d = Math.round(h / 24); return d + (d === 1 ? " day ago" : " days ago");
+  }
+  function renderNotifications() {
+    var card = loadCard();
+    if (!card) { location.hash = "#/"; return; }
+    shell(null, '<h1 class="largetitle">Notifications</h1><p class="lead">Requests to connect and new connections.</p><div id="nlist"><div class="fineprint">Loading...</div></div>' +
+      '<p class="footer-note"><a href="#/settings">Notification settings</a></p>');
+    api("/api/notify").then(function (d) {
+      var el = document.getElementById("nlist"); if (!el) return;
+      var items = d.items || [];
+      el.innerHTML = items.length ? '<div class="group">' + items.map(function (x) {
+        var href = x.type === "welcome" ? "#/" : "#/people";
+        return '<a class="row" href="' + href + '" style="text-decoration:none;color:inherit"><div class="grow"><div class="title">' + (x.read ? "" : '<span class="udot"></span>') + esc(x.title) + '</div><div class="detail" style="white-space:normal">' + esc(x.line) + '</div></div><div class="detail">' + esc(timeAgo(x.at)) + '</div></a>';
+      }).join("") + '</div>' : '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Nothing yet. When someone asks to connect, or accepts your request, it shows up here.</div></div></div></div>';
+      if (d.unread) api("/api/notify/read", { method: "POST", body: {} }).then(function () { NOTIF_UNREAD = 0; var b = document.querySelector(".bellbadge"); if (b) b.remove(); }).catch(function () {});
+    }).catch(function () { var el = document.getElementById("nlist"); if (el) el.innerHTML = '<div class="fineprint">Could not load. Check your connection.</div>'; });
+  }
+  function pushSupported() { return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window; }
+  function vapidKeyBytes(b64) { b64 = b64.replace(/-/g, "+").replace(/_/g, "/"); while (b64.length % 4) b64 += "="; var r = atob(b64), a = new Uint8Array(r.length); for (var i = 0; i < r.length; i++) a[i] = r.charCodeAt(i); return a; }
+  function mountNotifySettings(el) {
+    if (!el) return;
+    function draw(pr, here) {
+      if (!document.body.contains(el)) return;
+      var v = profile() && profile().kind === "email" ? profile().emailVerified : !!profile();
+      var pushRow;
+      if (!pr.pushAvailable) pushRow = '<div class="grow"><div class="detail" style="white-space:normal">Push alerts are not available yet.</div></div>';
+      else if (!pushSupported()) pushRow = '<div class="grow"><div class="detail" style="white-space:normal">To get push alerts on iPhone, add Tagg to your Home Screen (Share, then Add to Home Screen) and open it from there.</div></div>';
+      else if (here) pushRow = '<div class="grow"><div class="title">Push on this device</div><div class="detail">On</div></div><button class="btn btn-gray" id="pushoff" style="width:auto;flex:none;padding:9px 16px">Turn off</button>';
+      else if (typeof Notification !== "undefined" && Notification.permission === "denied") pushRow = '<div class="grow"><div class="detail" style="white-space:normal">Notifications are blocked for Tagg in this browser. Allow them in your browser or phone settings, then come back.</div></div>';
+      else pushRow = '<div class="grow"><div class="title">Push on this device</div><div class="detail" style="white-space:normal">Your browser will ask for permission when you tap Enable.</div></div><button class="btn btn-accent" id="pushon" style="width:auto;flex:none;padding:9px 16px">Enable push</button>';
+      el.innerHTML = '<div class="group">' +
+        '<div class="row"><div class="grow"><div class="title">Email alerts</div><div class="detail" style="white-space:normal">' + (v ? "Sent to your verified email." : "Verify your email above to get email alerts.") + '</div></div><button class="btn ' + (pr.email ? "btn-accent" : "btn-gray") + '" id="emailtog" style="width:auto;flex:none;padding:9px 16px" aria-pressed="' + (pr.email ? "true" : "false") + '">' + (pr.email ? "On" : "Off") + '</button></div>' +
+        '<div class="row">' + pushRow + '</div></div>' +
+        '<div class="fineprint" style="margin:8px 4px 0">Alerts are short: a connection request to you, and a request of yours accepted. They never include notes, places or contact details.</div>';
+      var et = el.querySelector("#emailtog");
+      if (et) et.addEventListener("click", function () { et.disabled = true; api("/api/notify/prefs", { method: "POST", body: { email: !pr.email } }).then(load).catch(function () { toast("Could not save that"); et.disabled = false; }); });
+      var on = el.querySelector("#pushon");
+      if (on) on.addEventListener("click", function () {
+        on.disabled = true;
+        Notification.requestPermission().then(function (perm) {
+          if (perm !== "granted") { toast("Push was not allowed"); return load(); }
+          return navigator.serviceWorker.ready.then(function (reg) { return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: vapidKeyBytes(pr.pushKey) }); })
+            .then(function (sub) { return api("/api/push/subscribe", { method: "POST", body: { subscription: sub.toJSON() } }); })
+            .then(function () { toast("Push is on for this device"); load(); });
+        }).catch(function (e) { toast((e && e.error) || "Could not turn on push"); load(); });
+      });
+      var off = el.querySelector("#pushoff");
+      if (off) off.addEventListener("click", function () {
+        off.disabled = true;
+        navigator.serviceWorker.ready.then(function (reg) { return reg.pushManager.getSubscription(); }).then(function (sub) {
+          var ep = sub && sub.endpoint; return (sub ? sub.unsubscribe() : Promise.resolve()).then(function () { return ep ? api("/api/push/subscribe", { method: "DELETE", body: { endpoint: ep } }) : null; });
+        }).then(load).catch(function () { toast("Could not turn it off"); load(); });
+      });
+    }
+    function load() {
+      api("/api/notify/prefs").then(function (pr) {
+        if (!pr.pushAvailable || !pushSupported()) return draw(pr, false);
+        return navigator.serviceWorker.ready.then(function (reg) { return reg.pushManager.getSubscription(); }).then(function (sub) { draw(pr, !!sub && pr.push > 0); }, function () { draw(pr, false); });
+      }).catch(function () { el.innerHTML = '<div class="fineprint" style="margin:0">Could not load. Check your connection.</div>'; });
+    }
+    load();
+  }
   function renderSettings() {
     var card = loadCard();
     if (!card) { location.hash = "#/"; return; }
@@ -759,6 +829,7 @@
       (!profile() ? '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">You are not signed in. Go to My Card to sign in and back up your Tagg.</div></div><a class="btn btn-tinted" href="#/" style="width:auto;padding:0 14px">My Card</a></div></div>' : '') +
       '<h2 class="section">What people see</h2>' +
       '<div class="panel" id="sharedprofile"><div class="fineprint" style="margin:0">Loading your shared profile...</div></div>' +
+      '<h2 class="section">Notifications</h2><div id="notifpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' +
       '<h2 class="section">Network</h2><div class="panel" id="netpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' +
       '<h2 class="section">Connect your own agent</h2>' + (profile() ? '<div class="panel" id="agentpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' : '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Sign in first, then you can connect an AI agent of your choice.</div></div></div></div>') +
       '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
@@ -771,6 +842,7 @@
         b.addEventListener("click", function () { setTheme(b.getAttribute("data-th")); route(); });
       });
     })();
+    mountNotifySettings(document.getElementById("notifpanel"));
     mountNetworkSettings(document.getElementById("netpanel"));
     (function () {
       var el = document.getElementById("sharedprofile");

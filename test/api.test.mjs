@@ -624,6 +624,48 @@ if (env) {
   const codeMail = box.find(m => /Your Tagg code is \d{6}/.test(m.text));
   await call("POST", "/api/auth/email/confirm", { code: codeMail && codeMail.text.match(/\d{6}/)[0] }, U.o);
   ok("verifying the email sends the welcome email once (it could not go earlier)", box.filter(m => m.subject === "Welcome to Tagg").length === 1 && box.find(m => m.subject === "Welcome to Tagg").to === "on-u@n.invalid" && (await call("GET", "/api/notify", null, U.o)).body.items.filter(x => x.type === "welcome").length === 1);
+  // ---- Web Push: real encryption and VAPID signing, transport stubbed (the push service host is intercepted, nobody is contacted) ----
+  const wc = globalThis.crypto.subtle, u64 = (b) => Buffer.from(b).toString("base64url");
+  const vk = await wc.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  env.VAPID_JWK = JSON.stringify(await wc.exportKey("jwk", vk.privateKey));
+  const uaK = await wc.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const uaPub = new Uint8Array(await wc.exportKey("raw", uaK.publicKey)), authSec = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/test-endpoint-1", keys: { p256dh: u64(uaPub), auth: u64(authSec) } };
+  const PA = await mkv("push-a@n.invalid", "Pia Ark", true), PB = await mkv("push-b@n.invalid", "Quin Bell", true);
+  ok("push subscribe needs sign-in", (await call("POST", "/api/push/subscribe", { subscription: sub })).status === 401);
+  ok("push subscribe rejects a non-push host (no server-side requests to arbitrary URLs)", (await call("POST", "/api/push/subscribe", { subscription: { ...sub, endpoint: "https://evil.example.com/x" } }, PA.o)).status === 400);
+  ok("push subscribe rejects http and bad keys", (await call("POST", "/api/push/subscribe", { subscription: { ...sub, endpoint: "http://fcm.googleapis.com/x" } }, PA.o)).status === 400 && (await call("POST", "/api/push/subscribe", { subscription: { ...sub, keys: { p256dh: "AAAA", auth: "AAAA" } } }, PA.o)).status === 400);
+  const pk0 = (await call("GET", "/api/notify/prefs", null, PA.o)).body;
+  ok("prefs report push available with the public key and zero devices", pk0.pushAvailable === true && /^[A-Za-z0-9_-]{87}$/.test(pk0.pushKey) && pk0.push === 0);
+  ok("subscribe stores one device", (await call("POST", "/api/push/subscribe", { subscription: sub }, PA.o)).body.push === 1);
+  const seen = []; const rf = globalThis.fetch;
+  globalThis.fetch = async (u, init) => { if (String(u).startsWith("https://fcm.googleapis.com/")) { seen.push({ u: String(u), init }); return new Response("", { status: 201 }); } return rf(u, init); };
+  await call("POST", "/api/connect", { slug: PA.slug, requesterToken: PB.o }, null);
+  globalThis.fetch = rf;
+  ok("a request pushes once to the receiver's device only", seen.length === 1 && seen[0].u === sub.endpoint && seen[0].init.headers["Content-Encoding"] === "aes128gcm" && seen[0].init.headers.TTL === "86400");
+  const body = new Uint8Array(seen[0].init.body), salt = body.slice(0, 16), idl = body[20], asPub = body.slice(21, 21 + idl), ct = body.slice(21 + idl);
+  const enc = new TextEncoder(), hk = async (sa, ik, info, n) => new Uint8Array(await wc.deriveBits({ name: "HKDF", hash: "SHA-256", salt: sa, info }, await wc.importKey("raw", ik, "HKDF", false, ["deriveBits"]), n * 8));
+  const sh = new Uint8Array(await wc.deriveBits({ name: "ECDH", public: await wc.importKey("raw", asPub, { name: "ECDH", namedCurve: "P-256" }, false, []) }, uaK.privateKey, 256));
+  const ikm = await hk(authSec, sh, new Uint8Array([...enc.encode("WebPush: info\0"), ...uaPub, ...asPub]), 32);
+  const cek = await hk(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16), nn = await hk(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
+  const plain = new Uint8Array(await wc.decrypt({ name: "AES-GCM", iv: nn }, await wc.importKey("raw", cek, "AES-GCM", false, ["decrypt"]), ct));
+  const msg = JSON.parse(new TextDecoder().decode(plain.slice(0, plain.length - 1)));
+  ok("the device can decrypt the push (RFC 8291) and it carries only the approved short text", plain[plain.length - 1] === 2 && msg.title === "Connection request" && msg.body === "Quin Bell wants to connect." && !/note|location|Maker/i.test(JSON.stringify(msg)));
+  const auth = seen[0].init.headers.Authorization, m = auth.match(/^vapid t=([\w-]+)\.([\w-]+)\.([\w-]+), k=([\w-]+)$/);
+  const vok = m && await wc.verify({ name: "ECDSA", hash: "SHA-256" }, vk.publicKey, Buffer.from(m[3], "base64url"), enc.encode(m[1] + "." + m[2]));
+  ok("VAPID signature verifies against the published key and names the push service origin", vok && JSON.parse(Buffer.from(m[2], "base64url")).aud === "https://fcm.googleapis.com" && m[4] === pk0.pushKey);
+  ok("the sender gets no push for their own request", PB && (await call("GET", "/api/notify", null, PB.o)).body.items.every(x => x.type !== "request"));
+  globalThis.fetch = async (u, init) => { if (String(u).startsWith("https://fcm.googleapis.com/")) { seen.push(1); return new Response("", { status: 410 }); } return rf(u, init); };
+  const inb2 = (await call("GET", "/api/inbox", null, PA.o)).body.requests; seen.length = 0;
+  await call("POST", "/api/inbox/respond", { id: inb2[0].id, accept: true }, PA.o);
+  ok("accepting pushes nothing to the accepter's own device", seen.length === 0);
+  const PC = await mkv("push-c@n.invalid", "Cal Dune", true); await call("POST", "/api/connect", { slug: PA.slug, requesterToken: PC.o }, null);
+  globalThis.fetch = rf;
+  ok("an expired device (410) is dropped", (await call("GET", "/api/notify/prefs", null, PA.o)).body.push === 0);
+  await call("POST", "/api/push/subscribe", { subscription: sub }, PA.o);
+  ok("unsubscribe removes the device", (await call("DELETE", "/api/push/subscribe", { endpoint: sub.endpoint }, PA.o)).body.push === 0);
+  delete env.VAPID_JWK;
+  ok("without keys, push is reported unavailable and subscribing is refused", (await call("GET", "/api/notify/prefs", null, PA.o)).body.pushAvailable === false && (await call("POST", "/api/push/subscribe", { subscription: sub }, PA.o)).status === 503);
   await env.KV.delete("cfg/notify");
 }
 

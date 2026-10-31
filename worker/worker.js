@@ -307,9 +307,70 @@ async function mailBudgetOk(env, to) {
   return true;
 }
 
+
+// ---- Web Push (RFC 8030 + VAPID RFC 8292 + aes128gcm payload encryption RFC 8291). Used only from notify(), so it is OFF with cfg/notify.
+// Keys: secret VAPID_JWK (ECDSA P-256 private JWK). Tests set env.PUSH_SINK(sub, payload) instead of the network.
+const PUSH_HOST = /^(fcm\.googleapis\.com|updates\.push\.services\.mozilla\.com|web\.push\.apple\.com|[a-z0-9-]+\.notify\.windows\.com|[a-z0-9-]+\.push\.apple\.com)$/;
+const pb64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const punb64u = (s) => { s = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (s.length % 4) s += "="; return Uint8Array.from(atob(s), c => c.charCodeAt(0)); };
+function pushEnabled(env) { return !!(env.PUSH_SINK || env.VAPID_JWK); }
+async function vapidPublic(env) {
+  if (env.VAPID_PUB_TEST) return env.VAPID_PUB_TEST;
+  if (!env.VAPID_JWK) return "";
+  const k = JSON.parse(env.VAPID_JWK);
+  const raw = new Uint8Array(65); raw[0] = 4; raw.set(punb64u(k.x), 1); raw.set(punb64u(k.y), 33);
+  return pb64u(raw);
+}
+function validSub(sub) {
+  try {
+    if (!sub || typeof sub.endpoint !== "string" || sub.endpoint.length > 700 || !sub.keys) return null;
+    const u = new URL(sub.endpoint);
+    if (u.protocol !== "https:" || !PUSH_HOST.test(u.hostname) || u.username || u.password) return null;
+    if (punb64u(sub.keys.p256dh).length !== 65 || punb64u(sub.keys.auth).length !== 16) return null;
+    return { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth }, at: Date.now() };
+  } catch (e) { return null; }
+}
+async function hkdf(salt, ikm, info, len) {
+  const k = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info }, k, len * 8));
+}
+async function pushEncrypt(sub, text) {
+  const ua = punb64u(sub.keys.p256dh), auth = punb64u(sub.keys.auth), enc = new TextEncoder();
+  const eph = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPub = new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey));
+  const uaKey = await crypto.subtle.importKey("raw", ua, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaKey }, eph.privateKey, 256));
+  const keyInfo = new Uint8Array([...enc.encode("WebPush: info\0"), ...ua, ...asPub]);
+  const ikm = await hkdf(auth, shared, keyInfo, 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const cek = await hkdf(salt, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdf(salt, ikm, enc.encode("Content-Encoding: nonce\0"), 12);
+  const plain = new Uint8Array([...enc.encode(text), 2]);
+  const key = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, plain));
+  const hdr = new Uint8Array(21 + 65); hdr.set(salt, 0); new DataView(hdr.buffer).setUint32(16, 4096); hdr[20] = 65; hdr.set(asPub, 21);
+  const out = new Uint8Array(hdr.length + ct.length); out.set(hdr, 0); out.set(ct, hdr.length); return out;
+}
+async function vapidHeader(env, endpoint) {
+  const jwk = JSON.parse(env.VAPID_JWK), enc = new TextEncoder();
+  const head = pb64u(enc.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const claims = pb64u(enc.encode(JSON.stringify({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: "mailto:noreply@mail.prajvalarora.com" })));
+  const key = await crypto.subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, enc.encode(head + "." + claims));
+  return "vapid t=" + head + "." + claims + "." + pb64u(sig) + ", k=" + (await vapidPublic(env));
+}
+// Returns "ok", "gone" (subscription expired, drop it) or "fail".
+async function sendPush(env, sub, payload) {
+  if (env.PUSH_SINK) return (await env.PUSH_SINK(sub, payload)) || "ok";
+  const body = await pushEncrypt(sub, JSON.stringify(payload));
+  const r = await fetch(sub.endpoint, { method: "POST", headers: { Authorization: await vapidHeader(env, sub.endpoint), "Content-Encoding": "aes128gcm", "Content-Type": "application/octet-stream", TTL: "86400", Urgency: "normal" }, body });
+  if (r.status === 404 || r.status === 410) return "gone";
+  return r.ok ? "ok" : "fail";
+}
+
 // ---- Notifications (built, OFF by default). Nothing in this block sends anything unless KV key cfg/notify equals "on".
 // Audiences: welcome -> the new user only; request -> the person who RECEIVES it; connected -> the person who SENT the request.
-// Email goes only to a verified address, at most once per event, within the existing mail caps. Push is not built yet.
+// Email goes only to a verified address, at most once per event, within the existing mail caps. Web Push goes only to devices where the user pressed Enable push.
 const NOTIFY_SITE = "https://robox2020.github.io/tagg/#/";
 const NOTIFY_FOOT = "\n\nYou get this email because alerts are on for your Tagg account. Turn them off in Settings: " + NOTIFY_SITE + "settings";
 function notifyCopy(type, name) {
@@ -334,6 +395,15 @@ async function notify(env, owner, type, evId, name) {
       if (to && (await env.KV.get("suppress/" + to)) === null && (await env.KV.get("nd/email/" + id)) === null) {
         await env.KV.put("nd/email/" + id, "1", { expirationTtl: 2592000 });
         if (await mailBudgetOk(env, to)) { await sendMail(env, to, c.subject, c.text); out.email = true; }
+      }
+    }
+    if (pushEnabled(env) && (await env.KV.get("nd/push/" + id)) === null) {
+      const subs = (await getJSON(env.KV, "ps/" + owner)) || [];
+      if (subs.length) {
+        await env.KV.put("nd/push/" + id, "1", { expirationTtl: 2592000 });
+        const keep = [], pay = { title: c.title, body: c.line, url: NOTIFY_SITE + (type === "request" || type === "connected" ? "people" : "card"), tag: type };
+        for (const sb of subs) { let r = "fail"; try { r = await sendPush(env, sb, pay); } catch (e) {} if (r !== "gone") keep.push(sb); if (r === "ok") out.push = (out.push || 0) + 1; }
+        if (keep.length !== subs.length) await env.KV.put("ps/" + owner, JSON.stringify(keep));
       }
     }
     return out;
@@ -690,7 +760,7 @@ export default {
       if (slug) keys.push("card/" + slug, "enrich/" + slug, "photo/" + slug);
       keys.push("gsh/" + owner);
       for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) { keys.push("mcp/" + t.h); if (t.rh) keys.push("oref/" + t.rh); }
-      keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner, "nt/" + owner, "npf/" + owner);
+      keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner, "nt/" + owner, "npf/" + owner, "ps/" + owner);
       for (const k of keys) await env.KV.delete(k);
       return j({ deleted: true });
     }
@@ -1051,7 +1121,26 @@ export default {
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
       let pr = (await getJSON(env.KV, "npf/" + owner)) || {};
       if (req.method === "POST") { const b = await req.json().catch(() => null); if (!b || typeof b.email !== "boolean") return j({ error: "email must be true or false" }, 400); pr = { email: b.email }; await env.KV.put("npf/" + owner, JSON.stringify(pr)); }
-      return j({ email: pr.email !== false, push: false, pushAvailable: false });
+      const subs = (await getJSON(env.KV, "ps/" + owner)) || [];
+      return j({ email: pr.email !== false, push: subs.length, pushAvailable: pushEnabled(env), pushKey: await vapidPublic(env) });
+    }
+
+    if (p === "/api/push/subscribe" && (req.method === "POST" || req.method === "DELETE")) {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const b = await req.json().catch(() => null);
+      let subs = (await getJSON(env.KV, "ps/" + owner)) || [];
+      if (req.method === "DELETE") {
+        subs = b && typeof b.endpoint === "string" ? subs.filter(x => x.endpoint !== b.endpoint) : [];
+      } else {
+        if (!pushEnabled(env)) return j({ error: "Push is not available yet" }, 503);
+        if (await overLimit(env, "psub/" + owner, 10, 3600)) return j({ error: "Too many attempts" }, 429);
+        const v = validSub(b && b.subscription);
+        if (!v) return j({ error: "That is not a valid push subscription" }, 400);
+        subs = [v, ...subs.filter(x => x.endpoint !== v.endpoint)].slice(0, 5);
+      }
+      if (subs.length) await env.KV.put("ps/" + owner, JSON.stringify(subs)); else await env.KV.delete("ps/" + owner);
+      return j({ push: subs.length });
     }
 
     // Owner's connection-request inbox.

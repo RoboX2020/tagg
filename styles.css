@@ -86,6 +86,10 @@ body {
   font-size: 18px; font-weight: 650; letter-spacing: -0.3px;
 }
 .wordmark .mark { width: 30px; height: 30px; border-radius: 8px; display:block; }
+.bell { position: absolute; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 9px); width: 40px; height: 40px; display:flex; align-items:center; justify-content:center; color: var(--text); border-radius: 20px; }
+.bell:active { background: var(--fill, rgba(120,120,128,.16)); }
+.bellbadge { position:absolute; top:3px; right:2px; min-width:17px; height:17px; padding:0 4px; border-radius:9px; background:#d9733d; color:#fff; font-size:11px; font-weight:650; line-height:17px; text-align:center; }
+.udot { display:inline-block; width:8px; height:8px; border-radius:4px; background:#d9733d; margin-right:8px; vertical-align:1px; }
 .topbar .sub { color: var(--text-2); font-size: 12px; margin-top: 1px; margin-left: 40px; }
 
 /* ---------- content ---------- */
