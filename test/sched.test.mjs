@@ -9,7 +9,7 @@ env.GOOGLE_CLIENT_SECRET = "test-secret";
 
 // Stub Google: token refresh mints an access token keyed to the refresh token; freeBusy returns per-token
 // busy intervals; events records writes. Any other path 404s (the worker must never list/read events).
-const busyByToken = {}, eventCalls = [];
+const busyByToken = {}, eventCalls = [], eventDeletes = [];
 const g = http.createServer(async (req, res) => {
   const chunks = []; for await (const c of req) chunks.push(c);
   const raw = Buffer.concat(chunks).toString();
@@ -21,7 +21,7 @@ const g = http.createServer(async (req, res) => {
   }
   const tok = decodeURIComponent((req.headers.authorization || "").replace("Bearer at-", ""));
   if (req.url === "/freebusy") return res.end(JSON.stringify({ calendars: { primary: { busy: busyByToken[tok] || [] } } }));
-  if (req.url === "/events") { eventCalls.push({ tok, body: JSON.parse(raw) }); return res.end(JSON.stringify({ id: "ev" + eventCalls.length })); }
+  if (req.url.startsWith("/events")) { if (req.method === "DELETE") { eventDeletes.push(req.url); res.writeHead(204); return res.end(); } eventCalls.push({ tok, body: JSON.parse(raw) }); return res.end(JSON.stringify({ id: "ev" + eventCalls.length })); }
   res.writeHead(404); res.end("{}");
 });
 await new Promise(r => g.listen(8804, r));
@@ -76,8 +76,9 @@ ok("a slot outside the proposal is rejected", (await call("POST", "/api/sched/re
 // B picks, A confirms. B has no calendar: A's event is written, the pair is "confirmed" (manual for B).
 ok("target picks a slot", (await call("POST", "/api/sched/respond", { id: prop.id, pick: prop.slots[1] }, B.t)).body.status === "picked");
 let conf = (await call("POST", "/api/sched/confirm", { id: prop.id }, A.t)).body;
-ok("confirm books A's calendar and confirms the time", conf.status === "confirmed" && conf.wrote.a === "booked" && conf.wrote.b === "no calendar connected");
-ok("the event write matches the picked slot and title", eventCalls.length === 1 && eventCalls[0].body.summary === "Coffee" && eventCalls[0].body.start.dateTime === prop.slots[1]);
+ok("single-organizer confirm books one event on the proposer's calendar", conf.status === "booked" && conf.wrote.a === "booked" && conf.wrote.b === "no calendar connected" && eventCalls.length === 1);
+ok("the event write matches the picked slot and title, with no attendee when the target has no calendar", eventCalls[0].body.summary === "Coffee" && eventCalls[0].body.start.dateTime === prop.slots[1] && !eventCalls[0].body.attendees);
+ok("confirming again is idempotent - no second event", (await call("POST", "/api/sched/confirm", { id: prop.id }, A.t)).body.status === "booked" && eventCalls.length === 1);
 
 // Decline flow.
 let p2 = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(14), to: T(16) }, A.t)).body;
@@ -94,8 +95,8 @@ p3 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Sync", mi
 ok("with B sharing, slots avoid both calendars' busy", !p3.slots.includes(T(15)) && !p3.slots.includes(T(16.5)) && !p3.slots.includes(T(17)));
 await call("POST", "/api/sched/respond", { id: p3.id, pick: p3.slots[0] }, B.t);
 conf = (await call("POST", "/api/sched/confirm", { id: p3.id }, A.t)).body;
-ok("confirm with both connected books both calendars", conf.status === "booked" && conf.wrote.a === "booked" && conf.wrote.b === "booked");
-ok("B's event invites A's calendar email", eventCalls.length === 3 && JSON.stringify(eventCalls[2].body.attendees || []) === JSON.stringify([{ email: "ann@example.com" }]));
+ok("with both connected there is still exactly one event (no duplicate pair)", conf.status === "booked" && eventCalls.length === 2);
+ok("the organizer's event invites the target's calendar email", conf.wrote.b === "invited via the event" && JSON.stringify(eventCalls[1].body.attendees || []) === JSON.stringify([{ email: "ben@example.com" }]));
 
 // MCP: a calendar-scope grant gets the scheduling tools; a people-only grant does not.
 const tokCal = (await call("POST", "/api/tokens", { name: "Ann agent", scope: "people+cal" }, A.t)).body.token;
@@ -116,7 +117,14 @@ const tokB = (await call("POST", "/api/tokens", { name: "Ben agent", scope: "cal
 ok("B's agent picks a slot", (await callTool(tokB, "respond_meeting", { id: p4.id, pick: p4.slots[0] })).status === "picked");
 const before = eventCalls.length;
 conf = (await call("POST", "/api/sched/confirm", { id: p4.id }, A.t)).body;
-ok("only the human confirm books it", conf.status === "booked" && eventCalls.length === before + 2);
+ok("only the human confirm books it", conf.status === "booked" && eventCalls.length === before + 1);
+
+// Cancel: either person can cancel; a booked event is deleted from the organizer's calendar; decline blocks cancel.
+ok("a stranger cannot cancel", (await call("POST", "/api/sched/cancel", { id: p4.id }, X.t)).status === 404);
+ok("a declined proposal cannot be cancelled", (await call("POST", "/api/sched/cancel", { id: p2.id }, B.t)).status === 409);
+ok("the target can cancel a booked meeting", (await call("POST", "/api/sched/cancel", { id: p4.id }, B.t)).body.status === "cancelled" && eventDeletes.length === 1 && eventDeletes[0].includes("/events/ev" + eventCalls.length));
+ok("cancelling twice is idempotent", (await call("POST", "/api/sched/cancel", { id: p4.id }, A.t)).body.status === "cancelled" && eventDeletes.length === 1);
+ok("a cancelled meeting cannot be confirmed", (await call("POST", "/api/sched/confirm", { id: p4.id }, A.t)).status === 409);
 
 // Validation + cleanup.
 ok("a window in the past is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(-20), to: T(-18) }, A.t)).status === 400);

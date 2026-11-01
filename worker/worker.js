@@ -1068,6 +1068,12 @@ const appHandler = {
       const out = await schedRespond(env, owner, (await req.json().catch(() => null)) || {});
       return j(out, out.http || 200);
     }
+    if (p === "/api/sched/cancel" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const out = await schedCancel(env, owner, (await req.json().catch(() => null)) || {});
+      return j(out, out.http || 200);
+    }
     if (p === "/api/sched/confirm" && req.method === "POST") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
@@ -1790,26 +1796,41 @@ async function schedRespond(env, owner, args) {
 async function schedConfirm(env, owner, args) {
   const rec = await getJSON(env.KV, "sch/" + String(args.id || ""));
   if (!rec || rec.a !== owner) return { error: "not found", http: 404 };
+  if (rec.status === "booked" || rec.status === "confirmed") return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote }); // idempotent: never writes twice
   if (rec.status !== "picked" && rec.status !== "confirm-failed") return { error: "nothing picked yet", http: 409 };
-  // Both people have now said yes (B picked a slot, A confirms here): write the event to each connected calendar.
+  // Single organizer: ONE event on the proposer's calendar with the other person as an attendee - Google
+  // delivers the invite to their calendar, so there is exactly one event, never a duplicate pair.
+  const calA = await calGet(env, rec.a);
+  if (!calA) { rec.status = "confirmed"; rec.wrote = { a: "no calendar connected" }; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote }); }
+  const at = await googleAccess(env, calA);
+  if (!at) { rec.status = "confirm-failed"; rec.wrote = { a: "calendar auth failed" }; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote }); }
   const end = new Date(Date.parse(rec.picked) + rec.minutes * 60000).toISOString();
-  const wrote = {};
-  for (const side of ["a", "b"]) {
-    const cal = await calGet(env, rec[side]);
-    if (!cal) { wrote[side] = "no calendar connected"; continue; }
-    const at = await googleAccess(env, cal);
-    if (!at) { wrote[side] = "calendar auth failed"; continue; }
-    const otherCal = await calGet(env, rec[side === "a" ? "b" : "a"]);
-    const body = { summary: rec.title, start: { dateTime: rec.picked }, end: { dateTime: end } };
-    if (otherCal && otherCal.email) body.attendees = [{ email: otherCal.email }];
-    const r = await fetch(G_EVENTS_URL(env), { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    wrote[side] = r.ok ? "booked" : "calendar write failed";
-  }
-  rec.wrote = wrote;
-  rec.status = (wrote.a === "booked" || wrote.a === "no calendar connected") && (wrote.b === "booked" || wrote.b === "no calendar connected")
-    ? (wrote.a === "booked" && wrote.b === "booked" ? "booked" : "confirmed") : "confirm-failed";
+  const calB = await calGet(env, rec.b);
+  const body = { summary: rec.title, start: { dateTime: rec.picked }, end: { dateTime: end } };
+  if (calB && calB.email) body.attendees = [{ email: calB.email }];
+  const r = await fetch(G_EVENTS_URL(env) + "?sendUpdates=all", { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) { rec.status = "confirm-failed"; rec.wrote = { a: "calendar write failed" }; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote }); }
+  const d = await r.json().catch(() => ({}));
+  rec.eventId = d.id || null;
+  rec.status = "booked";
+  rec.wrote = { a: "booked", b: calB && calB.email ? "invited via the event" : "no calendar connected" };
   await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
-  return Object.assign(await schedSummary(rec, owner), { wrote });
+  return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote });
+}
+async function schedCancel(env, owner, args) {
+  const rec = await getJSON(env.KV, "sch/" + String(args.id || ""));
+  if (!rec || (rec.a !== owner && rec.b !== owner)) return { error: "not found", http: 404 };
+  if (rec.status === "cancelled") return { id: rec.id, status: "cancelled" }; // idempotent
+  if (rec.status === "declined") return { error: "already declined", http: 409 };
+  // A booked event is removed from the organizer's calendar; Google notifies the attendee.
+  if (rec.eventId) {
+    const calA = await calGet(env, rec.a);
+    const at = calA && await googleAccess(env, calA);
+    if (at) await fetch(G_EVENTS_URL(env) + "/" + encodeURIComponent(rec.eventId) + "?sendUpdates=all", { method: "DELETE", headers: { Authorization: "Bearer " + at } }).catch(() => null);
+  }
+  rec.status = "cancelled";
+  await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
+  return { id: rec.id, status: "cancelled" };
 }
 async function calOwnBusy(env, owner, args) {
   const cal = await calGet(env, owner);
