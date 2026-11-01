@@ -3,13 +3,15 @@
 // Run: node test/sched.test.mjs
 import assert from "node:assert/strict";
 import http from "node:http";
+import { createHash } from "node:crypto";
 const { start } = await import("./serve.mjs");
 const { srv, url, env } = await start(8803);
 env.GOOGLE_CLIENT_SECRET = "test-secret";
 
 // Stub Google: token refresh mints an access token keyed to the refresh token; freeBusy returns per-token
 // busy intervals; events records writes. Any other path 404s (the worker must never list/read events).
-const busyByToken = {}, eventCalls = [], eventDeletes = [];
+const busyByToken = {}, eventCalls = [], eventDeletes = [], createdIds = new Set();
+const detId = (id) => "t" + createHash("sha256").update(id).digest("hex").slice(0, 24);
 const g = http.createServer(async (req, res) => {
   const chunks = []; for await (const c of req) chunks.push(c);
   const raw = Buffer.concat(chunks).toString();
@@ -21,7 +23,14 @@ const g = http.createServer(async (req, res) => {
   }
   const tok = decodeURIComponent((req.headers.authorization || "").replace("Bearer at-", ""));
   if (req.url === "/freebusy") return res.end(JSON.stringify({ calendars: { primary: { busy: busyByToken[tok] || [] } } }));
-  if (req.url.startsWith("/events")) { if (req.method === "DELETE") { eventDeletes.push(req.url); res.writeHead(204); return res.end(); } eventCalls.push({ tok, body: JSON.parse(raw) }); return res.end(JSON.stringify({ id: "ev" + eventCalls.length })); }
+  if (req.url.startsWith("/events")) {
+    if (req.method === "DELETE") { eventDeletes.push(req.url); res.writeHead(204); return res.end(); }
+    const body = JSON.parse(raw);
+    if (body.id && createdIds.has(body.id)) { res.writeHead(409); return res.end('{"error":"duplicate"}'); } // Google: an existing event id rejects the create
+    if (body.id) createdIds.add(body.id);
+    eventCalls.push({ tok, body });
+    return res.end(JSON.stringify({ id: body.id || "ev" + eventCalls.length }));
+  }
   res.writeHead(404); res.end("{}");
 });
 await new Promise(r => g.listen(8804, r));
@@ -64,6 +73,7 @@ ok("freebusy carries no event details", !JSON.stringify(fb).match(/summary|title
 // Propose: B has no calendar, so slots avoid only A's busy. Both see the proposal; nothing is sent or booked.
 let prop = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Coffee", minutes: 60, from: T(14), to: T(19) }, A.t)).body;
 ok("proposal recorded with slots that avoid A's busy", prop.status === "proposed" && prop.slots.length > 0 && !prop.slots.includes(T(15)) && !prop.slots.includes(T(15.5)));
+ok("the proposal discloses that either person can cancel", prop.cancelableBy === "either");
 ok("proposer sees it as outgoing", (await call("GET", "/api/sched", null, A.t)).body.schedule.some(x => x.id === prop.id && x.role === "out"));
 ok("target sees it as incoming with the proposer's name", (await call("GET", "/api/sched", null, B.t)).body.schedule.some(x => x.id === prop.id && x.role === "in" && x.withName === "Ann Sched"));
 
@@ -122,9 +132,38 @@ ok("only the human confirm books it", conf.status === "booked" && eventCalls.len
 // Cancel: either person can cancel; a booked event is deleted from the organizer's calendar; decline blocks cancel.
 ok("a stranger cannot cancel", (await call("POST", "/api/sched/cancel", { id: p4.id }, X.t)).status === 404);
 ok("a declined proposal cannot be cancelled", (await call("POST", "/api/sched/cancel", { id: p2.id }, B.t)).status === 409);
-ok("the target can cancel a booked meeting", (await call("POST", "/api/sched/cancel", { id: p4.id }, B.t)).body.status === "cancelled" && eventDeletes.length === 1 && eventDeletes[0].includes("/events/ev" + eventCalls.length));
+ok("the target can cancel a booked meeting", (await call("POST", "/api/sched/cancel", { id: p4.id }, B.t)).body.status === "cancelled" && eventDeletes.length === 1 && eventDeletes[0].includes("/events/" + detId(p4.id)));
 ok("cancelling twice is idempotent", (await call("POST", "/api/sched/cancel", { id: p4.id }, A.t)).body.status === "cancelled" && eventDeletes.length === 1);
 ok("a cancelled meeting cannot be confirmed", (await call("POST", "/api/sched/confirm", { id: p4.id }, A.t)).status === 409);
+
+// Hardening: a lost create response must never duplicate the event - the retry's create hits 409 and adopts.
+let p5 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Retry", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
+await call("POST", "/api/sched/respond", { id: p5.id, pick: p5.slots[0] }, B.t);
+createdIds.add(detId(p5.id)); // simulates Google's state after a first create whose response was lost in flight
+const beforeRetry = eventCalls.length;
+conf = (await call("POST", "/api/sched/confirm", { id: p5.id }, A.t)).body;
+ok("a retry after a lost create response adopts the existing event instead of duplicating", conf.status === "booked" && eventCalls.length === beforeRetry);
+ok("the adopted event keeps the deterministic id", conf.eventId === undefined && (await call("GET", "/api/sched", null, A.t)).body.schedule.some(x => x.id === p5.id && x.status === "booked"));
+
+// Hardening: two confirms racing the same proposal produce exactly one event.
+let p6 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Race", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
+await call("POST", "/api/sched/respond", { id: p6.id, pick: p6.slots[0] }, B.t);
+const beforeRace = eventCalls.length;
+const [rc1, rc2] = await Promise.all([call("POST", "/api/sched/confirm", { id: p6.id }, A.t), call("POST", "/api/sched/confirm", { id: p6.id }, A.t)]);
+ok("concurrent confirms both settle on booked", rc1.body.status === "booked" && rc2.body.status === "booked");
+ok("concurrent confirms write exactly one event", eventCalls.length === beforeRace + 1 && eventCalls[beforeRace].body.id === detId(p6.id));
+
+// Hardening: disconnect warns about events left behind; cancelling afterwards cannot delete remotely and says so.
+let p7 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Later", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
+await call("POST", "/api/sched/respond", { id: p7.id, pick: p7.slots[0] }, B.t);
+ok("a booking for the disconnect test", (await call("POST", "/api/sched/confirm", { id: p7.id }, A.t)).body.status === "booked");
+const beforeDisc = eventDeletes.length;
+const disc = (await call("DELETE", "/api/cal", null, A.t)).body;
+ok("disconnect reports booked meetings left behind", disc.ok === true && disc.bookedLeft >= 1 && /can no longer/.test(disc.note || ""));
+const canc = (await call("POST", "/api/sched/cancel", { id: p7.id }, B.t)).body;
+ok("cancel after organizer disconnect cancels with a warning and no remote delete", canc.status === "cancelled" && /disconnected/.test(canc.note || "") && eventDeletes.length === beforeDisc);
+// Reconnect A so the account-deletion check below still exercises a connected account.
+await call("POST", "/api/cal/connect", { refreshToken: "rtA", email: "ann@example.com" }, A.t);
 
 // Validation + cleanup.
 ok("a window in the past is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(-20), to: T(-18) }, A.t)).status === 400);
