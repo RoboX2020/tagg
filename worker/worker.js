@@ -142,13 +142,19 @@ function mcpPerson(x, withNotes) {
   const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : null;
   const o = { id: x.id, name: x.card && x.card.name, headline: (x.card && x.card.headline) || null, event: x.event || null, metAt: x.metAt || null, where: (x.location && x.location.label) || null };
   if (li) o.importedFromLinkedin = { roles: li.titles || [], companies: li.companies || [], schools: li.schools || [], location: li.location || null, note: "Entered or reviewed by the card owner. Tagg has not verified it." };
+  const gh = x.enriched && x.enriched.github ? x.enriched.github : null;
+  if (gh) o.importedFromGithub = { bio: gh.bio || null, company: gh.company || null, location: gh.location || null, note: "Imported from the public GitHub profile the card owner linked. Tagg has not verified it." };
+  const xx = x.enriched && x.enriched.x ? x.enriched.x : null;
+  if (xx) o.importedFromX = { handle: xx.handle, name: xx.name || null, bio: xx.bio || null, location: xx.location || null, note: "From the public X profile the card owner linked (bio is owner-entered). Tagg has not verified it." };
   if (!x.verified && x.card) o.cardIdentity = "as entered by the person; Tagg has not verified it";
   if (withNotes && x.note) o.privateNote = x.note;
   return o;
 }
 function mcpMatch(x, terms, withNotes) {
   const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : {};
-  const hay = [x.card && x.card.name, x.card && x.card.headline, x.event, x.location && x.location.label, li.headline, (li.titles || []).join(" "), (li.companies || []).join(" "), (li.schools || []).join(" "), li.location, withNotes ? x.note : ""].join(" ").toLowerCase();
+  const gh = x.enriched && x.enriched.github ? x.enriched.github : {};
+  const xx = x.enriched && x.enriched.x ? x.enriched.x : {};
+  const hay = [x.card && x.card.name, x.card && x.card.headline, x.event, x.location && x.location.label, li.headline, (li.titles || []).join(" "), (li.companies || []).join(" "), (li.schools || []).join(" "), li.location, gh.bio, gh.company, gh.location, xx.name, xx.handle, xx.bio, xx.location, withNotes ? x.note : ""].join(" ").toLowerCase();
   return terms.filter(t => hay.includes(t)).length;
 }
 const MCP_TOOLS = [
@@ -1453,6 +1459,60 @@ const appHandler = {
       await saveEnrich(env.KV, slug, existing);
       return j({ ok: true });
     }
+    if (p === "/api/import/x/auto" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      if (!body || body.ownProfile !== true || body.disclosure !== "x-auto-v1") return j({ error: "Accept the notice about importing your profile first" }, 400);
+      const xm = typeof body.url === "string" ? body.url.trim().match(/^(?:https?:\/\/)?(?:www\.)?(?:x\.com|twitter\.com)\/([A-Za-z0-9_]{1,15})\/?$/i) : null;
+      if (!xm) return j({ error: "Use a link like x.com/yourname" }, 400);
+      const url = "https://x.com/" + xm[1];
+      const existing = await loadEnrich(env.KV, slug);
+      if ((existing.x && existing.x.url === url) || (existing.xRemoved && existing.xRemoved.url === url)) return j({ error: "That link was already imported.", code: "same-link" }, 409);
+      if (await overLimit(env, "ximport/" + owner, 6, 3600)) return j({ error: "Too many imports - try again in an hour" }, 429);
+      // Direct public fetch of the profile page's Open Graph tags only: no sign-in, no third-party mirror.
+      // X's public meta carries name, handle and avatar; the bio is not in it, so a bio stays owner-entered (edit).
+      let html = null;
+      try { const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (compatible; Tagg/1.0; link preview)" }, signal: AbortSignal.timeout(10000) }); if (r.ok) html = await r.text(); } catch (e) {}
+      if (html === null) return j({ error: "Could not reach X right now. Your link is saved.", code: "unavailable" }, 503);
+      const meta = (prop) => { const m = html.match(new RegExp('<meta[^>]+property="og:' + prop + '"[^>]+content="([^"]*)"')) || html.match(new RegExp('<meta[^>]+content="([^"]*)"[^>]+property="og:' + prop + '"')); return m ? m[1] : null; };
+      const tm = (meta("title") || "").match(/^(.*?)\s*\(@([A-Za-z0-9_]{1,15})\)/);
+      if (!tm) return j({ error: "X has no public profile at that link. Your link is saved.", code: "unreadable" }, 422);
+      const avatar = meta("image");
+      const now = new Date().toISOString();
+      existing.x = { handle: tm[2], name: clip(tm[1].trim(), 120) || null, avatar: typeof avatar === "string" && avatar.startsWith("https://pbs.twimg.com/") ? avatar : null,
+        source: "x-public-og", url, importedAt: now, autoImported: true, disclosure: "x-auto-v1" };
+      delete existing.xRemoved;
+      await saveEnrich(env.KV, slug, existing);
+      await env.KV.put("impconsent/x/" + owner, JSON.stringify({ version: "x-auto-v1", at: now, url }));
+      return j({ ok: true, x: existing.x });
+    }
+    if (p === "/api/import/x/edit" && req.method === "POST") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const body = await req.json().catch(() => null);
+      const existing = await loadEnrich(env.KV, slug);
+      if (!existing.x) return j({ error: "Nothing imported to edit" }, 404);
+      const f = (body && body.fields) || {};
+      // The bio is owner-entered: X's public meta does not include it.
+      const fields = { name: clip(f.name, 120) || null, bio: clip(f.bio, 300) || null, location: clip(f.location, 120) || null };
+      const suppressed = Object.keys(fields).filter(k => !fields[k]);
+      existing.x = Object.assign(existing.x, fields, { editedAt: new Date().toISOString(), suppressed });
+      await saveEnrich(env.KV, slug, existing);
+      return j({ ok: true, x: existing.x });
+    }
+    if (p === "/api/import/x" && req.method === "DELETE") {
+      const owner = authOwner(req);
+      const slug = owner ? await env.KV.get("own/" + owner) : null;
+      if (!slug) return j({ error: "unauthorized" }, 401);
+      const existing = await loadEnrich(env.KV, slug);
+      if (existing.x && existing.x.url) existing.xRemoved = { url: existing.x.url, at: new Date().toISOString() };
+      delete existing.x;
+      await saveEnrich(env.KV, slug, existing);
+      return j({ ok: true });
+    }
     // Imported profile picture: public like the card itself, served from our own copy.
     const phm = p.match(/^\/api\/photo\/([a-z0-9]+)$/);
     if (phm && req.method === "GET") {
@@ -1501,8 +1561,11 @@ const appHandler = {
         name: x.card.name, headline: x.card.headline || null, links: Object.keys(x.card.links || {}),
         event: x.event || null, metAt: fmtWhen(x.metAt), where: (x.location && x.location.label) || null,
         note: x.note || null,
-        about: x.enriched && x.enriched.linkedin ? [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location].filter(v => v && !/: $/.test(v)).join("; ")
-          : x.enriched && x.enriched.github ? [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ") : null
+        about: x.enriched ? [
+          ...(x.enriched.linkedin ? [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location] : []),
+          ...(x.enriched.github ? ["github: " + [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ")] : []),
+          ...(x.enriched.x ? ["on X @" + x.enriched.x.handle + (x.enriched.x.bio ? ": " + x.enriched.x.bio : "") + (x.enriched.x.location ? " (" + x.enriched.x.location + ")" : "")] : [])
+        ].filter(v => v && !/: $/.test(v) && v !== "github: " && v !== "github: ; ").join("; ") || null : null
       }));
       const fofG = await fofFor(env, owner);
       const nameOf = new Map((await getPeopleFor(env, owner)).map(x => [x.id, x.card.name])), fofNm = new Map(fofG.nodes.map(n => [n.id, n.name]));

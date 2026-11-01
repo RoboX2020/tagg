@@ -224,6 +224,9 @@ if (env) {
     if (us.includes("api.github.com/users/")) { ghCalls++; const h = us.split("/users/")[1]; if (h === "nobody-here") return new Response("{}", { status: 404 }); if (h === "limited-user") return new Response("{}", { status: 403 }); if (h === "down-user") throw new Error("net");
       return new Response(JSON.stringify({ login: h, name: "Gh Person", bio: "Builds robots", company: "ASU", location: "Tempe", followers: 5, public_repos: 7, avatar_url: "https://avatars.githubusercontent.com/u/1", blog: "" }), { status: 200 }); }
     if (us.includes("media.licdn.com")) { if (globalThis.__picCase === "big") return new Response(new Uint8Array(500000), { status: 200, headers: { "content-type": "image/jpeg" } }); if (globalThis.__picCase === "html") return new Response("<html>", { status: 200, headers: { "content-type": "text/html" } }); return new Response(new Uint8Array([255, 216, 255, 224, 0, 16, 74, 70]), { status: 200, headers: { "content-type": "image/jpeg" } }); }
+    if (us.includes("x.com/")) { const h = us.split("x.com/")[1].replace(/\/$/, ""); if (h === "downx") throw new Error("net");
+      if (h === "nobodyx") return new Response("<html><head><title> X </title></head></html>", { status: 200 });
+      return new Response('<html><head><meta property="og:title" content="Ex Person (@' + h + ') on X"/><meta property="og:image" content="https://pbs.twimg.com/profile_images/1/pic.jpg"/></head></html>', { status: 200 }); }
     if (us.includes("linkedin.com")) { linkedinCalls++; return new Response("", { status: 999 }); }
     return realFetch2(u, init);
   };
@@ -298,6 +301,38 @@ if (env) {
   const lk2 = (await call("POST", "/api/owner", {})).body.ownerToken; await call("POST", "/api/card", { ownerToken: lk2, card: { name: "Both", headline: "h", links: {} } }, lk2);
   await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/both-person", ownProfile: true, disclosure: "linkedin-auto-v1" }, lk2); await call("POST", "/api/import/github/auto", { ...gh, url: "github.com/both-person" }, lk2);
   const bothSlug = await env.KV.get("own/" + lk2); const bothE = JSON.parse(await env.KV.get("enrich/" + bothSlug)); ok("github import keeps LinkedIn details in the same record", !!bothE.linkedin && !!bothE.github);
+
+  // X informed import: public Open Graph meta only (name/handle/avatar), bio is owner-entered.
+  const xTok = (await call("POST", "/api/owner", {})).body.ownerToken; const xc = await call("POST", "/api/card", { ownerToken: xTok, card: { name: "Ex Person", headline: "h", detail: "ddd", links: { x: "https://x.com/exhandle" } } }, xTok);
+  const xi = { url: "x.com/exhandle", ownProfile: true, disclosure: "x-auto-v1" };
+  ok("x import needs the notice", (await call("POST", "/api/import/x/auto", { url: xi.url, ownProfile: true }, xTok)).status === 400);
+  ok("x import needs sign in", (await call("POST", "/api/import/x/auto", xi)).status === 401);
+  ok("x import rejects a non-profile url", (await call("POST", "/api/import/x/auto", { ...xi, url: "x.com/a/b" }, xTok)).status === 400);
+  const xr = await call("POST", "/api/import/x/auto", xi, xTok);
+  ok("x import stores public meta with provenance", xr.status === 200 && xr.body.x.handle === "exhandle" && xr.body.x.name === "Ex Person" && xr.body.x.source === "x-public-og" && xr.body.x.autoImported === true);
+  ok("same x link is not imported twice", (await call("POST", "/api/import/x/auto", xi, xTok)).status === 409);
+  const xe = await call("POST", "/api/import/x/edit", { fields: { bio: "posts about robots", location: "Tempe" } }, xTok);
+  ok("x bio is owner-entered via edit", xe.status === 200 && xe.body.x.bio === "posts about robots");
+  ok("x import with no profile meta fails gracefully", (await call("POST", "/api/import/x/auto", { ...xi, url: "x.com/nobodyx" }, xTok)).status === 422);
+  ok("x network failure fails gracefully", (await call("POST", "/api/import/x/auto", { ...xi, url: "x.com/downx" }, xTok)).status === 503);
+
+  // A saver then gets the imported details with their saved person, and their agent (MCP) can read and search them.
+  const sv2 = (await call("POST", "/api/owner", {})).body.ownerToken;
+  await call("POST", "/api/card", { ownerToken: sv2, card: { name: "Saver Two", headline: "hhh", detail: "ddd", links: {} } });
+  await call("POST", "/api/people", { slug: xc.body.slug }, sv2);
+  const svTok = (await call("POST", "/api/tokens", { name: "Saver agent", scope: "people" }, sv2)).body.token;
+  const spx = await rpc(svTok, "tools/call", { name: "search_people", arguments: { query: "exhandle" } });
+  const spxj = JSON.parse(spx.body.result.content[0].text);
+  ok("MCP finds a person by imported X handle and labels it unverified", spxj.people.length === 1 && spxj.people[0].importedFromX.handle === "exhandle" && /not verified/i.test(spxj.people[0].importedFromX.note));
+
+  // Ask reaches the same details: the model prompt carries the X bio and handle.
+  const prevAI = env.AI; let askSeen = "";
+  env.AI = { run: async (m, a) => { askSeen = a.messages[0].content; return { response: "ok" }; } };
+  await call("POST", "/api/ask", { q: "What does Ex Person post about?" }, sv2);
+  ok("ask prompt includes imported X details", askSeen.includes("@exhandle") && askSeen.includes("posts about robots"));
+  env.AI = prevAI;
+
+  ok("x remove, then same link stays removed", (await call("DELETE", "/api/import/x", null, xTok)).status === 200 && (await call("POST", "/api/import/x/auto", xi, xTok)).status === 409);
   // Profile picture: only with the v2 notice, copied from LinkedIn's image host, served from Tagg, removable.
   const pTok = (await call("POST", "/api/owner", {})).body.ownerToken; const pc = await call("POST", "/api/card", { ownerToken: pTok, card: { name: "Pic Person", headline: "h", links: {} } }, pTok);
   const v1 = await call("POST", "/api/import/linkedin/auto", { url: "linkedin.com/in/pic-v1", ownProfile: true, disclosure: "linkedin-auto-v1" }, pTok);
