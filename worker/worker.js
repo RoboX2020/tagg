@@ -141,11 +141,11 @@ const MCP_TTL_MS = 90 * 86400000;
 function mcpPerson(x, withNotes) {
   const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : null;
   const o = { id: x.id, name: x.card && x.card.name, headline: (x.card && x.card.headline) || null, event: x.event || null, metAt: x.metAt || null, where: (x.location && x.location.label) || null };
-  if (li) o.importedFromLinkedin = { roles: li.titles || [], companies: li.companies || [], schools: li.schools || [], location: li.location || null, note: "Entered or reviewed by the card owner. Tagg has not verified it." };
+  if (li) o.importedFromLinkedin = { roles: li.titles || [], companies: li.companies || [], schools: li.schools || [], location: li.location || null, url: li.url || null, importedAt: li.importedAt || null, note: (li.source === "linkedin-pasted-text" ? "Pasted in by the card owner (owner-entered, not fetched)." : "Imported from the LinkedIn profile the card owner linked.") + " Tagg has not verified it." };
   const gh = x.enriched && x.enriched.github ? x.enriched.github : null;
-  if (gh) o.importedFromGithub = { bio: gh.bio || null, company: gh.company || null, location: gh.location || null, note: "Imported from the public GitHub profile the card owner linked. Tagg has not verified it." };
+  if (gh) o.importedFromGithub = { bio: gh.bio || null, company: gh.company || null, location: gh.location || null, url: gh.url || null, importedAt: gh.importedAt || null, note: "Fetched from the public GitHub profile the card owner linked. Tagg has not verified it." };
   const xx = x.enriched && x.enriched.x ? x.enriched.x : null;
-  if (xx) o.importedFromX = { handle: xx.handle, name: xx.name || null, bio: xx.bio || null, location: xx.location || null, note: "From the public X profile the card owner linked (bio is owner-entered). Tagg has not verified it." };
+  if (xx) o.importedFromX = { handle: xx.handle, name: xx.name || null, bio: xx.bio || null, location: xx.location || null, url: xx.url || null, importedAt: xx.importedAt || null, note: "Name and handle fetched from the public X profile the card owner linked; the bio, if present, was entered by the card owner, not fetched. Tagg has not verified it." };
   if (!x.verified && x.card) o.cardIdentity = "as entered by the person; Tagg has not verified it";
   if (withNotes && x.note) o.privateNote = x.note;
   return o;
@@ -1552,6 +1552,12 @@ const appHandler = {
       if (!q) return j({ error: "question required" }, 400);
       // Dates are formatted in the user's own timezone (sent by the app) so the model never states a UTC day as if it were local.
       const tz = /^[A-Za-z0-9_+-]{2,32}\/[A-Za-z0-9_+\/-]{2,40}$/.test((body && body.tz) || "") ? body.tz : null;
+      const srcTag = (e, label) => {
+        const d = e.importedAt ? e.importedAt.slice(0, 10) : "unknown date";
+        if (e.source === "linkedin-pasted-text") return "[linkedin: owner-entered, not fetched, " + d + "] ";
+        if (e.source === "x-public-og") return "[x: name/handle fetched " + d + (e.url ? " from " + e.url : "") + "; any bio is owner-entered] ";
+        return "[" + label + ": fetched " + d + (e.url ? " from " + e.url : "") + "] ";
+      };
       const fmtWhen = (iso) => {
         if (!iso) return null;
         if (!tz) return iso + " (UTC)";
@@ -1562,9 +1568,9 @@ const appHandler = {
         event: x.event || null, metAt: fmtWhen(x.metAt), where: (x.location && x.location.label) || null,
         note: x.note || null,
         about: x.enriched ? [
-          ...(x.enriched.linkedin ? [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location] : []),
-          ...(x.enriched.github ? ["github: " + [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ")] : []),
-          ...(x.enriched.x ? ["on X @" + x.enriched.x.handle + (x.enriched.x.bio ? ": " + x.enriched.x.bio : "") + (x.enriched.x.location ? " (" + x.enriched.x.location + ")" : "")] : [])
+          ...(x.enriched.linkedin ? [srcTag(x.enriched.linkedin, "linkedin") + [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location].filter(Boolean).join(" ")] : []),
+          ...(x.enriched.github ? [srcTag(x.enriched.github, "github") + [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ")] : []),
+          ...(x.enriched.x ? [srcTag(x.enriched.x, "x") + "on X @" + x.enriched.x.handle + (x.enriched.x.bio ? ": " + x.enriched.x.bio : "") + (x.enriched.x.location ? " (" + x.enriched.x.location + ")" : "")] : [])
         ].filter(v => v && !/: $/.test(v) && v !== "github: " && v !== "github: ; ").join("; ") || null : null
       }));
       const fofG = await fofFor(env, owner);

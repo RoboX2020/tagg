@@ -324,12 +324,15 @@ if (env) {
   const spx = await rpc(svTok, "tools/call", { name: "search_people", arguments: { query: "exhandle" } });
   const spxj = JSON.parse(spx.body.result.content[0].text);
   ok("MCP finds a person by imported X handle and labels it unverified", spxj.people.length === 1 && spxj.people[0].importedFromX.handle === "exhandle" && /not verified/i.test(spxj.people[0].importedFromX.note));
+  ok("MCP X citation carries source url and retrieval date", spxj.people[0].importedFromX.url === "https://x.com/exhandle" && /^\d{4}-\d{2}-\d{2}T/.test(spxj.people[0].importedFromX.importedAt));
+  ok("MCP X note marks the bio owner-entered, not fetched", /owner/i.test(spxj.people[0].importedFromX.note) && /not fetched/i.test(spxj.people[0].importedFromX.note));
 
   // Ask reaches the same details: the model prompt carries the X bio and handle.
   const prevAI = env.AI; let askSeen = "";
   env.AI = { run: async (m, a) => { askSeen = a.messages[0].content; return { response: "ok" }; } };
   await call("POST", "/api/ask", { q: "What does Ex Person post about?" }, sv2);
   ok("ask prompt includes imported X details", askSeen.includes("@exhandle") && askSeen.includes("posts about robots"));
+  ok("ask prompt cites the X source with url and date", /\[x: name\/handle fetched \d{4}-\d{2}-\d{2} from https:\/\/x\.com\/exhandle; any bio is owner-entered\]/.test(askSeen));
   ok("ask prompt guards imported fields as untrusted data", askSeen.includes("untrusted data"));
   env.AI = prevAI;
 
