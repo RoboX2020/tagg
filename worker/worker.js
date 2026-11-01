@@ -1490,9 +1490,16 @@ const appHandler = {
       const body = await req.json().catch(() => null);
       const q = ((body && body.q) || "").slice(0, 500).trim();
       if (!q) return j({ error: "question required" }, 400);
+      // Dates are formatted in the user's own timezone (sent by the app) so the model never states a UTC day as if it were local.
+      const tz = /^[A-Za-z0-9_+-]{2,32}\/[A-Za-z0-9_+\/-]{2,40}$/.test((body && body.tz) || "") ? body.tz : null;
+      const fmtWhen = (iso) => {
+        if (!iso) return null;
+        if (!tz) return iso + " (UTC)";
+        try { return new Date(iso).toLocaleString("en-US", { timeZone: tz, month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }) + " (" + tz + ")"; } catch (e) { return iso + " (UTC)"; }
+      };
       const people = (await getPeopleFor(env, owner)).slice(0, 60).map(x => ({
         name: x.card.name, headline: x.card.headline || null, links: Object.keys(x.card.links || {}),
-        event: x.event || null, metAt: x.metAt, where: (x.location && x.location.label) || null,
+        event: x.event || null, metAt: fmtWhen(x.metAt), where: (x.location && x.location.label) || null,
         note: x.note || null,
         about: x.enriched && x.enriched.linkedin ? [x.enriched.linkedin.headline, "roles: " + (x.enriched.linkedin.titles || []).join(", "), "worked at: " + (x.enriched.linkedin.companies || [x.enriched.linkedin.company]).filter(Boolean).join(", "), "studied at: " + (x.enriched.linkedin.schools || [x.enriched.linkedin.school]).filter(Boolean).join(", "), x.enriched.linkedin.location].filter(v => v && !/: $/.test(v)).join("; ")
           : x.enriched && x.enriched.github ? [x.enriched.github.bio, x.enriched.github.company].filter(Boolean).join("; ") : null
@@ -1501,7 +1508,7 @@ const appHandler = {
       const nameOf = new Map((await getPeopleFor(env, owner)).map(x => [x.id, x.card.name])), fofNm = new Map(fofG.nodes.map(n => [n.id, n.name]));
       const fofNames = fofG.edges.filter(e => fofNm.has(e.to)).slice(0, 60).map(e => ({ name: fofNm.get(e.to), knows: nameOf.get(e.from) || null }));
       const hist = (body && Array.isArray(body.history) ? body.history : []).slice(-6).filter(h => h && (h.r === "me" || h.r === "tagg") && typeof h.t === "string").map(h => (h.r === "me" ? "USER: " : "TAGG: ") + h.t.slice(0, 500)).join("\n");
-      const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + (fofNames.length ? "\n\nFRIENDS OF FRIENDS (names only, shared with consent; say who they know, never invent details): " + JSON.stringify(fofNames) : "") + (hist ? "\n\nEARLIER IN THIS CONVERSATION (use it to resolve words like she, he, they, that person, and who else):\n" + hist : "") + "\n\nQUESTION: " + q;
+      const prompt = "You are Tagg, a personal people-memory assistant. Answer the user's question using ONLY the JSON list of people they have met (each has name, headline, event, when and where they met, a private note, and a public-profile about). If nobody matches, say so plainly and suggest what to try. When people match, name them and say when and where the user met them, plus anything useful from notes or about. Concise (under 120 words), warm, plain text, no markdown, no bullets unless listing several people.\n\nPEOPLE JSON:\n" + JSON.stringify(people) + (fofNames.length ? "\n\nFRIENDS OF FRIENDS (names only, shared with consent; say who they know, never invent details): " + JSON.stringify(fofNames) : "") + (hist ? "\n\nEARLIER IN THIS CONVERSATION (use it to resolve words like she, he, they, that person, and who else):\n" + hist : "") + "\n\nNOW FOR THE USER: " + fmtWhen(new Date().toISOString()) + "\n\nQUESTION: " + q;
       const sug = askSuggestions(q, await getPeopleFor(env, owner));
       if (sug.length) {
         const byHeard = {}; for (const s of sug) (byHeard[s.heard] = byHeard[s.heard] || []).push(s);

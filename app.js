@@ -1760,7 +1760,7 @@
       var pending = { r: "tagg", t: "Thinking..." }; CHAT.push(pending); paint();
       function done(text, links) { pending.t = text; pending.links = links || ""; saveChat(); paint(); speak(text); }
       if (!ownerToken()) { var tmp = document.createElement("div"); tmp.innerHTML = answerHtml(q); return done(tmp.textContent, quickLinks(q)); }
-      api("/api/ask", { method: "POST", body: { q: q, history: history } }).then(function (d) {
+      api("/api/ask", { method: "POST", body: { q: q, history: history, tz: (Intl.DateTimeFormat().resolvedOptions().timeZone || "") } }).then(function (d) {
         var chips = "", seen = {};
         (d.suggestions || []).forEach(function (s) {
           var key = s.heard + ">" + s.meant; if (seen[key]) return; seen[key] = 1;

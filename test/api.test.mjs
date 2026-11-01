@@ -351,6 +351,22 @@ if (env) {
   await mkc(o1, "Me", "x");
   const p1 = await mkc(o2, "Dana Webb", "Engineer"); const p2 = await mkc((await call("POST", "/api/owner", {})).body.ownerToken, "Eli Cho", "Designer");
   await call("POST", "/api/people", { slug: p1.slug, event: "ISTB Open House" }, o1); await call("POST", "/api/people", { slug: p2.slug, event: "Cal Hacks" }, o1);
+  // Timezone semantics: a met moment near midnight UTC is shown in the user's timezone, never as a false local day.
+  {
+    const zt = (await call("POST", "/api/owner", {})).body.ownerToken;
+    const zt2 = (await call("POST", "/api/owner", {})).body.ownerToken;
+    const zslug = (await call("POST", "/api/card", { ownerToken: zt2, card: { name: "Yara Zone", headline: "TZ target", links: {} } })).body.slug;
+    await call("POST", "/api/people", { slug: zslug }, zt);
+    let seen = "";
+    env.AI = { run: async (m, a) => { seen = a.messages[0].content; return { response: "ok" }; } };
+    await call("POST", "/api/ask", { q: "When did I meet Yara Zone?", tz: "America/Phoenix" }, zt);
+    const expectLocal = new Date().toLocaleString("en-US", { timeZone: "America/Phoenix", month: "short", day: "numeric", year: "numeric" });
+    ok("ask prompt gives met dates in the user's timezone", seen.includes(expectLocal + ",") && seen.includes("(America/Phoenix)") && !seen.includes("T05:1"));
+    seen = "";
+    await call("POST", "/api/ask", { q: "When did I meet Yara Zone?" }, zt);
+    ok("ask prompt labels UTC when no timezone is sent", seen.includes("(UTC)"));
+    env.AI = { run: async () => ({ response: "MODEL ANSWER" }) };
+  }
   const hs = await call("POST", "/api/ask", { q: "Who did I meet from HSTB?" }, o1);
   ok("a misheard acronym returns a suggestion, not a model guess", hs.body.suggestions && hs.body.suggestions[0].heard === "HSTB" && hs.body.suggestions[0].meant === "ISTB" && hs.body.exact === false && hs.body.answer !== "MODEL ANSWER");
   ok("suggested people come from the user's own saved records", hs.body.suggestions[0].people.length === 1 && hs.body.suggestions[0].people[0].name === "Dana Webb");
