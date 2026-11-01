@@ -330,6 +330,7 @@ if (env) {
   env.AI = { run: async (m, a) => { askSeen = a.messages[0].content; return { response: "ok" }; } };
   await call("POST", "/api/ask", { q: "What does Ex Person post about?" }, sv2);
   ok("ask prompt includes imported X details", askSeen.includes("@exhandle") && askSeen.includes("posts about robots"));
+  ok("ask prompt guards imported fields as untrusted data", askSeen.includes("untrusted data"));
   env.AI = prevAI;
 
   ok("x remove, then same link stays removed", (await call("DELETE", "/api/import/x", null, xTok)).status === 200 && (await call("POST", "/api/import/x/auto", xi, xTok)).status === 409);
