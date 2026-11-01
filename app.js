@@ -933,8 +933,8 @@
       '<div class="group">' +
       feat("Show your code", "They scan it and get your card - name, socials, links.") +
       feat("The moment, saved", "When you met, where, and at which event. Dictate a quick note, add a selfie.") +
-      feat("Just ask", '"Who did I meet at Cal Hacks who works on robotics?" Tagg answers.') +
-      feat("Follow up", 'Tell Tagg "set up a call" - your agent works it out with theirs.') +
+      feat("Always current", 'When someone updates their card, your saved copy refreshes - no stale numbers or old links.') +
+      feat("Follow up", 'Email or call right from the details they chose to share - one tap from their card.') +
       '</div>' +
       '<div style="height:22px"></div>' +
       '<a class="btn btn-accent" href="#/edit">Create your card</a>' +
