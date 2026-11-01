@@ -483,7 +483,7 @@ async function verifyGoogle(env, credential) {
 function normEmail(e) { return typeof e === "string" ? e.trim().toLowerCase().slice(0, 200) : ""; }
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 // Fixed-window attempt counter in KV (free tier). Returns true when the caller is over the limit.
-async function overLimit(env, key, max, windowSec) {
+async function overLimit(env, key, max, windowSec, sample) {
   // Preferred: a Durable Object per key. It handles one request at a time, so the count is exact
   // even under parallel guessing. Falls back to the KV counter below if the binding is missing.
   if (env.RL) {
@@ -494,7 +494,12 @@ async function overLimit(env, key, max, windowSec) {
   const k = "rl/" + key;
   const n = parseInt((await env.KV.get(k)) || "0", 10);
   if (n >= max) return true;
-  await env.KV.put(k, String(n + 1), { expirationTtl: Math.max(60, windowSec) });
+  // KV free tier allows only 1,000 writes/day, so high-volume fuses (public views, scans, sync) use
+  // sampled counters: write with probability 1/sample, adding `sample`. Expected count stays exact and the
+  // limit trips within +/-sample real hits, which is fine for abuse fuses. Auth/signup/code limits stay
+  // exact (sample 1). Tests set RL_SAMPLE="0" for exact counting.
+  const s = env.RL_SAMPLE === "0" ? 1 : (sample > 1 ? Math.floor(sample) : 1);
+  if (s === 1 || Math.random() < 1 / s) await env.KV.put(k, String(n + s), { expirationTtl: Math.max(60, windowSec) });
   return false;
 }
 function cleanLocation(l) {
@@ -638,9 +643,9 @@ const appHandler = {
       const guardTok = authOwner(req);
       if (!guardTok || (await env.KV.get("own/" + guardTok)) === null) { // a made-up Authorization header does not skip the guard
         const ip = req.headers.get("CF-Connecting-IP") || "x";
-        if (await overLimit(env, "pubip/" + ip, Number(env.PUBLIC_VIEWS_PER_IP_MIN) || 240, 60))
+        if (await overLimit(env, "pubip/" + ip, Number(env.PUBLIC_VIEWS_PER_IP_MIN) || 240, 60, 8))
           return j({ error: "Lots of people are opening cards right now. Please try again in a minute.", busy: true }, 429);
-        if (await overLimit(env, "pubday/" + new Date().toISOString().slice(0, 10), Number(env.PUBLIC_VIEWS_PER_DAY) || 20000, 86400))
+        if (await overLimit(env, "pubday/" + new Date().toISOString().slice(0, 10), Number(env.PUBLIC_VIEWS_PER_DAY) || 20000, 86400, 25))
           return j({ error: "Tagg has used up today's free capacity for opening cards. It resets around 5 PM Arizona time. Signed-in people can still open cards.", busy: true, daily: true }, 429);
       }
       const rec = await getJSON(env.KV, "card/" + cm[1]);
@@ -708,7 +713,7 @@ const appHandler = {
     if (pm && req.method === "GET") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
-      if (await overLimit(env, "pget/" + owner, 300, 3600)) return j({ error: "Too many requests" }, 429);
+      if (await overLimit(env, "pget/" + owner, 300, 3600, 4)) return j({ error: "Too many requests" }, 429);
       const list = await getPeople(env, owner);
       const i = list.findIndex(x => x.id === pm[1]);
       if (i < 0) return j({ error: "not found" }, 404);
@@ -1023,8 +1028,8 @@ const appHandler = {
       const slug = body && typeof body.slug === "string" ? body.slug : "";
       if (!/^[a-z0-9]{6,10}$/.test(slug)) return j({ error: "bad slug" }, 400);
       const ip = req.headers.get("CF-Connecting-IP") || "x";
-      if (await overLimit(env, "scan/" + slug + "/" + ip, 3, 60)) return j({ ok: true, throttled: true });
-      if (await overLimit(env, "scanslug/" + slug, 40, 3600)) return j({ ok: true, throttled: true });
+      if (await overLimit(env, "scan/" + slug + "/" + ip, 3, 60, 2)) return j({ ok: true, throttled: true });
+      if (await overLimit(env, "scanslug/" + slug, 40, 3600, 2)) return j({ ok: true, throttled: true });
       const rec = await getJSON(env.KV, "card/" + slug);
       if (!rec || !rec.ownerToken) return j({ error: "not found" }, 404);
       const list = ((await getJSON(env.KV, "scn/" + rec.ownerToken)) || []).filter(x => Date.now() - Date.parse(x.at) < 900000);
@@ -1557,7 +1562,7 @@ const appHandler = {
         return j({ answer: text, suggestions: sug, exact: false });
       }
       let answer = null, lastStatus = 0;
-      if (await overLimit(env, "ask/" + owner, 60, 3600)) return j({ error: "Too many questions - try again in a while" }, 429);
+      if (await overLimit(env, "ask/" + owner, 60, 3600, 2)) return j({ error: "Too many questions - try again in a while" }, 429);
       if (env.AI) {
         for (const m of AI_MODELS) {
           try {
