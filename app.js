@@ -598,6 +598,7 @@
     if (h === "#/notifications") { refreshSoon(); return renderNotifications(); }
     if (h === "#/edit") return renderEdit();
     if (h === "#/people") { refreshSoon(); return renderPeople(); }
+    if (h === "#/schedule") { refreshSoon(); return renderSchedule(); }
     if (h === "#/ask") { refreshSoon(); return renderAsk(); }
     if (h === "#/settings") { refreshSoon(); return renderSettings(); }
     if (h === "#/map") { refreshSoon(); return renderMap(); }
@@ -631,6 +632,145 @@
   }
 
   /* ================= home / my card ================= */
+  function fmtSlot(iso) {
+    var d = new Date(iso);
+    return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) + ", " + d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+  // Scheduling: propose times to saved people, they pick a slot, the proposer confirms.
+  // Status labels below mirror the worker's record exactly - a cancel that did not reach the
+  // remote calendar is shown as pending/failed with its note, never as "cancelled".
+  function renderSchedule() {
+    if (!ownerToken()) { location.hash = "#/"; return; }
+    shell("schedule",
+      '<h1 class="largetitle">Schedule</h1>' +
+      '<p class="lead">Propose times to people you have saved. Nothing is booked until they pick a slot and you confirm it.</p>' +
+      '<div id="calbox"><div class="fineprint">Loading calendar status...</div></div>' +
+      '<h2 class="section">Propose a time</h2><div id="propbox"></div>' +
+      '<h2 class="section">Your proposals</h2><div id="schedlist"><div class="fineprint">Loading...</div></div>');
+    renderCalBox();
+    renderPropBox();
+    loadSchedList();
+  }
+  function renderCalBox() {
+    var box = document.getElementById("calbox");
+    api("/api/cal/status").then(function (st) {
+      if (!st || !st.connected) {
+        box.innerHTML = '<div class="group"><div class="row"><div class="grow"><div class="title">Calendar</div>' +
+          '<div class="detail" style="white-space:normal">Not connected. Connecting Google Calendar lets Tagg suggest times when you are actually free. Tagg reads free/busy blocks only - never event titles, details, or other calendars - and writes an event only when you confirm a booking.</div></div>' +
+          '<button class="btn btn-accent" id="cal-connect" style="width:auto;flex:none;padding:9px 16px">Connect</button></div></div>';
+        box.querySelector("#cal-connect").addEventListener("click", showCalConnect);
+        return;
+      }
+      box.innerHTML = '<div class="group">' +
+        '<div class="row"><div class="grow"><div class="title">Calendar</div><div class="detail">Connected as ' + esc(st.email || "your Google account") + '</div></div>' +
+        '<button class="btn btn-gray" id="cal-disc" style="width:auto;flex:none;padding:9px 16px">Disconnect</button></div>' +
+        '<div class="row"><div class="grow"><div class="title">Share my free/busy</div><div class="detail" style="white-space:normal">When on, people proposing a time to you see only which blocks are busy - never what the events are.</div></div>' +
+        '<input type="checkbox" id="cal-share"' + (st.share ? " checked" : "") + '></div>' +
+        '<div class="fineprint" id="cal-note" style="margin:4px 0 0"></div></div>';
+      box.querySelector("#cal-share").addEventListener("change", function (ev) {
+        api("/api/cal/sharing", { method: "PUT", body: { on: ev.target.checked } }).then(renderCalBox).catch(function (e) { toast((e && e.error) || "Could not update"); ev.target.checked = !ev.target.checked; });
+      });
+      box.querySelector("#cal-disc").addEventListener("click", function () {
+        api("/api/cal", { method: "DELETE" }).then(function (d) {
+          renderCalBox();
+          if (d && d.bookedLeft) {
+            var n = box.querySelector("#cal-note");
+            if (n) n.textContent = d.bookedLeft + " already-booked meeting" + (d.bookedLeft > 1 ? "s stay" : " stays") + " on the calendar - cancel them below if needed.";
+          }
+        }).catch(function (e) { toast((e && e.error) || "Could not disconnect"); });
+      });
+    }).catch(function () { box.innerHTML = '<div class="fineprint">Calendar status unavailable right now.</div>'; });
+  }
+  function showCalConnect() {
+    var bg = document.createElement("div");
+    bg.className = "sheet-bg";
+    bg.innerHTML = '<div class="sheet"><div class="grab"></div><h3>Connect Google Calendar</h3>' +
+      '<p class="hint">Google will ask you to allow Tagg to see your free/busy availability and add events you confirm. Tagg never reads event titles or details, and never writes anything until you confirm a booking yourself.</p>' +
+      '<p class="hint" id="cc-msg"></p>' +
+      '<button class="btn btn-accent" id="cc-go">Continue with Google</button>' +
+      '<button class="btn btn-gray" id="cc-close">Not now</button></div>';
+    document.body.appendChild(bg);
+    bg.querySelector("#cc-close").addEventListener("click", function () { bg.remove(); });
+    bg.querySelector("#cc-go").addEventListener("click", function () {
+      var msg = bg.querySelector("#cc-msg");
+      api("/api/cal/google/start").then(function (d) {
+        if (d && d.url) { location.href = d.url; return; }
+        msg.textContent = "Calendar connection is not available yet.";
+      }).catch(function () {
+        msg.textContent = "Calendar connection is not live yet - the Google sign-in upgrade that powers it has not been deployed. Everything else on this page works without it.";
+      });
+    });
+  }
+  function renderPropBox() {
+    var box = document.getElementById("propbox");
+    var people = loadPeople().filter(function (p) { return p.slug; });
+    if (!people.length) { box.innerHTML = '<div class="fineprint">Save someone who is on Tagg first - then you can propose a time here.</div>'; return; }
+    var today = new Date(), week = new Date(Date.now() + 7 * 864e5);
+    function iso(d) { return d.toISOString().slice(0, 10); }
+    var opts = people.map(function (p) { return '<option value="' + esc(p.slug) + '">' + esc(p.card.name) + '</option>'; }).join("");
+    box.innerHTML = '<div class="group">' +
+      '<div class="row"><div class="grow"><div class="title">Who</div></div><select class="input" id="pp" style="max-width:55%">' + opts + '</select></div>' +
+      '<div class="row"><div class="grow"><div class="title">What</div></div><input class="input" id="pt" placeholder="Coffee, catch-up..." style="max-width:55%"></div>' +
+      '<div class="row"><div class="grow"><div class="title">How long</div></div><select class="input" id="pm" style="max-width:55%"><option value="30">30 min</option><option value="45">45 min</option><option value="60" selected>60 min</option></select></div>' +
+      '<div class="row"><div class="grow"><div class="title">Between</div></div><input class="input" type="date" id="pf" value="' + iso(today) + '" style="width:37%;flex:none"> <input class="input" type="date" id="pto" value="' + iso(week) + '" style="width:37%;flex:none"></div>' +
+      '</div><div class="fineprint" id="perr" style="margin:6px 0 0"></div>' +
+      '<button class="btn btn-tinted" id="pgo">Suggest times</button>';
+    box.querySelector("#pgo").addEventListener("click", function () {
+      var err = box.querySelector("#perr");
+      err.textContent = "";
+      api("/api/sched/propose", { method: "POST", body: {
+        slug: box.querySelector("#pp").value,
+        title: box.querySelector("#pt").value.trim() || "Meet up",
+        minutes: Number(box.querySelector("#pm").value),
+        from: box.querySelector("#pf").value, to: box.querySelector("#pto").value
+      } }).then(function () { toast("Times sent"); loadSchedList(); })
+        .catch(function (e) { err.textContent = (e && e.error) || "Could not propose times"; });
+    });
+  }
+  function loadSchedList() {
+    var list = document.getElementById("schedlist");
+    api("/api/sched").then(function (d) {
+      var items = (d && d.schedule) || [];
+      if (!items.length) { list.innerHTML = '<div class="fineprint">No proposals yet.</div>'; return; }
+      list.innerHTML = items.map(schedRowHtml).join("");
+    }).catch(function () { list.innerHTML = '<div class="fineprint">Could not load proposals.</div>'; });
+  }
+  function schedRowHtml(s) {
+    var h = '<div class="group"><div class="row"><div class="grow"><div class="title">' + esc(s.title || "Meet up") + ' with ' + esc(s.withName || "") + '</div>' +
+      '<div class="detail">' + s.minutes + ' min · ' + esc(s.status) + (s.picked ? ' · ' + esc(fmtSlot(s.picked)) : (s.status === "booked" || s.status === "confirmed") && s.picked ? '' : '') + '</div>';
+    if (s.cancelNote) h += '<div class="detail" style="white-space:normal">' + esc(s.cancelNote) + '</div>';
+    h += '</div></div>';
+    if (s.role === "in" && s.status === "proposed") {
+      h += '<div class="row" style="display:block"><div class="detail" style="white-space:normal;margin-bottom:6px">Pick a time. ' + esc(s.withName) + ' confirms before anything is booked, and either of you can cancel after it is booked.</div>';
+      h += (s.slots || []).map(function (sl) { return '<button class="btn btn-gray" style="margin:0 6px 6px 0" data-act="pick" data-id="' + esc(s.id) + '" data-slot="' + esc(sl) + '">' + esc(fmtSlot(sl)) + '</button>'; }).join("");
+      h += '<button class="btn btn-gray" data-act="decline" data-id="' + esc(s.id) + '">Decline</button></div>';
+    } else if (s.role === "out" && s.status === "proposed") {
+      h += '<div class="row"><div class="detail">Waiting for ' + esc(s.withName) + ' to pick a slot.</div></div>';
+    } else if (s.role === "out" && (s.status === "picked" || s.status === "confirm-failed")) {
+      h += '<div class="row"><div class="grow"><div class="detail">' + (s.status === "confirm-failed" ? "The calendar write conflicted - try again." : "Book " + esc(s.withName) + "'s pick onto calendars?") + '</div></div>' +
+        '<button class="btn btn-accent" data-act="confirm" data-id="' + esc(s.id) + '">Confirm booking</button></div>';
+    } else if (s.status === "booked" || s.status === "confirmed") {
+      h += '<div class="row"><div class="grow"><div class="detail">Booked. Either of you can cancel.</div></div>' +
+        '<button class="btn btn-gray" data-act="cancel" data-id="' + esc(s.id) + '">Cancel</button></div>';
+    } else if (s.status === "cancel-pending" || s.status === "cancel-failed") {
+      h += '<div class="row"><div class="grow"><div class="detail">' + (s.status === "cancel-pending" ? "Cancellation is not complete yet." : "Cancellation did not go through.") + '</div></div>' +
+        '<button class="btn btn-gray" data-act="cancel" data-id="' + esc(s.id) + '">Try cancel again</button></div>';
+    }
+    return h + '</div>';
+  }
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest && ev.target.closest("button[data-act]");
+    if (!b) return;
+    var id = b.getAttribute("data-id"), act = b.getAttribute("data-act");
+    b.disabled = true;
+    var done = function () { loadSchedList(); };
+    var fail = function (e) { b.disabled = false; toast((e && e.error) || "Something went wrong"); };
+    if (act === "pick") api("/api/sched/respond", { method: "POST", body: { id: id, pick: b.getAttribute("data-slot") } }).then(done, fail);
+    else if (act === "decline") api("/api/sched/respond", { method: "POST", body: { id: id, pick: "decline" } }).then(done, fail);
+    else if (act === "confirm") api("/api/sched/confirm", { method: "POST", body: { id: id } }).then(done, fail);
+    else if (act === "cancel") api("/api/sched/cancel", { method: "POST", body: { id: id } }).then(done, fail);
+  });
+
   function renderHome() {
     var card = loadCard();
     if (!card) return renderOnboarding();
@@ -649,6 +789,7 @@
       '<div style="height:16px"></div>' +
       '<div class="qrwrap"><img alt="Your Tagg QR code" src="' + img + '"></div>' +
       '<p class="qrcaption"><b>' + esc(card.name.split(" ")[0]) + " - your Tagg code</b><br>Point any phone camera at it.</p>" +
+      '<div class="btnrow" style="margin-top:10px"><a class="btn btn-tinted" href="#/schedule">Schedule a time</a></div>' +
       '<div style="height:18px"></div>' +
       '<div class="btnrow">' +
       '<button class="btn btn-tinted" id="copylink">Copy link</button>' +
