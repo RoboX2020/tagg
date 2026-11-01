@@ -136,7 +136,7 @@ async function extractProfile(env, text) {
 
 // ---- Agent access (MCP). Per-user, read-only, revocable tokens. A token is shown once and only its SHA-256 is stored.
 async function sha256hex(s) { return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s))), b => b.toString(16).padStart(2, "0")).join(""); }
-const MCP_SCOPES = ["people", "people+notes"];
+const MCP_SCOPES = ["people", "people+notes", "cal", "people+cal", "people+notes+cal"];
 const MCP_TTL_MS = 90 * 86400000;
 function mcpPerson(x, withNotes) {
   const li = x.enriched && x.enriched.linkedin ? x.enriched.linkedin : null;
@@ -156,6 +156,10 @@ const MCP_TOOLS = [
   { name: "get_person", description: "Get one saved person by id (from search_people or list_events).", inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] } },
   { name: "friends_of_friends", description: "Names of people the user's connections know, only where everyone involved shares their network. Names only.", inputSchema: { type: "object", properties: {} } },
   { name: "list_events", description: "List the events where this user met people, with counts.", inputSchema: { type: "object", properties: {} } },
+  { name: "check_availability", description: "List this user's busy time ranges (start and end only, never event details) in a window. Needs a grant with calendar scope and a connected calendar.", inputSchema: { type: "object", properties: { from: { type: "string", description: "ISO start" }, to: { type: "string", description: "ISO end" } } } },
+  { name: "list_schedule", description: "List meeting proposals to and from this user, with status. Needs calendar scope.", inputSchema: { type: "object", properties: {} } },
+  { name: "propose_meeting", description: "Propose a meeting with one of this user's people (by slug from search_people). Computes free slots from the busy times each side shares and records the proposal for both users. Sends no invite and books nothing - both people confirm in the Tagg app before any event is written. Needs calendar scope.", inputSchema: { type: "object", properties: { slug: { type: "string" }, title: { type: "string" }, minutes: { type: "number", description: "15-240" }, from: { type: "string", description: "ISO window start" }, to: { type: "string", description: "ISO window end (max 14 days)" } }, required: ["slug", "minutes", "from", "to"] } },
+  { name: "respond_meeting", description: "Pick one of the proposed slots (or 'decline') for a proposal addressed to this user. The proposer still confirms in the app before anything is booked. Needs calendar scope.", inputSchema: { type: "object", properties: { id: { type: "string" }, pick: { type: "string", description: "an ISO slot from the proposal, or 'decline'" } }, required: ["id", "pick"] } },
 ];
 async function mcpCall(env, owner, scope, name, args) {
   const withNotes = scope === "people+notes";
@@ -168,6 +172,13 @@ async function mcpCall(env, owner, scope, name, args) {
   if (name === "get_person") { const x = people.find(q => q.id === (args && args.id)); return x ? mcpPerson(x, withNotes) : { error: "not found" }; }
   if (name === "friends_of_friends") { const g = await fofFor(env, owner); const nm = new Map(people.map(x => [x.id, x.card.name])), fm = new Map(g.nodes.map(n => [n.id, n.name])); return { friends_of_friends: g.edges.filter(e => fm.has(e.to)).map(e => ({ name: fm.get(e.to), knows: nm.get(e.from) || null })) }; }
   if (name === "list_events") { const m = {}; for (const x of people) { const e = x.event || "(no event)"; m[e] = (m[e] || 0) + 1; } return { events: Object.keys(m).map(e => ({ event: e, people: m[e] })) }; }
+  if (name === "check_availability" || name === "list_schedule" || name === "propose_meeting" || name === "respond_meeting") {
+    if (!scope.includes("cal")) return { error: "this grant has no calendar scope - the user can add one in Settings" };
+    if (name === "check_availability") return await calOwnBusy(env, owner, args);
+    if (name === "list_schedule") return await schedList(env, owner);
+    if (name === "propose_meeting") return await schedPropose(env, owner, args || {});
+    return await schedRespond(env, owner, args || {});
+  }
   return null;
 }
 
@@ -851,6 +862,8 @@ const appHandler = {
       if (slug) keys.push("card/" + slug, "enrich/" + slug, "photo/" + slug);
       keys.push("gsh/" + owner);
       for (const t of ((await getJSON(env.KV, "mcpl/" + owner)) || [])) { keys.push("mcp/" + t.h); if (t.rh) keys.push("oref/" + t.rh); }
+      for (const id of ((await getJSON(env.KV, "schl/" + owner)) || [])) keys.push("sch/" + id);
+      keys.push("cals/" + owner, "schl/" + owner);
       keys.push("mcpl/" + owner, "ppl/" + owner, "prof/" + owner, "cin/" + owner, "vcode/" + owner, "scn/" + owner, "own/" + owner, "nt/" + owner, "npf/" + owner, "ps/" + owner);
       for (const k of keys) await env.KV.delete(k);
       return j({ deleted: true });
@@ -993,6 +1006,75 @@ const appHandler = {
       await env.KV.put("mcpl/" + owner, JSON.stringify(list.filter(q => q.id !== tm[1])));
       return j({ revoked: true });
     }
+    // ---- Calendar connection + agent scheduling. Each person connects their own calendar; availability
+    // sharing with other people's agents is opt-in; booking writes only after both people confirm.
+    if (p === "/api/cal/status" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const r = await calGet(env, owner);
+      return j({ connected: !!r, provider: r ? r.provider : null, email: (r && r.email) || null, sharing: !!(r && r.share) });
+    }
+    if (p === "/api/cal/connect" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      if (await overLimit(env, "calc/" + owner, 10, 3600)) return j({ error: "Too many attempts - try again later" }, 429);
+      const body = await req.json().catch(() => null);
+      const rt = body && typeof body.refreshToken === "string" ? body.refreshToken.trim() : "";
+      if (!rt || rt.length > 512) return j({ error: "refreshToken required" }, 400);
+      const rec = { provider: "google", owner, rt, email: (body && typeof body.email === "string" ? body.email.slice(0, 200) : "") || null, share: false, at: null, atExp: 0, since: new Date().toISOString() };
+      // Prove the token works before storing it as connected.
+      if (!(await googleAccess(env, rec))) return j({ error: "Google rejected that token - connect again" }, 400);
+      await env.KV.put("cals/" + owner, JSON.stringify(rec));
+      return j({ ok: true, sharing: false });
+    }
+    if (p === "/api/cal/sharing" && req.method === "PUT") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const rec = await calGet(env, owner);
+      if (!rec) return j({ error: "connect a calendar first" }, 400);
+      const body = await req.json().catch(() => null);
+      rec.share = !!(body && body.on);
+      await env.KV.put("cals/" + owner, JSON.stringify(rec));
+      return j({ sharing: rec.share });
+    }
+    if (p === "/api/cal" && req.method === "DELETE") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      await env.KV.delete("cals/" + owner);
+      return j({ ok: true });
+    }
+    if (p === "/api/cal/freebusy" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      if (await overLimit(env, "calfb/" + owner, 30, 3600)) return j({ error: "Too many checks - try again later" }, 429);
+      const out = await calOwnBusy(env, owner, { from: url.searchParams.get("from"), to: url.searchParams.get("to") });
+      return j(out, out.http || 200);
+    }
+    if (p === "/api/sched" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      return j(await schedList(env, owner));
+    }
+    if (p === "/api/sched/propose" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      if (await overLimit(env, "sched/" + owner, 20, 86400)) return j({ error: "Too many proposals - try tomorrow" }, 429);
+      const out = await schedPropose(env, owner, (await req.json().catch(() => null)) || {});
+      return j(out, out.http || 200);
+    }
+    if (p === "/api/sched/respond" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const out = await schedRespond(env, owner, (await req.json().catch(() => null)) || {});
+      return j(out, out.http || 200);
+    }
+    if (p === "/api/sched/confirm" && req.method === "POST") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      const out = await schedConfirm(env, owner, (await req.json().catch(() => null)) || {});
+      return j(out, out.http || 200);
+    }
+
     if (p === "/api/mcp") {
       const h = req.headers.get("Authorization") || "";
       const tok = h.startsWith("Bearer tgm_") ? h.slice(7) : "";
@@ -1616,6 +1698,130 @@ const appHandler = {
 };
 // Any unexpected failure (for example the free daily KV write allowance running out) becomes a clean, readable 503 with CORS headers,
 // not a raw platform error page that the app cannot read.
+
+// ---- Calendar connection + agent scheduling ---------------------------------
+// Each person connects their own Google calendar. Tagg reads free/busy intervals ONLY - the Google
+// freeBusy API returns time ranges, never event titles or details. Sharing availability with other
+// people's agents is opt-in (off by default). Nothing is booked until BOTH people confirm in the app.
+const G_TOKEN_URL = (env) => env.GOOGLE_TOKEN_URL || "https://oauth2.googleapis.com/token";
+const G_FREEBUSY_URL = (env) => env.GOOGLE_FREEBUSY_URL || "https://www.googleapis.com/calendar/v3/freeBusy";
+const G_EVENTS_URL = (env) => env.GOOGLE_EVENTS_URL || "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const calGet = (env, owner) => getJSON(env.KV, "cals/" + owner);
+
+async function googleAccess(env, rec) {
+  if (rec.at && rec.atExp > Date.now() + 60000) return rec.at;
+  if (!env.GOOGLE_CLIENT_SECRET) return null;
+  const r = await fetch(G_TOKEN_URL(env), { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "grant_type=refresh_token&refresh_token=" + encodeURIComponent(rec.rt) + "&client_id=" + encodeURIComponent(env.GOOGLE_CLIENT_ID || "") + "&client_secret=" + encodeURIComponent(env.GOOGLE_CLIENT_SECRET) });
+  const d = await r.json().catch(() => null);
+  if (!r.ok || !d || !d.access_token) return null;
+  rec.at = d.access_token; rec.atExp = Date.now() + Math.min(d.expires_in || 3000, 3500) * 1000;
+  await env.KV.put("cals/" + rec.owner, JSON.stringify(rec));
+  return rec.at;
+}
+async function googleBusy(env, rec, from, to) {
+  const at = await googleAccess(env, rec); if (!at) return null;
+  const r = await fetch(G_FREEBUSY_URL(env), { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" },
+    body: JSON.stringify({ timeMin: from, timeMax: to, items: [{ id: "primary" }] }) });
+  const d = await r.json().catch(() => null);
+  if (!r.ok || !d || !d.calendars || !d.calendars.primary) return null;
+  return (d.calendars.primary.busy || []).map(b => ({ start: b.start, end: b.end })).slice(0, 100);
+}
+function freeSlots(busyLists, from, to, minutes, max) {
+  const step = 30 * 60000, len = minutes * 60000, out = [];
+  for (let t = Math.ceil(Date.parse(from) / step) * step; t + len <= Date.parse(to) && out.length < max; t += step) {
+    const s = new Date(t).toISOString(), e = new Date(t + len).toISOString();
+    if (!busyLists.some(bl => bl && bl.some(b => b.start < e && b.end > s))) out.push(s);
+  }
+  return out;
+}
+async function schedSummary(rec, owner) {
+  return { id: rec.id, role: rec.a === owner ? "out" : "in", withName: rec.a === owner ? rec.bName : rec.aName, title: rec.title, minutes: rec.minutes, from: rec.from, to: rec.to, slots: rec.slots, picked: rec.picked, status: rec.status, at: rec.at };
+}
+async function schedList(env, owner) {
+  const ids = (await getJSON(env.KV, "schl/" + owner)) || [];
+  const out = [];
+  for (const id of ids) { const r = await getJSON(env.KV, "sch/" + id); if (r && (r.a === owner || r.b === owner)) out.push(await schedSummary(r, owner)); }
+  return { schedule: out };
+}
+async function schedPush(env, owner, id) {
+  const ids = (await getJSON(env.KV, "schl/" + owner)) || [];
+  if (!ids.includes(id)) { ids.unshift(id); await env.KV.put("schl/" + owner, JSON.stringify(ids.slice(0, 50))); }
+}
+async function schedPropose(env, ownerA, args) {
+  const slug = String(args.slug || "").toLowerCase();
+  if (!/^[a-z0-9]{6,10}$/.test(slug)) return { error: "pick one of your people (slug)", http: 400 };
+  if (!(await getPeopleFor(env, ownerA)).some(x => x.slug === slug)) return { error: "that person is not in your people", http: 400 };
+  const cardRec = await getJSON(env.KV, "card/" + slug);
+  if (!cardRec || !cardRec.ownerToken) return { error: "that person is not on Tagg", http: 404 };
+  const ownerB = cardRec.ownerToken;
+  if (ownerB === ownerA) return { error: "that is your own card", http: 400 };
+  const minutes = Math.round(Number(args.minutes) || 0);
+  if (!(minutes >= 15 && minutes <= 240)) return { error: "minutes must be 15-240", http: 400 };
+  const from = Date.parse(args.from), to = Date.parse(args.to);
+  if (!from || !to || !(to > from) || to - from > 14 * 86400000 || from < Date.now() - 300000) return { error: "window must be in the future, up to 14 days", http: 400 };
+  const title = String(args.title || "Meet up").slice(0, 120);
+  const fromISO = new Date(from).toISOString(), toISO = new Date(to).toISOString();
+  const calA = await calGet(env, ownerA);
+  const busyA = calA ? await googleBusy(env, calA, fromISO, toISO) : null;
+  const calB = await calGet(env, ownerB);
+  // B's busy intervals are read only when B turned availability sharing on. Intervals only, never details.
+  const busyB = calB && calB.share ? await googleBusy(env, calB, fromISO, toISO) : null;
+  const slots = freeSlots([busyA, busyB], fromISO, toISO, minutes, 5);
+  const mySlug = await env.KV.get("own/" + ownerA);
+  const myCard = mySlug ? await getJSON(env.KV, "card/" + mySlug) : null;
+  const id = "m_" + rand(10);
+  const rec = { id, a: ownerA, b: ownerB, slug, aName: (myCard && myCard.card && myCard.card.name) || "Someone", bName: cardRec.card.name, title, minutes, from: fromISO, to: toISO, slots, picked: null, status: "proposed", at: new Date().toISOString(), calA: !!calA, calB: !!calB, sharedB: !!(calB && calB.share) };
+  await env.KV.put("sch/" + id, JSON.stringify(rec));
+  await schedPush(env, ownerA, id); await schedPush(env, ownerB, id);
+  return await schedSummary(rec, ownerA);
+}
+async function schedRespond(env, owner, args) {
+  const rec = await getJSON(env.KV, "sch/" + String(args.id || ""));
+  if (!rec || rec.b !== owner) return { error: "not found", http: 404 };
+  if (rec.status !== "proposed") return { error: "already " + rec.status, http: 409 };
+  if (args.pick === "decline") { rec.status = "declined"; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return { id: rec.id, status: rec.status }; }
+  const pick = String(args.pick || "");
+  if (!rec.slots.includes(pick)) return { error: "pick one of the proposed slots", http: 400 };
+  rec.picked = pick; rec.status = "picked";
+  await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
+  return await schedSummary(rec, owner);
+}
+async function schedConfirm(env, owner, args) {
+  const rec = await getJSON(env.KV, "sch/" + String(args.id || ""));
+  if (!rec || rec.a !== owner) return { error: "not found", http: 404 };
+  if (rec.status !== "picked" && rec.status !== "confirm-failed") return { error: "nothing picked yet", http: 409 };
+  // Both people have now said yes (B picked a slot, A confirms here): write the event to each connected calendar.
+  const end = new Date(Date.parse(rec.picked) + rec.minutes * 60000).toISOString();
+  const wrote = {};
+  for (const side of ["a", "b"]) {
+    const cal = await calGet(env, rec[side]);
+    if (!cal) { wrote[side] = "no calendar connected"; continue; }
+    const at = await googleAccess(env, cal);
+    if (!at) { wrote[side] = "calendar auth failed"; continue; }
+    const otherCal = await calGet(env, rec[side === "a" ? "b" : "a"]);
+    const body = { summary: rec.title, start: { dateTime: rec.picked }, end: { dateTime: end } };
+    if (otherCal && otherCal.email) body.attendees = [{ email: otherCal.email }];
+    const r = await fetch(G_EVENTS_URL(env), { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    wrote[side] = r.ok ? "booked" : "calendar write failed";
+  }
+  rec.wrote = wrote;
+  rec.status = (wrote.a === "booked" || wrote.a === "no calendar connected") && (wrote.b === "booked" || wrote.b === "no calendar connected")
+    ? (wrote.a === "booked" && wrote.b === "booked" ? "booked" : "confirmed") : "confirm-failed";
+  await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
+  return Object.assign(await schedSummary(rec, owner), { wrote });
+}
+async function calOwnBusy(env, owner, args) {
+  const cal = await calGet(env, owner);
+  if (!cal) return { error: "no calendar connected", http: 400 };
+  const from = Date.parse((args || {}).from) || Date.now();
+  const to = Date.parse((args || {}).to) || from + 7 * 86400000;
+  if (!(to > from) || to - from > 62 * 86400000) return { error: "bad range (max 62 days)", http: 400 };
+  const busy = await googleBusy(env, cal, new Date(from).toISOString(), new Date(to).toISOString());
+  if (busy === null) return { error: "calendar unavailable right now", http: 502 };
+  return { busy };
+}
+
 export default {
   async fetch(req, env, ctx) {
     try {

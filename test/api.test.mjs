@@ -411,7 +411,7 @@ const tl = await call("GET", "/api/tokens", null, bTok);
 ok("token list never contains the secret", tl.body.tokens.length === 1 && !JSON.stringify(tl.body).includes(t1.body.token));
 const init = await rpc(t1.body.token, "initialize", { protocolVersion: "2025-03-26" });
 ok("MCP initialize works", init.body.result.serverInfo.name === "tagg" && init.body.result.capabilities.tools);
-ok("MCP lists four read-only tools", (await rpc(t1.body.token, "tools/list")).body.result.tools.map(x => x.name).join() === "search_people,get_person,friends_of_friends,list_events");
+ok("MCP lists the people tools plus the calendar-scope tools", (await rpc(t1.body.token, "tools/list")).body.result.tools.map(x => x.name).join() === "search_people,get_person,friends_of_friends,list_events,check_availability,list_schedule,propose_meeting,respond_meeting");
 const sp = await rpc(t1.body.token, "tools/call", { name: "search_people", arguments: { query: "Alice" } });
 const spo = JSON.parse(sp.body.result.content[0].text);
 ok("MCP search finds the saved person without private notes", spo.people.length === 1 && spo.people[0].name === "Alice Ng" && !JSON.stringify(spo).includes("Bob only") && !("privateNote" in spo.people[0]));
