@@ -158,7 +158,7 @@ const MCP_TOOLS = [
   { name: "list_events", description: "List the events where this user met people, with counts.", inputSchema: { type: "object", properties: {} } },
   { name: "check_availability", description: "List this user's busy time ranges (start and end only, never event details) in a window. Needs a grant with calendar scope and a connected calendar.", inputSchema: { type: "object", properties: { from: { type: "string", description: "ISO start" }, to: { type: "string", description: "ISO end" } } } },
   { name: "list_schedule", description: "List meeting proposals to and from this user, with status. Needs calendar scope.", inputSchema: { type: "object", properties: {} } },
-  { name: "propose_meeting", description: "Propose a meeting with one of this user's people (by slug from search_people). Computes free slots from the busy times each side shares and records the proposal for both users. Sends no invite and books nothing - both people confirm in the Tagg app before any event is written. Needs calendar scope.", inputSchema: { type: "object", properties: { slug: { type: "string" }, title: { type: "string" }, minutes: { type: "number", description: "15-240" }, from: { type: "string", description: "ISO window start" }, to: { type: "string", description: "ISO window end (max 14 days)" } }, required: ["slug", "minutes", "from", "to"] } },
+  { name: "propose_meeting", description: "Propose a meeting with one of this user's people (by slug from search_people). Computes free slots from the busy times each side shares and records the proposal for both users. Sends no invite and books nothing - both people confirm in the Tagg app before any event is written. Needs calendar scope.", inputSchema: { type: "object", properties: { slug: { type: "string" }, title: { type: "string" }, minutes: { type: "number", description: "15-240" }, from: { type: "string", description: "ISO window start" }, to: { type: "string", description: "ISO window end (max 14 days)" }, tz: { type: "string", description: "IANA timezone of the proposer (e.g. America/Phoenix); slots are offered 08:00-20:00 in this zone, UTC when omitted" } }, required: ["slug", "minutes", "from", "to"] } },
   { name: "respond_meeting", description: "Pick one of the proposed slots (or 'decline') for a proposal addressed to this user. The proposer still confirms in the app before anything is booked. Needs calendar scope.", inputSchema: { type: "object", properties: { id: { type: "string" }, pick: { type: "string", description: "an ISO slot from the proposal, or 'decline'" } }, required: ["id", "pick"] } },
 ];
 async function mcpCall(env, owner, scope, name, args) {
@@ -1008,6 +1008,50 @@ const appHandler = {
     }
     // ---- Calendar connection + agent scheduling. Each person connects their own calendar; availability
     // sharing with other people's agents is opt-in; booking writes only after both people confirm.
+    // Google OAuth for calendar connection: the app opens /start and sends the user to Google; Google returns
+    // them to /callback, which stores the refresh token exactly like /api/cal/connect and redirects back to the app.
+    if (p === "/api/cal/google/start" && req.method === "GET") {
+      const owner = authOwner(req);
+      if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
+      if (await overLimit(env, "calgo/" + owner, 10, 3600)) return j({ error: "Too many attempts - try again later" }, 429);
+      if (!env.GOOGLE_CLIENT_ID) return j({ error: "Calendar connection is not configured on the server yet" }, 503);
+      const appBase = String(url.searchParams.get("app") || "");
+      if (!/^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(appBase) || appBase.length > 100) return j({ error: "app origin required" }, 400);
+      const state = rand(16);
+      await env.KV.put("oast/" + state, JSON.stringify({ owner, app: appBase }), { expirationTtl: 600 });
+      const redir = url.origin + "/api/cal/google/callback";
+      const consent = "https://accounts.google.com/o/oauth2/v2/auth?client_id=" + encodeURIComponent(env.GOOGLE_CLIENT_ID) +
+        "&redirect_uri=" + encodeURIComponent(redir) + "&response_type=code&access_type=offline&prompt=consent&state=" + encodeURIComponent(state) +
+        "&scope=" + encodeURIComponent("https://www.googleapis.com/auth/calendar.freebusy https://www.googleapis.com/auth/calendar.events");
+      return j({ url: consent });
+    }
+    if (p === "/api/cal/google/callback" && req.method === "GET") {
+      const state = String(url.searchParams.get("state") || "");
+      const st = state && (await getJSON(env.KV, "oast/" + state));
+      if (state) await env.KV.delete("oast/" + state);
+      const back = (st && st.app) || url.origin;
+      const to = (q) => new Response(null, { status: 302, headers: { Location: back + "/#/schedule?" + q, ...CORS } });
+      if (!st) return j({ error: "that sign-in link expired - try connecting again" }, 400);
+      if (url.searchParams.get("error") || !url.searchParams.get("code")) return to("cal=denied");
+      if (!env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_CLIENT_ID) return j({ error: "Calendar connection is not configured on the server yet" }, 503);
+      const redir = url.origin + "/api/cal/google/callback";
+      const tr = await fetch(G_TOKEN_URL(env), { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: "grant_type=authorization_code&code=" + encodeURIComponent(url.searchParams.get("code")) + "&redirect_uri=" + encodeURIComponent(redir) +
+          "&client_id=" + encodeURIComponent(env.GOOGLE_CLIENT_ID) + "&client_secret=" + encodeURIComponent(env.GOOGLE_CLIENT_SECRET) });
+      const td = await tr.json().catch(() => null);
+      if (!tr.ok || !td || !td.refresh_token) return j({ error: "Google did not complete the connection - try again" }, 400);
+      let email = null;
+      if (td.access_token) {
+        const ur = await fetch(G_USERINFO_URL(env), { headers: { Authorization: "Bearer " + td.access_token } }).catch(() => null);
+        const ud = ur && (await ur.json().catch(() => null));
+        if (ud && typeof ud.email === "string") email = ud.email.slice(0, 200);
+      }
+      const rec = { provider: "google", owner: st.owner, rt: td.refresh_token, email, share: false, at: null, atExp: 0, since: new Date().toISOString() };
+      // Prove the token works before storing it as connected, same as /api/cal/connect.
+      if (!(await googleAccess(env, rec))) return j({ error: "Google rejected the new token - try connecting again" }, 400);
+      await env.KV.put("cals/" + st.owner, JSON.stringify(rec));
+      return to("cal=connected");
+    }
     if (p === "/api/cal/status" && req.method === "GET") {
       const owner = authOwner(req);
       if (!owner || (await env.KV.get("own/" + owner)) === null) return j({ error: "unauthorized" }, 401);
@@ -1715,6 +1759,7 @@ const appHandler = {
 const G_TOKEN_URL = (env) => env.GOOGLE_TOKEN_URL || "https://oauth2.googleapis.com/token";
 const G_FREEBUSY_URL = (env) => env.GOOGLE_FREEBUSY_URL || "https://www.googleapis.com/calendar/v3/freeBusy";
 const G_EVENTS_URL = (env) => env.GOOGLE_EVENTS_URL || "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const G_USERINFO_URL = (env) => env.GOOGLE_USERINFO_URL || "https://www.googleapis.com/oauth2/v3/userinfo";
 const calGet = (env, owner) => getJSON(env.KV, "cals/" + owner);
 
 async function googleAccess(env, rec) {
@@ -1736,10 +1781,19 @@ async function googleBusy(env, rec, from, to) {
   if (!r.ok || !d || !d.calendars || !d.calendars.primary) return null;
   return (d.calendars.primary.busy || []).map(b => ({ start: b.start, end: b.end })).slice(0, 100);
 }
-function freeSlots(busyLists, from, to, minutes, max) {
+function slotHourLocal(iso, tz) {
+  try { return Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(new Date(iso))); }
+  catch (e) { return new Date(iso).getUTCHours(); }
+}
+// Slots start only between 08:00 and 20:00 in the proposer's local timezone (sent by the app; UTC when a caller
+// gives none) - nobody should be offered 3 AM their time because the window arithmetic ran in UTC.
+function freeSlots(busyLists, from, to, minutes, max, tz) {
+  const zone = tz || "UTC";
   const step = 30 * 60000, len = minutes * 60000, out = [];
   for (let t = Math.ceil(Date.parse(from) / step) * step; t + len <= Date.parse(to) && out.length < max; t += step) {
     const s = new Date(t).toISOString(), e = new Date(t + len).toISOString();
+    const h = slotHourLocal(s, zone);
+    if (h < 8 || h >= 20) continue;
     if (!busyLists.some(bl => bl && bl.some(b => b.start < e && b.end > s))) out.push(s);
   }
   return out;
@@ -1770,19 +1824,21 @@ async function schedPropose(env, ownerA, args) {
   const from = Date.parse(args.from), to = Date.parse(args.to);
   if (!from || !to || !(to > from) || to - from > 14 * 86400000 || from < Date.now() - 300000) return { error: "window must be in the future, up to 14 days", http: 400 };
   const title = String(args.title || "Meet up").slice(0, 120);
+  const tzRaw = String(args.tz || "");
+  const tz = /^[A-Za-z0-9_+-]{2,32}\/[A-Za-z0-9_+\/-]{2,40}$/.test(tzRaw) ? tzRaw : null;
   const fromISO = new Date(from).toISOString(), toISO = new Date(to).toISOString();
   const calA = await calGet(env, ownerA);
   const busyA = calA ? await googleBusy(env, calA, fromISO, toISO) : null;
   const calB = await calGet(env, ownerB);
   // B's busy intervals are read only when B turned availability sharing on. Intervals only, never details.
   const busyB = calB && calB.share ? await googleBusy(env, calB, fromISO, toISO) : null;
-  const slots = freeSlots([busyA, busyB], fromISO, toISO, minutes, 5);
+  const slots = freeSlots([busyA, busyB], fromISO, toISO, minutes, 5, tz);
   const mySlug = await env.KV.get("own/" + ownerA);
   const myCard = mySlug ? await getJSON(env.KV, "card/" + mySlug) : null;
   const id = "m_" + rand(10);
   // Both people act under a mutual-cancel rule: either can cancel, which removes the event from the organizer's
   // calendar. The app discloses this when the target picks a slot and when the proposer confirms.
-  const rec = { id, a: ownerA, b: ownerB, slug, cancelableBy: "either", aName: (myCard && myCard.card && myCard.card.name) || "Someone", bName: cardRec.card.name, title, minutes, from: fromISO, to: toISO, slots, picked: null, status: "proposed", at: new Date().toISOString(), calA: !!calA, calB: !!calB, sharedB: !!(calB && calB.share) };
+  const rec = { id, a: ownerA, b: ownerB, slug, cancelableBy: "either", aName: (myCard && myCard.card && myCard.card.name) || "Someone", bName: cardRec.card.name, title, minutes, from: fromISO, to: toISO, slots, picked: null, status: "proposed", tz, at: new Date().toISOString(), calA: !!calA, calB: !!calB, sharedB: !!(calB && calB.share) };
   await env.KV.put("sch/" + id, JSON.stringify(rec));
   await schedPush(env, ownerA, id); await schedPush(env, ownerB, id);
   return await schedSummary(rec, ownerA);

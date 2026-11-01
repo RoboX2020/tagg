@@ -17,10 +17,16 @@ const g = http.createServer(async (req, res) => {
   const raw = Buffer.concat(chunks).toString();
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/token") {
+    if (raw.includes("grant_type=authorization_code")) {
+      const code = (raw.match(/code=([^&]*)/) || [])[1];
+      if (code === "badcode") { res.writeHead(400); return res.end('{"error":"invalid_grant"}'); }
+      return res.end(JSON.stringify({ access_token: "at-rtO-" + code, refresh_token: "rtO-" + code, expires_in: 3600 }));
+    }
     const rt = (raw.match(/refresh_token=([^&]*)/) || [])[1];
     if (rt === "bad") { res.writeHead(400); return res.end('{"error":"invalid_grant"}'); }
     return res.end(JSON.stringify({ access_token: "at-" + rt, expires_in: 3600 }));
   }
+  if (req.url === "/userinfo") return res.end(JSON.stringify({ email: "oauth@example.com" }));
   const tok = decodeURIComponent((req.headers.authorization || "").replace("Bearer at-", ""));
   if (req.url === "/freebusy") return res.end(JSON.stringify({ calendars: { primary: { busy: busyByToken[tok] || [] } } }));
   if (req.url.startsWith("/events")) {
@@ -50,6 +56,7 @@ await new Promise(r => g.listen(8804, r));
 env.GOOGLE_TOKEN_URL = "http://localhost:8804/token";
 env.GOOGLE_FREEBUSY_URL = "http://localhost:8804/freebusy";
 env.GOOGLE_EVENTS_URL = "http://localhost:8804/events";
+env.GOOGLE_USERINFO_URL = "http://localhost:8804/userinfo";
 
 let passed = 0;
 function ok(name, cond) { assert.ok(cond, name); passed++; console.log("ok -", name); }
@@ -206,6 +213,47 @@ ok("a remote 404 on retry completes the cancellation", (await call("POST", "/api
 ok("a window in the past is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(-20), to: T(-18) }, A.t)).status === 400);
 ok("minutes out of range is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 5, from: T(14), to: T(16) }, A.t)).status === 400);
 ok("proposing to someone not in your people is rejected", (await call("POST", "/api/sched/propose", { slug: X.slug, minutes: 30, from: T(14), to: T(16) }, A.t)).status === 400);
+// Waking-hours slots: proposed times start 08:00-20:00 in the proposer's timezone, UTC when none is sent.
+const hourIn = (iso, tz) => Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(new Date(iso)));
+{
+  const r = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(24), to: T(120), tz: "America/Phoenix" }, A.t));
+  ok("propose with tz returns slots", r.status === 200 && r.body.slots.length > 0);
+  ok("slots stay within 08:00-20:00 proposer-local", r.body.slots.every(x => { const h = hourIn(x, "America/Phoenix"); return h >= 8 && h < 20; }));
+  const u = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(24), to: T(120) }, A.t));
+  ok("slots default to 08:00-20:00 UTC when no tz", u.status === 200 && u.body.slots.length > 0 && u.body.slots.every(x => { const h = new Date(x).getUTCHours(); return h >= 8 && h < 20; }));
+  const bad = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(24), to: T(120), tz: "Mars/Olympus Mons" }, A.t));
+  ok("a bogus tz falls back to UTC hours, not an error", bad.status === 200 && bad.body.slots.every(x => { const h = new Date(x).getUTCHours(); return h >= 8 && h < 20; }));
+}
+
+// Google OAuth connect routes (state one-time, honest 503 without server config, code exchange stores the calendar).
+const O = await mk("Ora OAuth");
+{
+  const raw = (p) => fetch(url + p, { redirect: "manual", headers: { Authorization: "Bearer " + O.t } });
+  ok("oauth start needs an app origin", ((await raw("/api/cal/google/start")).status) === 400);
+  const st = await raw("/api/cal/google/start?app=http://localhost:8788");
+  const startBody = await st.json();
+  ok("oauth start returns a Google consent URL", st.status === 200 && /client_id=test-client/.test(startBody.url) && /redirect_uri=/.test(startBody.url) && /calendar.freebusy/.test(startBody.url) && /calendar.events/.test(startBody.url));
+  const state = (startBody.url.match(/state=([^&]*)/) || [])[1];
+  ok("oauth callback rejects an unknown state", (await fetch(url + "/api/cal/google/callback?code=x&state=nope", { redirect: "manual" })).status === 400);
+  const denied = await fetch(url + "/api/cal/google/callback?error=access_denied&state=" + state, { redirect: "manual" });
+  ok("oauth denial redirects back to the app with cal=denied", denied.status === 302 && (denied.headers.get("location") || "").startsWith("http://localhost:8788/#/schedule?cal=denied"));
+  ok("oauth state is one-time", (await fetch(url + "/api/cal/google/callback?error=access_denied&state=" + state, { redirect: "manual" })).status === 400);
+  // No client secret configured: honest 503, no fake success.
+  const keep = env.GOOGLE_CLIENT_SECRET; delete env.GOOGLE_CLIENT_SECRET;
+  const st2 = await (await raw("/api/cal/google/start?app=http://localhost:8788")).json();
+  const state2 = (st2.url.match(/state=([^&]*)/) || [])[1];
+  ok("oauth callback without server config is an honest 503", (await fetch(url + "/api/cal/google/callback?code=abc&state=" + state2, { redirect: "manual" })).status === 503);
+  env.GOOGLE_CLIENT_SECRET = keep;
+  const st3 = await (await raw("/api/cal/google/start?app=http://localhost:8788")).json();
+  const state3 = (st3.url.match(/state=([^&]*)/) || [])[1];
+  const done = await fetch(url + "/api/cal/google/callback?code=ok1&state=" + state3, { redirect: "manual" });
+  ok("oauth callback stores the calendar and redirects connected", done.status === 302 && (done.headers.get("location") || "").startsWith("http://localhost:8788/#/schedule?cal=connected"));
+  const stat = (await call("GET", "/api/cal/status", null, O.t)).body;
+  ok("oauth-connected calendar shows email, sharing off", stat.connected === true && stat.email === "oauth@example.com" && stat.sharing === false);
+  const st4 = await (await raw("/api/cal/google/start?app=http://localhost:8788")).json();
+  const state4 = (st4.url.match(/state=([^&]*)/) || [])[1];
+  ok("oauth callback with a bad code does not connect", (await fetch(url + "/api/cal/google/callback?code=badcode&state=" + state4, { redirect: "manual" })).status === 400);
+}
 ok("disconnect removes the calendar", (await call("DELETE", "/api/cal", null, B.t)).body.ok === true && (await call("GET", "/api/cal/status", null, B.t)).body.connected === false);
 ok("account deletion removes scheduling records", (await call("DELETE", "/api/account", { confirm: "DELETE" }, A.t)).body.deleted === true && (await call("GET", "/api/sched", null, A.t)).status === 401);
 

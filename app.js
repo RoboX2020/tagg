@@ -641,6 +641,8 @@
   // remote calendar is shown as pending/failed with its note, never as "cancelled".
   function renderSchedule() {
     if (!ownerToken()) { location.hash = "#/"; return; }
+    if (/[?&]cal=connected/.test(location.search)) { toast("Calendar connected"); history.replaceState(null, "", location.pathname + location.hash); }
+    else if (/[?&]cal=denied/.test(location.search)) { toast("Calendar connection was not completed"); history.replaceState(null, "", location.pathname + location.hash); }
     shell("schedule",
       '<h1 class="largetitle">Schedule</h1>' +
       '<p class="lead">Propose times to people you have saved. Nothing is booked until they pick a slot and you confirm it.</p>' +
@@ -693,11 +695,11 @@
     bg.querySelector("#cc-close").addEventListener("click", function () { bg.remove(); });
     bg.querySelector("#cc-go").addEventListener("click", function () {
       var msg = bg.querySelector("#cc-msg");
-      api("/api/cal/google/start").then(function (d) {
+      api("/api/cal/google/start?app=" + encodeURIComponent(location.origin)).then(function (d) {
         if (d && d.url) { location.href = d.url; return; }
         msg.textContent = "Calendar connection is not available yet.";
-      }).catch(function () {
-        msg.textContent = "Calendar connection is not live yet - the Google sign-in upgrade that powers it has not been deployed. Everything else on this page works without it.";
+      }).catch(function (e) {
+        msg.textContent = (e && e.error) || "Calendar connection is not live yet - the Google sign-in upgrade that powers it has not been deployed. Everything else on this page works without it.";
       });
     });
   }
@@ -712,7 +714,8 @@
       '<div class="row"><div class="grow"><div class="title">Who</div></div><select class="input" id="pp" style="max-width:55%">' + opts + '</select></div>' +
       '<div class="row"><div class="grow"><div class="title">What</div></div><input class="input" id="pt" placeholder="Coffee, catch-up..." style="max-width:55%"></div>' +
       '<div class="row"><div class="grow"><div class="title">How long</div></div><select class="input" id="pm" style="max-width:55%"><option value="30">30 min</option><option value="45">45 min</option><option value="60" selected>60 min</option></select></div>' +
-      '<div class="row"><div class="grow"><div class="title">Between</div></div><input class="input" type="date" id="pf" value="' + iso(today) + '" style="width:37%;flex:none"> <input class="input" type="date" id="pto" value="' + iso(week) + '" style="width:37%;flex:none"></div>' +
+      '<div class="row"><div class="grow"><div class="title">From</div></div><input class="input" type="date" id="pf" value="' + iso(today) + '" style="max-width:55%"></div>' +
+      '<div class="row"><div class="grow"><div class="title">To</div></div><input class="input" type="date" id="pto" value="' + iso(week) + '" style="max-width:55%"></div>' +
       '</div><div class="fineprint" id="perr" style="margin:6px 0 0"></div>' +
       '<button class="btn btn-tinted" id="pgo">Suggest times</button>';
     box.querySelector("#pgo").addEventListener("click", function () {
@@ -722,7 +725,8 @@
         slug: box.querySelector("#pp").value,
         title: box.querySelector("#pt").value.trim() || "Meet up",
         minutes: Number(box.querySelector("#pm").value),
-        from: box.querySelector("#pf").value, to: box.querySelector("#pto").value
+        from: box.querySelector("#pf").value, to: box.querySelector("#pto").value,
+        tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || ""
       } }).then(function () { toast("Times sent"); loadSchedList(); })
         .catch(function (e) { err.textContent = (e && e.error) || "Could not propose times"; });
     });
