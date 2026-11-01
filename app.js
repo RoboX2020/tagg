@@ -236,6 +236,7 @@
     google.accounts.id.renderButton(el, { theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300 });
   }
   var lastSync = 0, syncing = false, INBOX = [], INBOX_COUNT = 0, SCANS = [];
+  var liveIdle = 0;
   var NOTIF_UNREAD = 0;
   var BELL = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 14 6 9z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>';
   function refreshSoon(force) {
@@ -272,12 +273,15 @@
         liveFails = 0;
         var sig = (d.scans || []).map(function (x) { return x.id; }).join() + "|" + (d.requests || []).map(function (x) { return x.id; }).join();
         if (sig !== liveSig) {
-          liveSig = sig;
+          liveSig = sig; liveIdle = 0;
           INBOX = d.requests || []; INBOX_COUNT = INBOX.length; SCANS = d.scans || [];
           if (liveWanted() && !document.querySelector(".sheet-bg")) { lastSync = 0; refreshSoon(true); }
-        }
+        } else { liveIdle++; }
       }).catch(function () { liveFails++; }).then(function () {
-        if (liveWanted()) livePoll = setTimeout(tick, Math.min(60000, 4000 * Math.pow(2, Math.min(liveFails, 4))));
+        // Back off while nothing changes: 4s at first, doubling to ~32s when idle (KV reads are budgeted on the
+        // free tier). A change is noticed only on the next poll, so idle users can see up to ~32s of delay
+        // for background updates; it returns to 4s as soon as one arrives.
+        if (liveWanted()) livePoll = setTimeout(tick, Math.min(60000, 4000 * Math.pow(2, Math.min(Math.max(liveFails, Math.floor(liveIdle / 15)), 3))));
       });
     }
     livePoll = setTimeout(tick, 4000);
