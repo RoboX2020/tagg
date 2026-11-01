@@ -742,6 +742,8 @@
   function schedRowHtml(s) {
     var h = '<div class="group"><div class="row"><div class="grow"><div class="title">' + esc(s.title || "Meet up") + ' with ' + esc(s.withName || "") + '</div>' +
       '<div class="detail">' + s.minutes + ' min · ' + esc(s.status) + (s.picked ? ' · ' + esc(fmtSlot(s.picked)) : (s.status === "booked" || s.status === "confirmed") && s.picked ? '' : '') + '</div>';
+    if ((s.status === "proposed" || s.status === "picked") && !(s.tzA && s.tzB))
+      h += '<div class="detail" style="white-space:normal">Times are inside ' + (s.role === "out" ? "your" : "the proposer's") + " waking hours only - " + (s.role === "out" ? esc(s.withName) + "'s" : 'your') + ' timezone is not known yet.</div>';
     if (s.cancelNote) h += '<div class="detail" style="white-space:normal">' + esc(s.cancelNote) + '</div>';
     h += '</div></div>';
     if (s.role === "in" && s.status === "proposed") {

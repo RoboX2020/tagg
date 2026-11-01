@@ -231,9 +231,12 @@ await call("POST", "/api/people", { slug: W2.slug, event: "Tz Conf" }, W1.t);
   ok("a zone the runtime cannot format is rejected, not silently UTC", badTz.status === 400 && /timezone/.test(badTz.body.error));
   const good = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(120), tz: "America/Phoenix" }, W1.t);
   ok("a real zone is accepted and stored", good.status === 200 && good.body.slots.length > 0);
+  ok("summary exposes whose zones were used", good.body.tzA === "America/Phoenix" && good.body.tzB === null);
   const stored = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(120) }, W1.t);
   ok("a stored zone is reused when tz is omitted", stored.status === 200 && stored.body.slots.every(x => { const m = minsIn(x, "America/Phoenix"); return m >= 480 && m + 30 <= 1200; }));
   ok("respond stores the picker's zone", (await call("POST", "/api/sched/respond", { id: good.body.id, pick: "decline", tz: "Asia/Tokyo" }, W2.t)).status === 200 && (await env.KV.get("tz/" + W2.t)) === "Asia/Tokyo");
+  const both = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(168) }, W1.t);
+  ok("recipient zone filters once known", both.status === 200 && both.body.tzB === "Asia/Tokyo" && both.body.slots.every(x => ["America/Phoenix", "Asia/Tokyo"].every(z => { const m = minsIn(x, z); return m >= 480 && m + 30 <= 1200; })));
   // Both-party filtering: zones 12h apart have disjoint 08:00-20:00 windows, so there is nothing honest to offer.
   await env.KV.put("tz/" + W2.t, "Etc/GMT-12");
   const none = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(168), tz: "UTC" }, W1.t);

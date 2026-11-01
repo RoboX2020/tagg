@@ -1811,7 +1811,7 @@ function freeSlots(busyLists, from, to, minutes, max, zones) {
   return out;
 }
 async function schedSummary(rec, owner) {
-  return Object.assign({ id: rec.id, role: rec.a === owner ? "out" : "in", withName: rec.a === owner ? rec.bName : rec.aName, title: rec.title, minutes: rec.minutes, from: rec.from, to: rec.to, slots: rec.slots, picked: rec.picked, status: rec.status, at: rec.at, cancelableBy: rec.cancelableBy }, rec.cancelNote ? { cancelNote: rec.cancelNote } : {});
+  return Object.assign({ id: rec.id, role: rec.a === owner ? "out" : "in", withName: rec.a === owner ? rec.bName : rec.aName, title: rec.title, minutes: rec.minutes, from: rec.from, to: rec.to, slots: rec.slots, picked: rec.picked, status: rec.status, at: rec.at, cancelableBy: rec.cancelableBy, tzA: rec.tzA || null, tzB: rec.tzB || null }, rec.cancelNote ? { cancelNote: rec.cancelNote } : {});
 }
 async function schedList(env, owner) {
   const ids = (await getJSON(env.KV, "schl/" + owner)) || [];
