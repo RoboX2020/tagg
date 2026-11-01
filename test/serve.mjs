@@ -8,7 +8,7 @@ export function start(port = 8787) {
   const RL = { idFromName: n => n, get: id => ({ fetch: (u, init) => {
     if (!objs.has(id)) { const m = new Map(); objs.set(id, { o: new RateLimiter({ storage: { get: async k => m.get(k), put: async (k, v) => { m.set(k, v); } } }), q: Promise.resolve() }); }
     const e = objs.get(id); const run = e.q.then(() => e.o.fetch(new Request(u, init))); e.q = run.catch(() => {}); return run; } }) };
-  const env = { KV: new MemoryKV(), GOOGLE_CLIENT_ID: "test-client", RL_SAMPLE: "0", ...(process.env.NO_DO ? {} : { RL }) };
+  const env = { KV: new MemoryKV(), GOOGLE_CLIENT_ID: "test-client", ...(process.env.NO_DO ? {} : { RL }) };
   const srv = http.createServer(async (req, res) => {
     const chunks = []; for await (const c of req) chunks.push(c);
     const body = chunks.length ? Buffer.concat(chunks) : undefined;

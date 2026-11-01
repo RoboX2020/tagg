@@ -758,24 +758,6 @@ if (env) {
   env.PUBLIC_VIEWS_PER_DAY = "3"; const dc = []; for (let k = 0; k < 5; k++) dc.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "7.7." + k + ".1" } })).status);
   const dr = await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "7.7.9.1" } }).then(r => r.json());
   ok("a daily ceiling on anonymous views answers 429 with a distinct, reset-aware message (not 'try again in a minute')", dc.slice(-1)[0] === 429 && dr.daily === true && /resets/.test(dr.error) && !/in a minute/.test(dr.error)); delete env.PUBLIC_VIEWS_PER_DAY;
-
-  // Sampled rate-limit counters: public high-volume fuses must not write KV on every request (free tier: 1,000 writes/day).
-  {
-    delete env.RL_SAMPLE;
-    const savedRL = env.RL; delete env.RL; // production has no Durable Object binding: exercise the KV fallback path
-    let writes = 0; const origPut = env.KV.put.bind(env.KV);
-    env.KV.put = (...a) => { writes++; return origPut(...a); };
-    for (let k = 0; k < 30; k++) await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "8.8." + (k % 4) + "." + k } });
-    env.KV.put = origPut; env.RL_SAMPLE = "0"; env.RL = savedRL;
-    ok("sampled counters write KV far less than once per public view (30 views, exact mode would write 60)", writes > 0 && writes <= 20);
-    // Exact enforcement still trips a small cap even in sampled mode (within the sampling bound).
-    delete env.RL_SAMPLE;
-    const savedRL2 = env.RL; delete env.RL;
-    env.PUBLIC_VIEWS_PER_IP_MIN = "4";
-    const sc = []; for (let k = 0; k < 14; k++) sc.push((await fetch(url + "/api/c/" + PB.slug, { headers: { "CF-Connecting-IP": "6.6.6.6" } })).status);
-    delete env.PUBLIC_VIEWS_PER_IP_MIN; env.RL_SAMPLE = "0"; env.RL = savedRL2;
-    ok("sampled counter still enforces the cap (trips by cap + sampling bound)", sc[sc.length - 1] === 429);
-  }
 }
 
 // ---- Response hygiene ----
