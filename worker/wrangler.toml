@@ -16,3 +16,8 @@ GOOGLE_CLIENT_ID = "234788686355-ah0fsgjc8cr8n2h1f9oi0ielbket64jf.apps.googleuse
 #   GEMINI_API_KEY    - Ask Tagg answers (free tier key)
 #   GITHUB_TOKEN      - optional, raises GitHub profile enrichment rate limit
 #   BRIGHTDATA_API_KEY / APIFY_TOKEN - optional LinkedIn enrichment
+
+# Workers AI: answers "ask Tagg" questions over your own saved people. Included in the Workers Free plan
+# (10,000 Neurons/day free, resets 00:00 UTC, over-limit requests fail with an error - never billed on Free).
+[ai]
+binding = "AI"
