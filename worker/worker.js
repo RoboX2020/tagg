@@ -542,6 +542,13 @@ async function linkIdentity(env, authKey, deviceTok) {
 export class RateLimiter {
   constructor(state) { this.state = state; }
   async fetch(req) {
+    // Serialize the whole handler: a Durable Object may interleave concurrent requests at await points,
+    // and this counter is a read-modify-write. blockConcurrencyWhile runs the callback to completion
+    // before the next event starts (the test harness has no such helper, so fall back to plain execution).
+    const run = (fn) => (this.state.blockConcurrencyWhile ? this.state.blockConcurrencyWhile(fn) : fn());
+    return run(() => this.handle(req));
+  }
+  async handle(req) {
     if (new URL(req.url).pathname === "/pace") {
       // Exact global pacing: hands out time slots at least gapMs apart. One Durable Object handles one call at a time, so
       // parallel callers across all Worker instances each get their own later slot.

@@ -17,6 +17,16 @@ GOOGLE_CLIENT_ID = "234788686355-ah0fsgjc8cr8n2h1f9oi0ielbket64jf.apps.googleuse
 #   GITHUB_TOKEN      - optional, raises GitHub profile enrichment rate limit
 #   BRIGHTDATA_API_KEY / APIFY_TOKEN - optional LinkedIn enrichment
 
+# Exact in-memory rate limiting without KV writes (KV free tier: 1,000 writes/day). Durable Objects with
+# SQLite storage are available on Workers Free; one object per counter key, one request at a time, so counts are exact.
+[[durable_objects.bindings]]
+name = "RL"
+class_name = "RateLimiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RateLimiter"]
+
 # Workers AI: answers "ask Tagg" questions over your own saved people. Included in the Workers Free plan
 # (10,000 Neurons/day free, resets 00:00 UTC, over-limit requests fail with an error - never billed on Free).
 [ai]
