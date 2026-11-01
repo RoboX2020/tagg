@@ -65,9 +65,7 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
   const fw = await call("POST", "/api/intros/respond", { id, forward: true }, M2.t); ok(fw.s === 200 && fw.status === "forwarded", "forwarded " + fw.s);
   ok((await call("POST", "/api/intros/respond", { id, forward: true }, M2.t)).s === 404, "second forward refused");
   let off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers.length === 1 && off.offers[0].from.name === "RqAlice" && off.offers[0].note === "Would love to meet", "target sees offer");
-  ok(off.offers[0].from.headline === undefined, "requester headline hidden without their consent");
-  await cons(A2, true, true); off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers[0].from.headline === "Engineer", "requester headline shown only with their consent");
-  await cons(A2, false); off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers[0].from.headline === undefined, "requester headline consent withdrawn hides it");
+
   const shown = JSON.stringify(off); ok(!/@in\.invalid|ownerToken|slug|phone|linkedin/i.test(shown), "offer exposes name, headline and note only");
   ok((await call("GET", "/api/intro-offers", null, A2.t)).offers.length === 0 && (await call("GET", "/api/intro-offers", null, Z.t)).offers.length === 0, "others see no offer");
   await sh(A2, false); ok((await call("GET", "/api/intro-offers", null, T2.t)).offers.length === 0, "requester opt-out hides the offer"); await sh(A2, true);
@@ -110,6 +108,24 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
   await cons(T4, true, false); ok((await call("GET", "/api/intros", null, M4.t)).intros[0].target.headline === undefined, "headline consent withdrawn hides it at once");
   await cons(T4, false); ok((await call("GET", "/api/intros", null, M4.t)).intros.length === 0, "opt-out hides the request");
   ok((await call("POST", "/api/intro", { viaPersonId: cd[0].via.personId, targetRef: "f_0000000000000000" }, A4.t)).s === 404, "unknown ref refused");
+}
+
+// ---- requester headline: only when included in that request ----
+{
+  const A5 = await mk("HhAl"), M5 = await mk("HhMi"), T5 = await mk("HhTa");
+  await save(A5, M5); await save(M5, A5); await save(M5, T5); await save(T5, M5); for (const w of [A5, M5, T5]) await sh(w, true);
+  await cons(T5, true, false);
+  await intro(A5, await idOf(A5, M5), T5, { note: "plain" });
+  let id5 = (await call("GET", "/api/intros", null, M5.t)).intros[0].id;
+  await call("POST", "/api/intros/respond", { id: id5, forward: true }, M5.t);
+  ok((await call("GET", "/api/intro-offers", null, T5.t)).offers[0].from.headline === undefined, "requester headline hidden when not included in the request");
+  const A6 = await mk("HhBo"), T6 = await mk("HhCy");
+  await save(A6, M5); await save(M5, A6); await save(M5, T6); await save(T6, M5); await sh(A6, true); await sh(T6, true); await cons(T6, true, false);
+  await intro(A6, await idOf(A6, M5), T6, { note: "with headline", includeHeadline: true });
+  const id6 = (await call("GET", "/api/intros", null, M5.t)).intros[0].id;
+  await call("POST", "/api/intros/respond", { id: id6, forward: true }, M5.t);
+  const of6 = await call("GET", "/api/intro-offers", null, T6.t);
+  ok(of6.offers[0].from.headline === "Engineer", "requester headline shown only when included in that request");
 }
 
 // ---- expiry ----

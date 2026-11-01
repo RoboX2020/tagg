@@ -1329,7 +1329,7 @@ const appHandler = {
       const pairKey = "intrp/" + mySlug + "/" + body.targetSlug;
       if ((await env.KV.get(pairKey)) !== null) return j({ ok: true, duplicate: true });
       const note = typeof body.note === "string" ? body.note.slice(0, 500) : "";
-      const r = await jpush(env.KV, "intr/" + viaOwner, { id: "i_" + rand(10), requesterSlug: mySlug, targetSlug: body.targetSlug, note, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { requesterSlug: mySlug, targetSlug: body.targetSlug, status: "pending" } });
+      const r = await jpush(env.KV, "intr/" + viaOwner, { id: "i_" + rand(10), requesterSlug: mySlug, targetSlug: body.targetSlug, note, reqHeadline: body.includeHeadline === true, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { requesterSlug: mySlug, targetSlug: body.targetSlug, status: "pending" } });
       await env.KV.put(pairKey, "1", { expirationTtl: 604800 });
       return j({ ok: true, duplicate: !!r.dup });
     }
@@ -1360,7 +1360,7 @@ const appHandler = {
       if (b.forward !== true) return j({ ok: true, status: "declined" });
       const v = await introValid(env, it, owner);
       if (!v) { await jpatch(env.KV, "intr/" + owner, { id: it.id }, { status: "withdrawn" }); return j({ error: "Not available" }, 404); }
-      await jpush(env.KV, "intf/" + v.tgtOwner, { id: it.id, viaSlug: v.viaSlug, requesterSlug: it.requesterSlug, note: it.note, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { id: it.id } });
+      await jpush(env.KV, "intf/" + v.tgtOwner, { id: it.id, viaSlug: v.viaSlug, requesterSlug: it.requesterSlug, note: it.note, reqHeadline: it.reqHeadline === true, at: new Date().toISOString(), status: "pending" }, { cap: 50, dedupe: { id: it.id } });
       await jpatch(env.KV, "intr/" + owner, { id: it.id }, { status: "forwarded" });
       return j({ ok: true, status: "forwarded" });
     }
@@ -1372,7 +1372,7 @@ const appHandler = {
         if (of.status !== "pending") continue;
         const vr = await getJSON(env.KV, "card/" + of.viaSlug), v = vr && vr.ownerToken ? await introValid(env, { requesterSlug: of.requesterSlug, targetSlug: await env.KV.get("own/" + owner) }, vr.ownerToken) : null;
         if (!v || v.tgtOwner !== owner || !(await profileStatus(env, owner)).complete) continue;
-        out.push({ id: of.id, at: of.at, note: of.note, from: { name: v.reqCard && v.reqCard.name, headline: (await introConsent(env, v.reqOwner)).headline ? (v.reqCard && v.reqCard.headline) || "" : undefined }, via: { name: vr.card && vr.card.name } });
+        out.push({ id: of.id, at: of.at, note: of.note, from: { name: v.reqCard && v.reqCard.name, headline: of.reqHeadline === true ? (v.reqCard && v.reqCard.headline) || "" : undefined }, via: { name: vr.card && vr.card.name } });
       }
       return j({ offers: out });
     }

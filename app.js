@@ -759,7 +759,7 @@
   function renderIntros() {
     var card = loadCard(); var wantRef = (location.hash.split("ref=")[1] || "").replace(/[^a-z0-9_]/gi, "");
     if (!card) { location.hash = "#/"; return; }
-    shell("settings", '<h1 class="largetitle">Introductions</h1><p class="lead">Ask someone you both know to pass your request to a person two steps away. They see your request and decide whether to connect.</p><div id="intro-body"><div class="fineprint">Loading...</div></div><p class="footer-note"><a href="#/settings">Back to Settings</a></p>');
+    shell("settings", '<h1 class="largetitle">Introductions</h1><p class="lead">Ask someone you both know to pass your request to a person two steps away. They see your request and decide whether to connect.</p><div id="intro-body"><div class="fineprint">Loading...</div></div><p class="footer-note"><a href="#/settings">Back to Settings</a></p><div style="height:110px" aria-hidden="true"></div>');
     var box = document.getElementById("intro-body");
     api("/api/intro/config").then(function (c) {
       if (!c.enabled) { box.innerHTML = '<div class="fineprint">Introductions are not available yet.</div>'; return; }
@@ -779,14 +779,14 @@
     if (reqs.length) h += '<h2 class="section">Asking you to introduce</h2><div class="group">' + reqs.map(function (q) {
       return '<div class="row" style="display:block"><div class="title" style="white-space:normal">' + esc(q.requester.name) + ' would like to meet ' + esc(q.target.name) + '</div>' + (q.target.headline ? '<div class="detail" style="white-space:normal">' + esc(q.target.headline) + '</div>' : "") +
         (q.note ? '<div class="detail" style="white-space:normal;margin-top:6px">"' + esc(q.note) + '"</div>' : "") +
-        '<div class="fineprint" style="margin:8px 0 0">If you pass it on, ' + esc(q.target.name) + ' sees the request and your name, then decides whether to connect. Nothing else is shared.</div>' + rowBtns(q.id, ["req-forward", "Pass it on"], ["req-decline", "Decline"]) + '</div>'; }).join("") + '</div>';
+        '<div class="fineprint" style="margin:8px 0 0">If you pass it on, ' + esc(q.target.name) + ' sees ' + esc(q.requester.name) + "'s name" + (q.note ? ", the note they wrote" : "") + ' and your name - then decides whether to connect. No contact details or photos are shared.</div>' + rowBtns(q.id, ["req-forward", "Pass it on"], ["req-decline", "Decline"]) + '</div>'; }).join("") + '</div>';
     h += '<h2 class="section">Ask for an introduction</h2>';
     if (cand.needsProfile) h += '<div class="fineprint">Finish your profile first. You need a complete profile to ask for introductions.</div>';
     else if (!cand.candidates.length) h += '<div class="fineprint">No one is available to ask for right now. People show up here when they are two steps away, share their network, and have allowed introductions.</div>';
     else h += '<div class="group">' + cand.candidates.map(function (c, i) {
       return '<div class="row" id="cand-' + esc(c.ref) + '" style="display:block' + (wantRef && c.ref === wantRef ? ';box-shadow:inset 0 0 0 2px var(--accent, #d9733d)' : '') + '"><div class="title" style="white-space:normal">' + esc(c.name) + '</div>' + (c.headline ? '<div class="detail" style="white-space:normal">' + esc(c.headline) + '</div>' : "") + '<div class="detail" style="white-space:normal">Through ' + esc(c.via.name) + '</div>' +
-        (c.requested ? '<div class="fineprint" style="margin:8px 0 0">Requested</div>' : '<textarea class="field" id="note-' + i + '" maxlength="500" placeholder="Add a short note (optional)" style="margin-top:8px;width:100%;box-sizing:border-box;min-height:64px;font:15px var(--font);padding:10px 12px;border:1px solid var(--line, #d9d9de);border-radius:12px;background:var(--bg-elev);color:inherit;resize:none"></textarea><div class="btnrow" style="margin-top:8px"><button class="btn btn-accent" data-act="ask" data-i="' + i + '">Ask ' + esc(c.via.name) + ' to introduce you</button></div>') + '</div>'; }).join("") + '</div>';
-    if (!cand.needsProfile && cand.candidates && cand.candidates.length) h += '<div class="fineprint" style="margin:8px 0 0">If you ask, they see your name and your note. Your headline is included only if you allow it above. Photos are not shown.</div>';
+        (c.requested ? '<div class="fineprint" style="margin:8px 0 0">Requested</div>' : '<textarea class="field" id="note-' + i + '" maxlength="500" placeholder="Add a short note (optional)" style="margin-top:8px;width:100%;box-sizing:border-box;min-height:64px;font:15px var(--font);padding:10px 12px;border:1px solid var(--line, #d9d9de);border-radius:12px;background:var(--bg-elev);color:inherit;resize:none"></textarea><label class="fineprint" style="display:flex;gap:8px;align-items:center;margin:8px 0 0"><input type="checkbox" id="ih-' + i + '"> Include my headline</label><div class="btnrow" style="margin-top:8px"><button class="btn btn-accent" data-act="ask" data-i="' + i + '">Ask ' + esc(c.via.name) + ' to introduce you</button></div>') + '</div>'; }).join("") + '</div>';
+    if (!cand.needsProfile && cand.candidates && cand.candidates.length) h += '<div class="fineprint" style="margin:8px 0 0">If you ask, they see your name and your note. Your headline only if you tick the box. Photos are not shown.</div>';
     box.innerHTML = h;
     if (wantRef) { var tg = document.getElementById("cand-" + wantRef); if (tg && tg.scrollIntoView) tg.scrollIntoView({ block: "center" }); }
     function again() { renderIntros(); }
@@ -798,7 +798,7 @@
     Array.prototype.forEach.call(box.querySelectorAll("button[data-act]"), function (b) {
       b.addEventListener("click", function () {
         var a = b.getAttribute("data-act"), id = b.getAttribute("data-id"); b.disabled = true;
-        if (a === "ask") { var c = cand.candidates[Number(b.getAttribute("data-i"))], note = document.getElementById("note-" + b.getAttribute("data-i")).value; api("/api/intro", { method: "POST", body: { viaPersonId: c.via.personId, targetRef: c.ref, note: note } }).then(function () { toast("Request saved for " + c.via.name); again(); }).catch(fail); }
+        if (a === "ask") { var c = cand.candidates[Number(b.getAttribute("data-i"))], note = document.getElementById("note-" + b.getAttribute("data-i")).value; api("/api/intro", { method: "POST", body: { viaPersonId: c.via.personId, targetRef: c.ref, note: note, includeHeadline: !!(document.getElementById("ih-" + b.getAttribute("data-i")) || {}).checked } }).then(function () { toast("Request saved for " + c.via.name); again(); }).catch(fail); }
         else if (a === "req-forward" || a === "req-decline") api("/api/intros/respond", { method: "POST", body: { id: id, forward: a === "req-forward" } }).then(function () { toast(a === "req-forward" ? "Passed on" : "Declined"); again(); }).catch(fail);
         else api("/api/intro-offers/respond", { method: "POST", body: { id: id, accept: a === "offer-accept" } }).then(function () { toast(a === "offer-accept" ? "You are now connected" : "Declined"); again(); }).catch(fail);
       });
