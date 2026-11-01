@@ -10,7 +10,7 @@ env.GOOGLE_CLIENT_SECRET = "test-secret";
 
 // Stub Google: token refresh mints an access token keyed to the refresh token; freeBusy returns per-token
 // busy intervals; events records writes. Any other path 404s (the worker must never list/read events).
-const busyByToken = {}, eventCalls = [], eventDeletes = [], createdIds = new Set();
+const busyByToken = {}, eventCalls = [], eventDeletes = [], createdEvents = new Map(), failDeletes = new Set();
 const detId = (id) => "t" + createHash("sha256").update(id).digest("hex").slice(0, 24);
 const g = http.createServer(async (req, res) => {
   const chunks = []; for await (const c of req) chunks.push(c);
@@ -24,10 +24,23 @@ const g = http.createServer(async (req, res) => {
   const tok = decodeURIComponent((req.headers.authorization || "").replace("Bearer at-", ""));
   if (req.url === "/freebusy") return res.end(JSON.stringify({ calendars: { primary: { busy: busyByToken[tok] || [] } } }));
   if (req.url.startsWith("/events")) {
-    if (req.method === "DELETE") { eventDeletes.push(req.url); res.writeHead(204); return res.end(); }
+    const mid = req.url.match(/^\/events\/([^?]+)/);
+    if (req.method === "DELETE") {
+      const id = mid && decodeURIComponent(mid[1]);
+      eventDeletes.push(req.url);
+      if (id && failDeletes.has(id)) { res.writeHead(500); return res.end('{"error":"boom"}'); }
+      if (id && createdEvents.has(id)) { createdEvents.delete(id); res.writeHead(204); return res.end(); }
+      res.writeHead(404); return res.end('{"error":"not found"}'); // Google: deleting a missing event is a 404
+    }
+    if (req.method === "GET") {
+      const id = mid && decodeURIComponent(mid[1]);
+      const ev = id && createdEvents.get(id);
+      if (ev) return res.end(JSON.stringify(ev));
+      res.writeHead(404); return res.end('{"error":"not found"}');
+    }
     const body = JSON.parse(raw);
-    if (body.id && createdIds.has(body.id)) { res.writeHead(409); return res.end('{"error":"duplicate"}'); } // Google: an existing event id rejects the create
-    if (body.id) createdIds.add(body.id);
+    if (body.id && createdEvents.has(body.id)) { res.writeHead(409); return res.end('{"error":"duplicate"}'); } // Google: an existing event id rejects the create
+    if (body.id) createdEvents.set(body.id, Object.assign({}, body));
     eventCalls.push({ tok, body });
     return res.end(JSON.stringify({ id: body.id || "ev" + eventCalls.length }));
   }
@@ -139,11 +152,19 @@ ok("a cancelled meeting cannot be confirmed", (await call("POST", "/api/sched/co
 // Hardening: a lost create response must never duplicate the event - the retry's create hits 409 and adopts.
 let p5 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Retry", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
 await call("POST", "/api/sched/respond", { id: p5.id, pick: p5.slots[0] }, B.t);
-createdIds.add(detId(p5.id)); // simulates Google's state after a first create whose response was lost in flight
+createdEvents.set(detId(p5.id), { id: detId(p5.id), summary: "Retry", start: { dateTime: p5.slots[0] }, attendees: [{ email: "ben@example.com" }] }); // simulates Google's state after a first create whose response was lost in flight
 const beforeRetry = eventCalls.length;
 conf = (await call("POST", "/api/sched/confirm", { id: p5.id }, A.t)).body;
 ok("a retry after a lost create response adopts the existing event instead of duplicating", conf.status === "booked" && eventCalls.length === beforeRetry);
 ok("the adopted event keeps the deterministic id", conf.eventId === undefined && (await call("GET", "/api/sched", null, A.t)).body.schedule.some(x => x.id === p5.id && x.status === "booked"));
+
+// A 409 for an event that does NOT match this request is never adopted.
+let p5b = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Mismatch", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
+await call("POST", "/api/sched/respond", { id: p5b.id, pick: p5b.slots[0] }, B.t);
+createdEvents.set(detId(p5b.id), { id: detId(p5b.id), summary: "Someone else's event", start: { dateTime: T(9) } });
+const beforeMis = eventCalls.length;
+const mis = (await call("POST", "/api/sched/confirm", { id: p5b.id }, A.t)).body;
+ok("a 409 whose existing event does not match is not adopted", mis.status === "confirm-failed" && mis.wrote.a === "calendar write conflicted" && eventCalls.length === beforeMis);
 
 // Hardening: two confirms racing the same proposal produce exactly one event.
 let p6 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Race", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
@@ -161,9 +182,25 @@ const beforeDisc = eventDeletes.length;
 const disc = (await call("DELETE", "/api/cal", null, A.t)).body;
 ok("disconnect reports booked meetings left behind", disc.ok === true && disc.bookedLeft >= 1 && /can no longer/.test(disc.note || ""));
 const canc = (await call("POST", "/api/sched/cancel", { id: p7.id }, B.t)).body;
-ok("cancel after organizer disconnect cancels with a warning and no remote delete", canc.status === "cancelled" && /disconnected/.test(canc.note || "") && eventDeletes.length === beforeDisc);
-// Reconnect A so the account-deletion check below still exercises a connected account.
+ok("cancel after organizer disconnect is pending, never a false cancelled", canc.status === "cancel-pending" && /NOT cancelled/.test(canc.note || "") && eventDeletes.length === beforeDisc);
+const rec7 = JSON.parse(await env.KV.get("sch/" + p7.id));
+ok("pending cancel keeps the event id and the honest state in the record", rec7.status === "cancel-pending" && rec7.eventId === detId(p7.id) && /NOT cancelled/.test(rec7.cancelNote || ""));
 await call("POST", "/api/cal/connect", { refreshToken: "rtA", email: "ann@example.com" }, A.t);
+const canc2 = (await call("POST", "/api/sched/cancel", { id: p7.id }, B.t)).body;
+ok("retrying the pending cancel after reconnect finishes it remotely", canc2.status === "cancelled" && eventDeletes.length === beforeDisc + 1);
+
+// A failed remote delete is cancel-failed and retryable; a remote 404 still completes the cancel.
+let p8 = (await call("POST", "/api/sched/propose", { slug: B.slug, title: "Fragile", minutes: 30, from: T(14), to: T(16) }, A.t)).body;
+await call("POST", "/api/sched/respond", { id: p8.id, pick: p8.slots[0] }, B.t);
+await call("POST", "/api/sched/confirm", { id: p8.id }, A.t);
+failDeletes.add(detId(p8.id));
+const cf1 = (await call("POST", "/api/sched/cancel", { id: p8.id }, A.t)).body;
+ok("a failed remote delete is cancel-failed, not cancelled", cf1.status === "cancel-failed" && /NOT cancelled/.test(cf1.note || ""));
+const rec8 = JSON.parse(await env.KV.get("sch/" + p8.id));
+ok("cancel-failed keeps the live event id in the record", rec8.status === "cancel-failed" && rec8.eventId === detId(p8.id));
+failDeletes.delete(detId(p8.id));
+createdEvents.delete(detId(p8.id)); // the event is already gone on Google's side
+ok("a remote 404 on retry completes the cancellation", (await call("POST", "/api/sched/cancel", { id: p8.id }, A.t)).body.status === "cancelled");
 
 // Validation + cleanup.
 ok("a window in the past is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(-20), to: T(-18) }, A.t)).status === 400);

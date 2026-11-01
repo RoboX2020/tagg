@@ -1745,7 +1745,7 @@ function freeSlots(busyLists, from, to, minutes, max) {
   return out;
 }
 async function schedSummary(rec, owner) {
-  return { id: rec.id, role: rec.a === owner ? "out" : "in", withName: rec.a === owner ? rec.bName : rec.aName, title: rec.title, minutes: rec.minutes, from: rec.from, to: rec.to, slots: rec.slots, picked: rec.picked, status: rec.status, at: rec.at, cancelableBy: rec.cancelableBy };
+  return Object.assign({ id: rec.id, role: rec.a === owner ? "out" : "in", withName: rec.a === owner ? rec.bName : rec.aName, title: rec.title, minutes: rec.minutes, from: rec.from, to: rec.to, slots: rec.slots, picked: rec.picked, status: rec.status, at: rec.at, cancelableBy: rec.cancelableBy }, rec.cancelNote ? { cancelNote: rec.cancelNote } : {});
 }
 async function schedList(env, owner) {
   const ids = (await getJSON(env.KV, "schl/" + owner)) || [];
@@ -1819,7 +1819,16 @@ async function schedConfirm(env, owner, args) {
   if (calB && calB.email) body.attendees = [{ email: calB.email }];
   const r = await fetch(G_EVENTS_URL(env) + "?sendUpdates=all", { method: "POST", headers: { Authorization: "Bearer " + at, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok && r.status !== 409) { rec.status = "confirm-failed"; rec.wrote = { a: "calendar write failed" }; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote }); }
-  rec.eventId = eventId; // 409: the event already exists from the lost/raced create - adopt it.
+  if (r.status === 409) {
+    // Adopt only after verifying the existing event is the one this request owns: same title, same start,
+    // same attendee. A mismatched object under our id means something else wrote it - never adopt it.
+    const g = await fetch(G_EVENTS_URL(env) + "/" + encodeURIComponent(eventId), { headers: { Authorization: "Bearer " + at } }).catch(() => null);
+    const ev = g && g.ok ? await g.json().catch(() => null) : null;
+    const match = ev && ev.summary === rec.title && ev.start && ev.start.dateTime === rec.picked
+      && (!calB || !calB.email || (Array.isArray(ev.attendees) && ev.attendees.some(a => a && a.email === calB.email)));
+    if (!match) { rec.status = "confirm-failed"; rec.wrote = { a: "calendar write conflicted" }; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return Object.assign(await schedSummary(rec, owner), { wrote: rec.wrote }); }
+  }
+  rec.eventId = eventId; // 200: we created it. Verified 409: the event already exists from the lost/raced create - adopt it.
   rec.status = "booked";
   rec.wrote = { a: "booked", b: calB && calB.email ? "invited via the event" : "no calendar connected" };
   await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
@@ -1831,17 +1840,31 @@ async function schedCancel(env, owner, args) {
   if (rec.status === "cancelled") return { id: rec.id, status: "cancelled" }; // idempotent
   if (rec.status === "declined") return { error: "already declined", http: 409 };
   // A booked event is removed from the organizer's calendar; Google notifies the attendee. 404 = already gone.
+  // A booked meeting is "cancelled" only once the calendar event is actually gone (deleted, or 404 = already
+  // gone). Anything less leaves a live event and live invites, so it is a retryable cancel-pending/cancel-failed
+  // state instead: participants must never be told the meeting is off while it is still on the calendar.
   if (rec.eventId) {
     const calA = await calGet(env, rec.a);
     const at = calA && await googleAccess(env, calA);
-    if (at) {
-      const d = await fetch(G_EVENTS_URL(env) + "/" + encodeURIComponent(rec.eventId) + "?sendUpdates=all", { method: "DELETE", headers: { Authorization: "Bearer " + at } }).catch(() => null);
-      if (d && !d.ok && d.status !== 404) rec.cancelNote = "The event could not be removed from the organizer's calendar automatically - remove it in Google Calendar.";
-    } else rec.cancelNote = "The organizer's calendar is disconnected - the event may still be in their Google Calendar; remove it there.";
+    if (!at) {
+      rec.status = "cancel-pending";
+      rec.cancelNote = "The event is still in the organizer's Google Calendar - the meeting is NOT cancelled yet. Reconnect the calendar and cancel again, or remove the event in Google Calendar.";
+      await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
+      return { id: rec.id, status: rec.status, note: rec.cancelNote };
+    }
+    const d = await fetch(G_EVENTS_URL(env) + "/" + encodeURIComponent(rec.eventId) + "?sendUpdates=all", { method: "DELETE", headers: { Authorization: "Bearer " + at } }).catch(() => null);
+    if (!d || (!d.ok && d.status !== 404)) {
+      rec.status = "cancel-failed";
+      rec.cancelNote = "The event could not be removed from the organizer's calendar" + (d ? " (Google error " + d.status + ")" : " (could not reach Google)") + " - the meeting is NOT cancelled yet. Cancel again to retry, or remove the event in Google Calendar.";
+      await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
+      return { id: rec.id, status: rec.status, note: rec.cancelNote };
+    }
+    // Deleted, or 404 = already gone: either way the event no longer exists.
   }
   rec.status = "cancelled";
+  delete rec.cancelNote;
   await env.KV.put("sch/" + rec.id, JSON.stringify(rec));
-  return Object.assign({ id: rec.id, status: "cancelled" }, rec.cancelNote ? { note: rec.cancelNote } : {});
+  return { id: rec.id, status: "cancelled" };
 }
 async function calOwnBusy(env, owner, args) {
   const cal = await calGet(env, owner);
