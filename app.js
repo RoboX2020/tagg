@@ -769,8 +769,8 @@
     b.disabled = true;
     var done = function () { loadSchedList(); };
     var fail = function (e) { b.disabled = false; toast((e && e.error) || "Something went wrong"); };
-    if (act === "pick") api("/api/sched/respond", { method: "POST", body: { id: id, pick: b.getAttribute("data-slot") } }).then(done, fail);
-    else if (act === "decline") api("/api/sched/respond", { method: "POST", body: { id: id, pick: "decline" } }).then(done, fail);
+    if (act === "pick") api("/api/sched/respond", { method: "POST", body: { id: id, pick: b.getAttribute("data-slot"), tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || "" } }).then(done, fail);
+    else if (act === "decline") api("/api/sched/respond", { method: "POST", body: { id: id, pick: "decline", tz: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || "" } }).then(done, fail);
     else if (act === "confirm") api("/api/sched/confirm", { method: "POST", body: { id: id } }).then(done, fail);
     else if (act === "cancel") api("/api/sched/cancel", { method: "POST", body: { id: id } }).then(done, fail);
   });

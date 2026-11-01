@@ -70,6 +70,7 @@ const mk = async (name) => { const t = (await call("POST", "/api/owner", {})).bo
 // Two people who met: A saved B as a person.
 const A = await mk("Ann Sched"), B = await mk("Ben Sched");
 await call("POST", "/api/people", { slug: B.slug, event: "Test Conf" }, A.t);
+await env.KV.put("tz/" + A.t, "UTC"); await env.KV.put("tz/" + B.t, "UTC");
 
 // Calendar status starts disconnected; sharing/freebusy need a connection first.
 ok("status: disconnected by default", (await call("GET", "/api/cal/status", null, A.t)).body.connected === false);
@@ -213,16 +214,30 @@ ok("a remote 404 on retry completes the cancellation", (await call("POST", "/api
 ok("a window in the past is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(-20), to: T(-18) }, A.t)).status === 400);
 ok("minutes out of range is rejected", (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 5, from: T(14), to: T(16) }, A.t)).status === 400);
 ok("proposing to someone not in your people is rejected", (await call("POST", "/api/sched/propose", { slug: X.slug, minutes: 30, from: T(14), to: T(16) }, A.t)).status === 400);
-// Waking-hours slots: proposed times start 08:00-20:00 in the proposer's timezone, UTC when none is sent.
-const hourIn = (iso, tz) => Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(new Date(iso)));
+// Waking-hours slots: the whole meeting interval stays inside 08:00-20:00 in every known participant zone.
+const minsIn = (iso, tz) => { const p = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(new Date(iso)); return Number(p.find(x => x.type === "hour").value) * 60 + Number(p.find(x => x.type === "minute").value); };
 {
-  const r = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(24), to: T(120), tz: "America/Phoenix" }, A.t));
+  const r = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 60, from: T(24), to: T(120), tz: "America/Phoenix" }, A.t));
   ok("propose with tz returns slots", r.status === 200 && r.body.slots.length > 0);
-  ok("slots stay within 08:00-20:00 proposer-local", r.body.slots.every(x => { const h = hourIn(x, "America/Phoenix"); return h >= 8 && h < 20; }));
-  const u = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(24), to: T(120) }, A.t));
-  ok("slots default to 08:00-20:00 UTC when no tz", u.status === 200 && u.body.slots.length > 0 && u.body.slots.every(x => { const h = new Date(x).getUTCHours(); return h >= 8 && h < 20; }));
-  const bad = (await call("POST", "/api/sched/propose", { slug: B.slug, minutes: 30, from: T(24), to: T(120), tz: "Mars/Olympus Mons" }, A.t));
-  ok("a bogus tz falls back to UTC hours, not an error", bad.status === 200 && bad.body.slots.every(x => { const h = new Date(x).getUTCHours(); return h >= 8 && h < 20; }));
+  ok("whole meeting stays 08:00-20:00 in every known zone", r.body.slots.every(x => ["America/Phoenix", "UTC"].every(z => { const m = minsIn(x, z); return m >= 480 && m + 60 <= 1200; })));
+}
+// A fresh pair with no stored timezone: a missing or unformattable zone is an explicit error, never a hidden default.
+const W1 = await mk("Wia One"), W2 = await mk("Wia Two");
+await call("POST", "/api/people", { slug: W2.slug, event: "Tz Conf" }, W1.t);
+{
+  const noTz = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(120) }, W1.t);
+  ok("propose without any known timezone is an explicit 400", noTz.status === 400 && /timezone/.test(noTz.body.error));
+  const badTz = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(120), tz: "America/Fakezone" }, W1.t);
+  ok("a zone the runtime cannot format is rejected, not silently UTC", badTz.status === 400 && /timezone/.test(badTz.body.error));
+  const good = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(120), tz: "America/Phoenix" }, W1.t);
+  ok("a real zone is accepted and stored", good.status === 200 && good.body.slots.length > 0);
+  const stored = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(120) }, W1.t);
+  ok("a stored zone is reused when tz is omitted", stored.status === 200 && stored.body.slots.every(x => { const m = minsIn(x, "America/Phoenix"); return m >= 480 && m + 30 <= 1200; }));
+  ok("respond stores the picker's zone", (await call("POST", "/api/sched/respond", { id: good.body.id, pick: "decline", tz: "Asia/Tokyo" }, W2.t)).status === 200 && (await env.KV.get("tz/" + W2.t)) === "Asia/Tokyo");
+  // Both-party filtering: zones 12h apart have disjoint 08:00-20:00 windows, so there is nothing honest to offer.
+  await env.KV.put("tz/" + W2.t, "Etc/GMT-12");
+  const none = await call("POST", "/api/sched/propose", { slug: W2.slug, minutes: 30, from: T(24), to: T(168), tz: "UTC" }, W1.t);
+  ok("disjoint waking hours produce an honest no-slots error", none.status === 400 && /waking hours/.test(none.body.error));
 }
 
 // Google OAuth connect routes (state one-time, honest 503 without server config, code exchange stores the calendar).

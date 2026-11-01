@@ -158,7 +158,7 @@ const MCP_TOOLS = [
   { name: "list_events", description: "List the events where this user met people, with counts.", inputSchema: { type: "object", properties: {} } },
   { name: "check_availability", description: "List this user's busy time ranges (start and end only, never event details) in a window. Needs a grant with calendar scope and a connected calendar.", inputSchema: { type: "object", properties: { from: { type: "string", description: "ISO start" }, to: { type: "string", description: "ISO end" } } } },
   { name: "list_schedule", description: "List meeting proposals to and from this user, with status. Needs calendar scope.", inputSchema: { type: "object", properties: {} } },
-  { name: "propose_meeting", description: "Propose a meeting with one of this user's people (by slug from search_people). Computes free slots from the busy times each side shares and records the proposal for both users. Sends no invite and books nothing - both people confirm in the Tagg app before any event is written. Needs calendar scope.", inputSchema: { type: "object", properties: { slug: { type: "string" }, title: { type: "string" }, minutes: { type: "number", description: "15-240" }, from: { type: "string", description: "ISO window start" }, to: { type: "string", description: "ISO window end (max 14 days)" }, tz: { type: "string", description: "IANA timezone of the proposer (e.g. America/Phoenix); slots are offered 08:00-20:00 in this zone, UTC when omitted" } }, required: ["slug", "minutes", "from", "to"] } },
+  { name: "propose_meeting", description: "Propose a meeting with one of this user's people (by slug from search_people). Computes free slots from the busy times each side shares and records the proposal for both users. Sends no invite and books nothing - both people confirm in the Tagg app before any event is written. Needs calendar scope.", inputSchema: { type: "object", properties: { slug: { type: "string" }, title: { type: "string" }, minutes: { type: "number", description: "15-240" }, from: { type: "string", description: "ISO window start" }, to: { type: "string", description: "ISO window end (max 14 days)" }, tz: { type: "string", description: "IANA timezone of the proposer (e.g. America/Phoenix). Required on first use and stored for later calls: slots are only offered when the whole meeting falls inside 08:00-20:00 in every known participant zone" } }, required: ["slug", "minutes", "from", "to"] } },
   { name: "respond_meeting", description: "Pick one of the proposed slots (or 'decline') for a proposal addressed to this user. The proposer still confirms in the app before anything is booked. Needs calendar scope.", inputSchema: { type: "object", properties: { id: { type: "string" }, pick: { type: "string", description: "an ISO slot from the proposal, or 'decline'" } }, required: ["id", "pick"] } },
 ];
 async function mcpCall(env, owner, scope, name, args) {
@@ -1781,19 +1781,31 @@ async function googleBusy(env, rec, from, to) {
   if (!r.ok || !d || !d.calendars || !d.calendars.primary) return null;
   return (d.calendars.primary.busy || []).map(b => ({ start: b.start, end: b.end })).slice(0, 100);
 }
-function slotHourLocal(iso, tz) {
-  try { return Number(new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hourCycle: "h23" }).format(new Date(iso))); }
-  catch (e) { return new Date(iso).getUTCHours(); }
+// Real IANA validation: a zone only counts if the runtime can actually format in it.
+function validTz(tz) {
+  if (typeof tz !== "string" || !tz || tz.length > 40) return null;
+  try { new Intl.DateTimeFormat("en-US", { timeZone: tz }); return tz; } catch (e) { return null; }
 }
-// Slots start only between 08:00 and 20:00 in the proposer's local timezone (sent by the app; UTC when a caller
-// gives none) - nobody should be offered 3 AM their time because the window arithmetic ran in UTC.
-function freeSlots(busyLists, from, to, minutes, max, tz) {
-  const zone = tz || "UTC";
+async function saveTz(env, owner, tz) { const z = validTz(tz); if (z) await env.KV.put("tz/" + owner, z); }
+async function getTz(env, owner) { return validTz(await env.KV.get("tz/" + owner)); }
+function localMinutes(iso, tz) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", minute: "numeric", hourCycle: "h23" }).formatToParts(new Date(iso));
+  return Number(parts.find(x => x.type === "hour").value) * 60 + Number(parts.find(x => x.type === "minute").value);
+}
+// Slots are offered only when the WHOLE meeting interval falls inside waking hours for every participant whose
+// timezone is known: 08:00-20:00 local by default (a generic default, not a per-user preference - per-user hours
+// can replace these bounds later). A slot ending after 20:00 or crossing local midnight is not offered.
+const WAKE_OPEN = 8 * 60, WAKE_CLOSE = 20 * 60;
+function freeSlots(busyLists, from, to, minutes, max, zones) {
   const step = 30 * 60000, len = minutes * 60000, out = [];
   for (let t = Math.ceil(Date.parse(from) / step) * step; t + len <= Date.parse(to) && out.length < max; t += step) {
     const s = new Date(t).toISOString(), e = new Date(t + len).toISOString();
-    const h = slotHourLocal(s, zone);
-    if (h < 8 || h >= 20) continue;
+    let inHours = true;
+    for (const z of zones) {
+      const startMin = localMinutes(s, z);
+      if (startMin < WAKE_OPEN || startMin + minutes > WAKE_CLOSE) { inHours = false; break; }
+    }
+    if (!inHours) continue;
     if (!busyLists.some(bl => bl && bl.some(b => b.start < e && b.end > s))) out.push(s);
   }
   return out;
@@ -1824,21 +1836,27 @@ async function schedPropose(env, ownerA, args) {
   const from = Date.parse(args.from), to = Date.parse(args.to);
   if (!from || !to || !(to > from) || to - from > 14 * 86400000 || from < Date.now() - 300000) return { error: "window must be in the future, up to 14 days", http: 400 };
   const title = String(args.title || "Meet up").slice(0, 120);
-  const tzRaw = String(args.tz || "");
-  const tz = /^[A-Za-z0-9_+-]{2,32}\/[A-Za-z0-9_+\/-]{2,40}$/.test(tzRaw) ? tzRaw : null;
+  // The proposer's timezone is required: without a real zone we cannot keep proposed times inside waking
+  // hours, and a hidden UTC default would silently offer someone the middle of their night.
+  const tzA = validTz(args.tz) || await getTz(env, ownerA);
+  if (!tzA) return { error: "send your timezone (tz, e.g. America/Phoenix) so proposed times stay inside waking hours", http: 400 };
+  await saveTz(env, ownerA, tzA);
   const fromISO = new Date(from).toISOString(), toISO = new Date(to).toISOString();
   const calA = await calGet(env, ownerA);
   const busyA = calA ? await googleBusy(env, calA, fromISO, toISO) : null;
   const calB = await calGet(env, ownerB);
   // B's busy intervals are read only when B turned availability sharing on. Intervals only, never details.
   const busyB = calB && calB.share ? await googleBusy(env, calB, fromISO, toISO) : null;
-  const slots = freeSlots([busyA, busyB], fromISO, toISO, minutes, 5, tz);
+  const tzB = await getTz(env, ownerB);
+  const zones = tzB ? [tzA, tzB] : [tzA]; // when B's zone is not known yet, only A's hours can be enforced
+  const slots = freeSlots([busyA, busyB], fromISO, toISO, minutes, 5, zones);
+  if (!slots.length) return { error: "no times inside waking hours for both of you in that window - try a wider window", http: 400 };
   const mySlug = await env.KV.get("own/" + ownerA);
   const myCard = mySlug ? await getJSON(env.KV, "card/" + mySlug) : null;
   const id = "m_" + rand(10);
   // Both people act under a mutual-cancel rule: either can cancel, which removes the event from the organizer's
   // calendar. The app discloses this when the target picks a slot and when the proposer confirms.
-  const rec = { id, a: ownerA, b: ownerB, slug, cancelableBy: "either", aName: (myCard && myCard.card && myCard.card.name) || "Someone", bName: cardRec.card.name, title, minutes, from: fromISO, to: toISO, slots, picked: null, status: "proposed", tz, at: new Date().toISOString(), calA: !!calA, calB: !!calB, sharedB: !!(calB && calB.share) };
+  const rec = { id, a: ownerA, b: ownerB, slug, cancelableBy: "either", aName: (myCard && myCard.card && myCard.card.name) || "Someone", bName: cardRec.card.name, title, minutes, from: fromISO, to: toISO, slots, picked: null, status: "proposed", tzA, tzB: tzB || null, at: new Date().toISOString(), calA: !!calA, calB: !!calB, sharedB: !!(calB && calB.share) };
   await env.KV.put("sch/" + id, JSON.stringify(rec));
   await schedPush(env, ownerA, id); await schedPush(env, ownerB, id);
   return await schedSummary(rec, ownerA);
@@ -1847,6 +1865,7 @@ async function schedRespond(env, owner, args) {
   const rec = await getJSON(env.KV, "sch/" + String(args.id || ""));
   if (!rec || rec.b !== owner) return { error: "not found", http: 404 };
   if (rec.status !== "proposed") return { error: "already " + rec.status, http: 409 };
+  if (args.tz) await saveTz(env, owner, args.tz);
   if (args.pick === "decline") { rec.status = "declined"; await env.KV.put("sch/" + rec.id, JSON.stringify(rec)); return { id: rec.id, status: rec.status }; }
   const pick = String(args.pick || "");
   if (!rec.slots.includes(pick)) return { error: "pick one of the proposed slots", http: 400 };
