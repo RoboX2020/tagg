@@ -65,6 +65,9 @@ const I = await mk("InThin"); await save(I, M); await save(M, I); await sh(I, tr
   const fw = await call("POST", "/api/intros/respond", { id, forward: true }, M2.t); ok(fw.s === 200 && fw.status === "forwarded", "forwarded " + fw.s);
   ok((await call("POST", "/api/intros/respond", { id, forward: true }, M2.t)).s === 404, "second forward refused");
   let off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers.length === 1 && off.offers[0].from.name === "RqAlice" && off.offers[0].note === "Would love to meet", "target sees offer");
+  ok(off.offers[0].from.headline === undefined, "requester headline hidden without their consent");
+  await cons(A2, true, true); off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers[0].from.headline === "Engineer", "requester headline shown only with their consent");
+  await cons(A2, false); off = await call("GET", "/api/intro-offers", null, T2.t); ok(off.offers[0].from.headline === undefined, "requester headline consent withdrawn hides it");
   const shown = JSON.stringify(off); ok(!/@in\.invalid|ownerToken|slug|phone|linkedin/i.test(shown), "offer exposes name, headline and note only");
   ok((await call("GET", "/api/intro-offers", null, A2.t)).offers.length === 0 && (await call("GET", "/api/intro-offers", null, Z.t)).offers.length === 0, "others see no offer");
   await sh(A2, false); ok((await call("GET", "/api/intro-offers", null, T2.t)).offers.length === 0, "requester opt-out hides the offer"); await sh(A2, true);

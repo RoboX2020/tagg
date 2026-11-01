@@ -1372,7 +1372,7 @@ const appHandler = {
         if (of.status !== "pending") continue;
         const vr = await getJSON(env.KV, "card/" + of.viaSlug), v = vr && vr.ownerToken ? await introValid(env, { requesterSlug: of.requesterSlug, targetSlug: await env.KV.get("own/" + owner) }, vr.ownerToken) : null;
         if (!v || v.tgtOwner !== owner || !(await profileStatus(env, owner)).complete) continue;
-        out.push({ id: of.id, at: of.at, note: of.note, from: { name: v.reqCard && v.reqCard.name, headline: v.reqCard && v.reqCard.headline }, via: { name: vr.card && vr.card.name } });
+        out.push({ id: of.id, at: of.at, note: of.note, from: { name: v.reqCard && v.reqCard.name, headline: (await introConsent(env, v.reqOwner)).headline ? (v.reqCard && v.reqCard.headline) || "" : undefined }, via: { name: vr.card && vr.card.name } });
       }
       return j({ offers: out });
     }
