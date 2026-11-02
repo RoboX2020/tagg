@@ -7,7 +7,10 @@ if (env) env.SIGNUP_PER_HOUR = "200"; // this test signs up many accounts from o
 let passed = 0;
 let skipped = 0; function skip(name) { skipped++; console.log("skip -", name); }
 globalThis.__rawCards = false;
+const RUN = process.env.TAGG_API ? "+r" + Date.now().toString(36) : ""; // deployed mode: per-run email tags keep limiter keys and duplicate-email checks fresh across runs
+const em = (e) => (RUN ? e.replace("@", RUN + "@") : e);
 async function call(method, path, body, tok) {
+  if (RUN && body && typeof body.email === "string") body = { ...body, email: em(body.email) };
   // Test cards are complete profiles by default (name, headline, one detail) so the profile gate does not hide data in unrelated tests.
   if (path === "/api/card" && body && body.card && !globalThis.__rawCards) { body = { ...body, card: { ...body.card } }; if (!body.card.detail) body.card.detail = "Test detail"; if (!body.card.headline || body.card.headline.length < 3) body.card.headline = "Test headline"; }
   const r = await fetch(url + path, { method, headers: { "Content-Type": "application/json", ...(tok ? { Authorization: "Bearer " + tok } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -31,7 +34,7 @@ ok("wrong password rejected", (await call("POST", "/api/auth/login", { email: "a
 let l = await call("POST", "/api/auth/login", { email: "ALICE@example.com", password: "correct horse" });
 ok("login returns same owner", l.status === 200 && l.body.ownerToken === aTok);
 let me = await call("GET", "/api/me", null, aTok);
-ok("/api/me shows profile and card", me.body.profile.email === "alice@example.com" && me.body.slug === slug);
+ok("/api/me shows profile and card", me.body.profile.email === em("alice@example.com") && me.body.slug === slug);
 
 // Rate limit on login attempts.
 let last; for (let i = 0; i < 9; i++) last = await call("POST", "/api/auth/login", { email: "bob-nobody@example.com", password: "guess guess" + i });
@@ -104,7 +107,7 @@ ok("verification disabled without a sender", (await call("POST", "/api/auth/emai
 ok("verification requires sign-in", (await call("POST", "/api/auth/email/request", {})).status === 401);
 if (env) {
   const sent = []; env.MAIL_SINK = async (to, subject, text) => { sent.push({ to, subject, text }); };
-  ok("request sends one email to the account address", (await call("POST", "/api/auth/email/request", {}, vtok)).status === 200 && sent.length === 1 && sent[0].to === "vera@example.com");
+  ok("request sends one email to the account address", (await call("POST", "/api/auth/email/request", {}, vtok)).status === 200 && sent.length === 1 && sent[0].to === em("vera@example.com"));
   const code = (sent[0].text.match(/\b(\d{6})\b/) || [])[1];
   ok("email has a 6-digit code and no profile data", !!code && !/vera|card/i.test(sent[0].text));
   ok("wrong code rejected", (await call("POST", "/api/auth/email/confirm", { code: code === "000000" ? "111111" : "000000" }, vtok)).status === 400);
