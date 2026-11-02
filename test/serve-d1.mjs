@@ -6,7 +6,7 @@ import { D1KV } from "../worker/store-d1.js";
 export const stats = { queries: 0, rowsRead: 0, rowsWritten: 0, byPath: new Map() };
 
 // Minimal stand-in for the D1 API (prepare/bind/all/first/run + transactional batch) over an in-memory SQLite db.
-class FakeStmt {
+export class FakeStmt {
   constructor(fake, q) { this.fake = fake; this.q = q; this.p = []; }
   bind(...p) { this.p = p.map(v => v === undefined ? null : v); return this; }
   _all() { stats.queries++; const rows = this.fake.db.prepare(this.q).all(...this.p); stats.rowsRead += rows.length; return { results: rows }; }
@@ -16,7 +16,7 @@ class FakeStmt {
   first() { return this.fake._serialize(() => this._first()); }
   run() { return this.fake._serialize(() => this._run()); }
 }
-class FakeD1 {
+export class FakeD1 {
   constructor() { this.db = new DatabaseSync(":memory:"); this.db.exec("CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, exp INTEGER)"); this._q = Promise.resolve(); }
   // Real D1 serializes access per database (single writer); the shim serializes too, so batches never nest.
   _serialize(f) { const r = this._q.then(f); this._q = r.catch(() => {}); return r; }

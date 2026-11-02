@@ -16,6 +16,7 @@ export class D1KV {
   constructor(db, opts = {}) {
     this.db = db;
     this.mirror = opts.mirror || null; // original KV namespace; transition-only write mirror
+    this.mirrorFails = 0;              // mirror writes that failed after D1 succeeded (observable, never silent)
     this.cache = new Map();            // per-request coherence: reads see this request's own buffered writes
     this.buf = [];                     // buffered put/delete ops: { k, v|null, ttl }
     this.calls = 0;                    // D1 queries issued (free tier: 50 per Worker invocation)
@@ -34,7 +35,12 @@ export class D1KV {
     const res = await this.db.batch(stmts);
     if (this.mirror) for (const o of ops) {
       try { o.v === null ? await this.mirror.delete(o.k) : await this.mirror.put(o.k, o.v, o.ttl ? { expirationTtl: o.ttl } : undefined); }
-      catch (e) { /* mirror is best-effort during transition; D1 stays the source of truth */ }
+      catch (e) {
+        // D1 stays the source of truth, but a missed mirror write means KV is now stale for rollback.
+        // Count it (surfaced as x-mirror-failures by the entry) and log the key so a re-sync can be targeted.
+        this.mirrorFails++;
+        console.error("KV mirror write failed for", o.k, "-", String(e && e.message || e).slice(0, 120));
+      }
     }
     return res;
   }
@@ -90,7 +96,10 @@ export class D1KV {
         : await this.db.prepare("UPDATE kv SET v=?2, exp=?3 WHERE k=?1 AND v=?4").bind(k, next.value, exp, row.v).run();
       if (r.meta && r.meta.changes > 0) {
         this.cache.set(k, next.value);
-        if (this.mirror) { try { await this.mirror.put(k, next.value, ttl ? { expirationTtl: ttl } : undefined); } catch (e) {} }
+        if (this.mirror) {
+          try { await this.mirror.put(k, next.value, ttl ? { expirationTtl: ttl } : undefined); }
+          catch (e) { this.mirrorFails++; console.error("KV mirror write failed for", k, "-", String(e && e.message || e).slice(0, 120)); }
+        }
         return next.result;
       }
     }
