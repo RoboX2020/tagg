@@ -5,6 +5,7 @@ const { start } = await import(process.env.TAGG_D1 ? "./serve-d1.mjs" : process.
 const { srv, url, env } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
 if (env) env.SIGNUP_PER_HOUR = "200"; // this test signs up many accounts from one address
 let passed = 0;
+let skipped = 0; function skip(name) { skipped++; console.log("skip -", name); }
 globalThis.__rawCards = false;
 async function call(method, path, body, tok) {
   // Test cards are complete profiles by default (name, headline, one detail) so the profile gate does not hide data in unrelated tests.
@@ -344,7 +345,7 @@ if (env) {
   ok("the refreshed card is stored as the latest known copy", stored.card.name === "Rhea Stone-Lee");
 }
 // "Did you mean": similar words come only from the user's own records, are labelled suggestions, and are never applied silently.
-{
+if (env) {
   env.AI = { run: async () => ({ response: "MODEL ANSWER" }) };
   const o1 = (await call("POST", "/api/owner", {})).body.ownerToken, o2 = (await call("POST", "/api/owner", {})).body.ownerToken;
   const mkc = async (t, n, h) => (await call("POST", "/api/card", { ownerToken: t, card: { name: n, headline: h, links: {} } })).body;
@@ -375,7 +376,7 @@ if (env) {
   const none = await call("POST", "/api/ask", { q: "Who did I meet from ZZQX?" }, o1);
   ok("nothing similar means no invented suggestion", !none.body.suggestions);
   ok("another user's records are never suggested", !(await call("POST", "/api/ask", { q: "Who did I meet from HSTB?" }, o2)).body.suggestions);
-}
+} else skip('did-you-mean ask (harness-only: stubs env.AI)');
 // Several plausible interpretations: every qualifying candidate group is returned with all of its people, not only the first.
 {
   const o1 = (await call("POST", "/api/owner", {})).body.ownerToken;
@@ -426,7 +427,7 @@ ok("owner can revoke a token", (await call("DELETE", "/api/tokens/" + t1.body.id
 ok("a revoked token stops working immediately", (await rpc(t1.body.token, "tools/list")).status === 401);
 ok("MCP notifications get 202", (await (async () => { const r = await fetch(url + "/api/mcp", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + t2.body.token }, body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) }); return r.status; })()) === 202);
 // ---- Profile completion gate: incomplete viewers get the server to withhold other people's details ----
-{
+if (env) {
   const SECRET_EMAIL = "gate-alice@secret.invalid", SECRET_PHONE = "+1 555 0100 777", SECRET_DETAIL = "Builds gate-secret-widgets", SECRET_LI = "gate-secret-handle";
   const gAt = (await call("POST", "/api/owner", {})).body.ownerToken;
   const gAc = await call("POST", "/api/card", { ownerToken: gAt, card: { name: "Gate Alice", headline: "Robotics lead", detail: SECRET_DETAIL, email: SECRET_EMAIL, phone: SECRET_PHONE, links: { linkedin: "https://linkedin.com/in/" + SECRET_LI, github: "https://github.com/gate-alice" } } }, gAt);
@@ -475,10 +476,10 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   const after = (await call("GET", "/api/profile/status", null, gCt)).body;
   ok("an existing LinkedIn import completes the detail", before.complete === false && after.complete === true);
   env.AI = undefined;
-}
+} else skip('profile completion gate (harness-only: stubs env.AI, seeds env.KV)');
 
 // ---- Graph sharing: consent-based friends-of-friends ----
-{
+if (env) {
   const mk = async (name) => { const t = (await call("POST", "/api/owner", {})).body.ownerToken; const c = await call("POST", "/api/card", { ownerToken: t, card: { name, headline: "Engineer", detail: "Builds things", email: name.split(" ")[0].toLowerCase() + "@gf.invalid", links: {} } }, t); return { t, slug: c.body.slug, name }; };
   const A = await mk("Gf Alice"), B = await mk("Gf Bob"), C = await mk("Gf Cara");
   const save = (who, other, extra = {}) => call("POST", "/api/people", { slug: other.slug, event: "gf-event", note: "gf-private-note", location: { lat: 1.5, lon: 2.5, label: "gf-place" }, ...extra }, who.t);
@@ -525,10 +526,10 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   await sh(A, false);
   ok("opting out of the cohort default takes effect at once", !hasC(await gr(A)));
   env.AI = undefined;
-}
+} else skip('graph sharing (harness-only: stubs env.AI, seeds env.KV)');
 
 // ---- QR gate: public card is a minimal preview unless the viewer is the owner or has a complete profile ----
-{
+if (env) {
   const ot = (await call("POST", "/api/owner", {})).body.ownerToken;
   const oc = await call("POST", "/api/card", { ownerToken: ot, card: { name: "Qr Owner", headline: "Maker", detail: "QRsecretdetail", email: "qr-owner@secret.invalid", phone: "+1 555 0177", links: { github: "https://github.com/qr-secret-handle" } } }, ot);
   await env.KV.put("enrich/" + oc.body.slug, JSON.stringify({ linkedin: { titles: ["QR Title"], companies: ["QR Co"], schools: [], importedAt: new Date().toISOString() } }));
@@ -544,7 +545,7 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   ok("the owner always gets their own full card", !own.body.locked && own.body.card.detail === "QRsecretdetail");
   const bad = await call("GET", "/api/c/" + oc.body.slug, null, "not-a-real-token-123456");
   ok("an unknown token is treated as anonymous", bad.body.locked === true && leak(bad.body).length === 0);
-}
+} else skip('QR gate (harness-only: seeds enrich via env.KV)');
 
 {
   const realFetch3 = globalThis.fetch; let nomCalls = 0, lastUA = ""; const nomTimes = [];
@@ -585,7 +586,7 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   globalThis.fetch = realFetch3;
 }
 
-{
+if (env) {
   const mkc = async (card, photo) => { const tk = (await call("POST", "/api/owner", {})).body.ownerToken; globalThis.__rawCards = true; const c = await call("POST", "/api/card", { ownerToken: tk, card }, tk); globalThis.__rawCards = false; if (photo) await env.KV.put("photo/" + c.body.slug, "data:image/png;base64,AAAA"); return { tk, slug: c.body.slug }; };
   const done = async (o) => (await call("GET", "/api/profile/status", null, o.tk)).body;
   const name2 = await mkc({ name: "Any One", headline: "", links: {} });
@@ -601,7 +602,7 @@ ok("MCP notifications get 202", (await (async () => { const r = await fetch(url 
   const d3 = await mkc({ name: "Any Six", headline: "Maker", detail: "Builds robots", links: {} });
   ok("the old minimum (name + headline + about) still unlocks", (await done(d3)).complete === true);
   ok("status exposes only complete, never a count or the missing sections", Object.keys(await done(a3)).join() === "complete");
-}
+} else skip('profile-status photo gate (harness-only: seeds photo via env.KV)');
 
 // ---- Notifications: built but OFF. Audience, dedup, wording, verified-address rule. (Local only: env exists.) ----
 if (env) {
@@ -878,7 +879,7 @@ if (env && !process.env.TAGG_DO && !process.env.TAGG_D1) {
 }
 
 srv.close();
-console.log("\n" + passed + " checks passed");
+console.log("\n" + passed + " checks passed" + (skipped ? " (+" + skipped + " harness-only sections skipped)" : ""));
 
 if (process.env.TAGG_DO) {
   const { stats } = await import("./serve-do.mjs");
