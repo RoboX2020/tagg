@@ -39,11 +39,14 @@ export class D1KV {
         // D1 stays the source of truth, but a missed mirror write means KV is now stale for rollback.
         // Count it (surfaced as x-mirror-failures by the entry) and log the key so a re-sync can be targeted.
         this.mirrorFails++;
-        console.error("KV mirror write failed for", o.k, "-", String(e && e.message || e).slice(0, 120));
+        console.error("KV mirror write failed for", this._cat(o.k), "-", String(e && e.message || e).slice(0, 120));
       }
     }
     return res;
   }
+
+  // Keys embed owner tokens and slugs (personal identifiers) - only the key category is safe to log.
+  _cat(k) { const i = k.indexOf("/"); return i > 0 ? k.slice(0, i) + "/*" : "<key>"; }
 
   async get(k) { return (await this.getMany([k]))[0]; }
 
@@ -98,12 +101,12 @@ export class D1KV {
         this.cache.set(k, next.value);
         if (this.mirror) {
           try { await this.mirror.put(k, next.value, ttl ? { expirationTtl: ttl } : undefined); }
-          catch (e) { this.mirrorFails++; console.error("KV mirror write failed for", k, "-", String(e && e.message || e).slice(0, 120)); }
+          catch (e) { this.mirrorFails++; console.error("KV mirror write failed for", this._cat(k), "-", String(e && e.message || e).slice(0, 120)); }
         }
         return next.result;
       }
     }
-    throw new Error("storage contention on " + k);
+    throw new Error("storage contention on a key");
   }
 
   // Prepend to a JSON array with de-duplication and a cap, atomically (concurrent connects cannot overwrite each other).

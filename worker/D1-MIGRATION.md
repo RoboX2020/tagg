@@ -42,7 +42,7 @@ shim. Real-D1 behavior is validated in rollout step 3, not assumed.
 - Dual mirrors EVERY write to KV, so the KV 1,000/day cap still binds during the dual window. Dual is a transition
   tool, not the scaled state; scale arrives only at the D1-only step.
 - If a KV mirror write fails after D1 succeeded (e.g. KV quota exhausted), the user request still succeeds, KV goes
-  stale for that key, the failure is logged ("KV mirror write failed for <key>") and counted. Rollback is loss-free
+  stale for that key, the failure is logged by key category only ("KV mirror write failed for card/*" - keys embed owner tokens, so identifiers are never logged) and counted. Rollback is loss-free
   only while the mirror has zero failures; after any failure, run scripts/sync-d1-to-kv.mjs first (it restores D1
   state into KV; each restore is a KV write, so a big store may need a quiet window or more than one day).
 - Copy-window race: the loader copies KV while live writes may continue. Run it in a quiet window and re-run it
