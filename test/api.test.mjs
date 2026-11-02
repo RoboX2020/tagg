@@ -547,7 +547,7 @@ if (env) {
   ok("an unknown token is treated as anonymous", bad.body.locked === true && leak(bad.body).length === 0);
 } else skip('QR gate (harness-only: seeds enrich via env.KV)');
 
-{
+if (env) {
   const realFetch3 = globalThis.fetch; let nomCalls = 0, lastUA = ""; const nomTimes = [];
   globalThis.fetch = async (u, init) => {
     if (!String(u).startsWith("https://nominatim.openstreetmap.org/reverse")) return realFetch3(u, init);
@@ -584,7 +584,7 @@ if (env) {
   const lst2 = (await call("GET", "/api/people", null, viewer)).body.people;
   ok("owner can edit the place, which is then marked as typed by them", lst2[0].location.place === "Coffee with Sam" && lst2[0].location.guess === false && lst2[0].location.placeSource === "you" && lst2[0].location.lat === 33.41744);
   globalThis.fetch = realFetch3;
-}
+} else skip('place lookup pacing/cache (harness-only: stubs nominatim fetch)');
 
 if (env) {
   const mkc = async (card, photo) => { const tk = (await call("POST", "/api/owner", {})).body.ownerToken; globalThis.__rawCards = true; const c = await call("POST", "/api/card", { ownerToken: tk, card }, tk); globalThis.__rawCards = false; if (photo) await env.KV.put("photo/" + c.body.slug, "data:image/png;base64,AAAA"); return { tk, slug: c.body.slug }; };
