@@ -1,2 +1,12 @@
-{ "name": "tagg", "private": true, "type": "module",
-  "scripts": { "test": "node test/api.test.mjs", "test:ui": "node test/ui.test.mjs", "dev": "node test/serve.mjs" } }
+{
+  "name": "tagg",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/api.test.mjs",
+    "test:ui": "node test/ui.test.mjs",
+    "dev": "node test/serve.mjs",
+    "test:d1": "TAGG_D1=1 node test/api.test.mjs",
+    "test:do": "TAGG_DO=1 node test/api.test.mjs"
+  }
+}

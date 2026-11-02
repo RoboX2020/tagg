@@ -31,3 +31,11 @@ new_sqlite_classes = ["RateLimiter"]
 # (10,000 Neurons/day free, resets 00:00 UTC, over-limit requests fail with an error - never billed on Free).
 [ai]
 binding = "AI"
+
+# D1 storage migration (branch feat/d1-store, pending Praj's approval - creating the database is an account change):
+#   npx wrangler d1 create tagg-store
+# then uncomment, paste the database_id, and deploy main = "worker-d1.js" with STORE_MODE per worker/D1-MIGRATION.md:
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "tagg-store"
+# database_id = "<from wrangler d1 create>"

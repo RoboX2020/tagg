@@ -1,6 +1,6 @@
 // End-to-end API test: signup, login, scan-to-connect, consent, mutual saving, private notes, location. Run: node test/api.test.mjs
 import assert from "node:assert/strict";
-const { start } = await import(process.env.TAGG_DO ? "./serve-do.mjs" : "./serve.mjs");
+const { start } = await import(process.env.TAGG_D1 ? "./serve-d1.mjs" : process.env.TAGG_DO ? "./serve-do.mjs" : "./serve.mjs");
 // Set TAGG_API to run the same checks against a deployed worker (use a staging worker: it creates accounts).
 const { srv, url, env } = process.env.TAGG_API ? { srv: { close() {} }, url: process.env.TAGG_API } : await start(8799);
 if (env) env.SIGNUP_PER_HOUR = "200"; // this test signs up many accounts from one address
@@ -783,7 +783,13 @@ if (env) {
 }
 
 // ---- Free-tier exhaustion: a failing KV write must give a clean readable 503, not a raw platform error ----
-if (env && !process.env.TAGG_DO) {
+if (env && process.env.TAGG_D1) {
+  const op = env.DB.prepare; env.DB.prepare = () => { throw new Error("D1 daily row limit exceeded."); };
+  const r = await call("POST", "/api/owner", {});
+  env.DB.prepare = op;
+  ok("when D1 writes run out the API answers 503 with a readable message", r.status === 503 && /busy/i.test(r.body.error) && r.body.busy === true);
+}
+if (env && !process.env.TAGG_DO && !process.env.TAGG_D1) {
   const op = env.KV.put; env.KV.put = async () => { throw new Error("KV put() limit exceeded for the day."); };
   const r = await call("POST", "/api/owner", {});
   env.KV.put = op;

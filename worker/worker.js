@@ -1634,7 +1634,7 @@ export default {
     catch (e) {
       const m = String(e && e.message || e);
       console.log("unhandled", m.slice(0, 200));
-      return withSecurityHeaders(j({ error: "Tagg is very busy right now. Please try again in a little while.", busy: /limit|quota|exceeded|KV/i.test(m) }, 503));
+      return withSecurityHeaders(j({ error: "Tagg is very busy right now. Please try again in a little while.", busy: /limit|quota|exceeded|KV|D1/i.test(m) }, 503));
     }
   },
 };
