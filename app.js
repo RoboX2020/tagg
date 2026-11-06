@@ -427,11 +427,11 @@
     var d = new Date(iso);
     return d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
   }
-  function toast(msg) {
+  function toast(msg, ms) {
     var t = document.createElement("div");
     t.className = "toast"; t.textContent = msg;
     document.body.appendChild(t);
-    setTimeout(function () { t.remove(); }, 2200);
+    setTimeout(function () { t.remove(); }, ms || 2200);
   }
   var LINK_DEFS = [
     ["linkedin", "LinkedIn"], ["github", "GitHub"], ["x", "X"],
@@ -1722,6 +1722,28 @@
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var CAN_SPEAK = !!(window.speechSynthesis && window.SpeechSynthesisUtterance);
   var MIC_SVG = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>';
+  /* Voice typing helpers. Browsers report speech errors with short codes; turn them into
+     plain advice. Safari on iPhone needs Siri/Dictation switched on and, for a Tagg saved to
+     the Home Screen, may not run speech recognition at all, so the advice points at the
+     keyboard's own mic key, which always works. */
+  function isIOS() { return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1); }
+  function speechMsg(code) {
+    var keyb = isIOS() ? " Or tap the mic key on your keyboard." : "";
+    if (code === "not-allowed" || code === "service-not-allowed") return "Voice typing is blocked here. Allow the microphone, and on iPhone turn on Siri or Dictation in Settings." + keyb;
+    if (code === "no-speech") return "Didn't hear anything. Tap the mic and speak." + keyb;
+    if (code === "audio-capture") return "No microphone found." + keyb;
+    if (code === "network") return "Voice typing needs a connection." + keyb;
+    if (code === "language-not-supported") return "Voice typing doesn't support this language here." + keyb;
+    if (code === "aborted") return "";
+    return "Voice typing stopped." + keyb;
+  }
+  /* Some phones accept start() but never begin listening and never report an error. If nothing
+     starts within a few seconds, stop and tell the user instead of leaving a dead button. */
+  function startWatchdog(rec, onDead) {
+    var started = false, timer = setTimeout(function () { if (!started) { try { rec.abort(); } catch (e) {} onDead(); } }, 5000);
+    rec.onstart = function () { started = true; clearTimeout(timer); };
+    return function () { clearTimeout(timer); };
+  }
   function speak(text) {
     if (!CAN_SPEAK || localStorage.getItem("tagg.speak") !== "1") return;
     try { window.speechSynthesis.cancel(); window.speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {}
@@ -1789,15 +1811,21 @@
       var rec = null;
       mic.addEventListener("click", function () {
         if (rec) { try { rec.stop(); } catch (e) {} return; }
+        var heard = false, failed = false, stopDog;
         rec = new SR(); rec.lang = navigator.language || "en-US"; rec.interimResults = true; rec.continuous = false;
         mic.setAttribute("aria-pressed", "true"); mic.classList.add("live");
+        stopDog = startWatchdog(rec, function () { failed = true; toast(speechMsg("service-not-allowed"), 6500); document.getElementById("q").focus(); });
         rec.onresult = function (ev) {
           var t = ""; for (var i = 0; i < ev.results.length; i++) t += ev.results[i][0].transcript;
+          if (t) heard = true;
           document.getElementById("q").value = t;
         };
-        rec.onerror = function () { toast("Could not hear that. Check microphone permission."); };
-        rec.onend = function () { rec = null; mic.setAttribute("aria-pressed", "false"); mic.classList.remove("live"); };
-        try { rec.start(); } catch (e) { rec = null; mic.classList.remove("live"); }
+        rec.onerror = function (ev) { failed = true; var m = speechMsg(ev && ev.error); if (m) toast(m, 6500); if (ev && /allowed/.test(ev.error)) document.getElementById("q").focus(); };
+        rec.onend = function () {
+          stopDog(); rec = null; mic.setAttribute("aria-pressed", "false"); mic.classList.remove("live");
+          if (!heard && !failed) toast(speechMsg("no-speech"), 5000);
+        };
+        try { rec.start(); } catch (e) { rec = null; mic.classList.remove("live"); mic.setAttribute("aria-pressed", "false"); toast(speechMsg("service-not-allowed"), 6500); }
       });
     }
   }
@@ -2052,32 +2080,35 @@
     var btn = document.getElementById(btnId || "dictate");
     var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SR) { btn.style.display = "none"; return; }
-    var rec = null, active = false;
+    var rec = null, active = false, stopDog = function () {};
+    function idle() {
+      stopDog(); active = false; rec = null;
+      btn.innerHTML = IC.mic + ' Dictate';
+      btn.classList.remove("btn-accent"); btn.classList.add("btn-gray");
+    }
     btn.addEventListener("click", function () {
       if (active) { try { rec.stop(); } catch (e) {} return; }
-      rec = new SR();
-      rec.lang = "en-US"; rec.interimResults = true; rec.continuous = true;
       var ta = document.getElementById(taId || "note");
-      var base = ta.value;
+      var base = ta.value, heard = false, failed = false;
+      rec = new SR();
+      rec.lang = navigator.language || "en-US"; rec.interimResults = true; rec.continuous = true;
+      /* Rebuild from every result each time (not just the new ones) so repeated or
+         cumulative result lists, as some phones send, never duplicate words. */
       rec.onresult = function (e) {
-        var interim = "", fin = "";
-        for (var i = e.resultIndex; i < e.results.length; i++) {
-          if (e.results[i].isFinal) fin += e.results[i][0].transcript;
-          else interim += e.results[i][0].transcript;
-        }
-        if (fin) base = (base ? base.replace(/\s+$/, "") + " " : "") + fin.trim();
-        ta.value = base + (interim ? (base ? " " : "") + interim : "");
+        var said = "";
+        for (var i = 0; i < e.results.length; i++) said += e.results[i][0].transcript + " ";
+        said = said.trim();
+        if (!said) return;
+        heard = true;
+        ta.value = (base ? base.replace(/\s+$/, "") + " " : "") + said;
       };
-      rec.onend = function () {
-        active = false;
-        btn.innerHTML = IC.mic + ' Dictate';
-        btn.classList.remove("btn-accent"); btn.classList.add("btn-gray");
-      };
-      rec.onerror = function (e) { if (e.error === "not-allowed") toast("Microphone permission denied"); };
+      rec.onend = function () { idle(); if (!heard && !failed) toast(speechMsg("no-speech"), 5000); };
+      rec.onerror = function (e) { failed = true; var m = speechMsg(e && e.error); if (m) toast(m, 6500); if (e && /allowed/.test(e.error)) ta.focus(); };
       active = true;
       btn.textContent = "Listening - tap to stop";
       btn.classList.remove("btn-gray"); btn.classList.add("btn-accent");
-      try { rec.start(); } catch (e) { active = false; }
+      stopDog = startWatchdog(rec, function () { failed = true; idle(); toast(speechMsg("service-not-allowed"), 6500); ta.focus(); });
+      try { rec.start(); } catch (e) { idle(); toast(speechMsg("service-not-allowed"), 6500); }
     });
   }
   function setupPhoto(p) {
