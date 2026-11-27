@@ -586,11 +586,12 @@
         '<p class="lead">Tagg is a people memory. Here is exactly what it does with data.</p>' +
         '<div class="group">' +
         '<div class="row"><div class="grow"><div class="title">What is stored</div><div class="detail" style="white-space:normal">The card you create (name, headline, links, contact details you choose to share) and the people you save, with when, where, and at what event you met them, plus your private notes.</div></div></div>' +
-        '<div class="row"><div class="grow"><div class="title">Where it lives</div><div class="detail" style="white-space:normal">In your own Tagg database (Cloudflare D1) tied to your identity, plus a cache on your device. Your notes and photos are private to your account.</div></div></div>' +
+        '<div class="row"><div class="grow"><div class="title">Where it lives</div><div class="detail" style="white-space:normal">Tagg stores your account-linked records in Cloudflare D1, with a copy in Cloudflare KV and a cache on your device. Scans made before signup can also create server-side records under an anonymous scanner token. Signed-in records sync across devices. Access to your saved people and notes is account-protected.</div></div></div>' +
         '<div class="row"><div class="grow"><div class="title">Google sign-in</div><div class="detail" style="white-space:normal">If you sign in with Google, Tagg stores your Google account ID and email to link your database to you. Nothing is posted to Google and no other Google data is read.</div></div></div>' +
         '<div class="row"><div class="grow"><div class="title">Place names</div><div class="detail" style="white-space:normal">When you save a meeting with location on, the coordinates are sent through Tagg to OpenStreetMap Nominatim to suggest a nearby place name, once per saved meeting. Tagg keeps only the resulting name, cached by an approximate position and not linked to you. OpenStreetMap contributors. You can edit or remove the name.</div></div></div>' +
-        '<div class="row"><div class="grow"><div class="title">Sharing</div><div class="detail" style="white-space:normal">Your card is public to anyone you show your QR code or link to - that is the point of the app. Your people list, notes, and location history are never shared.</div></div></div>' +
+        '<div class="row"><div class="grow"><div class="title">Sharing and processing</div><div class="detail" style="white-space:normal">Anyone with your card link can see its name and headline, and its photo is accessible by link. Links can be passed on. Other viewers need to sign in with a complete profile to see full card details; the card owner can also view them. Saving a meeting can also save the scanner\'s card and meeting context for the other person. Friends-of-friends sharing can show names and connections when its consent conditions are met. If you authorize an agent connection, it can read the information covered by the access you grant, including notes if you choose that scope. Ask Tagg uses Cloudflare Workers AI to process your question, up to 60 saved people including their notes, recent conversation, and eligible friends-of-friends names. Pasted LinkedIn profile text is also processed by Workers AI. LinkedIn link imports use Apify; GitHub imports read GitHub\'s public API. With location enabled, coordinates can be sent through Tagg to OpenStreetMap Nominatim to suggest a place name.</div></div></div>' +
         '</div>' +
+        '<p class="footer-note">Full documents: <a href="/privacy.html">Privacy Policy</a> &middot; <a href="/terms.html">Terms of Service</a></p>' +
         '<p class="footer-note">Contact: prajval.2029@gmail.com</p>');
       return;
     }
@@ -848,7 +849,7 @@
       '<h2 class="section">Network</h2><div class="panel" id="netpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' +
       '<h2 class="section">Connect your own agent</h2>' + (profile() ? '<div class="panel" id="agentpanel"><div class="fineprint" style="margin:0">Loading...</div></div>' : '<div class="group"><div class="row"><div class="grow"><div class="detail" style="white-space:normal">Sign in first, then you can connect an AI agent of your choice.</div></div></div></div>') +
       '<h2 class="section">Appearance</h2><div class="themeseg" id="themeseg"><button data-th="light">Light</button><button data-th="dark">Dark</button></div>' +
-      '<p class="footer-note"><a href="#/privacy">Privacy</a></p>'
+      '<p class="footer-note"><a href="#/privacy">Privacy</a> &middot; <a href="/terms.html">Terms</a></p>'
     );
     (function () {
       var cur = localStorage.getItem("tagg.theme") === "dark" ? "dark" : "light";

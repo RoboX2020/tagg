@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Privacy Policy - Tagg</title>
+<meta name="description" content="How Tagg stores, shares and deletes your data.">
+<meta name="theme-color" content="#f4f4f6">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<script>try{document.documentElement.setAttribute("data-theme",localStorage.getItem("tagg.theme")==="dark"?"dark":"light")}catch(e){}</script>
+<link rel="stylesheet" href="styles.css">
+<style>
+body { font-family: var(--font); background: var(--bg); color: var(--text); margin: 0; }
+.doc { max-width: 640px; margin: 0 auto; padding: 20px 18px 60px; }
+.doc h2 { font-size: 16px; font-weight: 650; margin: 26px 0 6px; }
+.doc p { font-size: 14px; line-height: 1.55; color: var(--text-2); margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="topbar"><div class="wordmark"><img class="mark" src="icon.svg" alt="" width="30" height="30">Tagg</div><div class="sub">Never forget who you met.</div></div>
+<div class="doc">
+<h1 class="largetitle">Privacy Policy</h1>
+<h2>What Tagg stores</h2>
+<p>Your card: the name, headline, links, photo and contact details you choose to share.</p>
+<p>Your saved people: who you saved, when, where and at what event you met them, and your private notes.</p>
+<p>Account-linked records are stored in a Cloudflare D1 database, with a copy in Cloudflare KV and a cache on your device. Scans made before signup can also create server-side records under an anonymous scanner token. Once you sign in, your records sync across your devices. Access to your saved people and notes is protected by your account.</p>
+<h2>Google sign-in</h2>
+<p>If you sign in with Google, Tagg stores your Google account ID and email to link your records to you. Nothing is posted to Google and no other Google data is read.</p>
+<h2>What other people can see</h2>
+<p>Anyone with your card link can see its name and headline, and its photo is accessible by link. Links can be passed on.</p>
+<p>Other viewers need to sign in with a complete profile to see your full card details. As the card owner, you can view them too.</p>
+<p>Saving a meeting can also save the scanner's card and the meeting context for the other person. So when someone saves a meeting with you, their card and the meeting context can be saved for you, and when you save a meeting, yours can be saved for them.</p>
+<p>Friends-of-friends sharing can show names and connections when its consent conditions are met.</p>
+<p>If you connect an AI agent, it can read the information covered by the access you grant, including your notes if you choose that scope.</p>
+<h2>AI features and profile imports</h2>
+<p>Ask Tagg sends your question, up to 60 of your saved people (including their notes), your recent conversation, and eligible friends-of-friends names to Cloudflare Workers AI to answer you.</p>
+<p>LinkedIn profile text you paste is processed by Cloudflare Workers AI. Importing a profile from a LinkedIn link uses Apify. GitHub imports read GitHub's public API.</p>
+<h2>Location</h2>
+<p>With location enabled, Tagg can send your coordinates through its servers to OpenStreetMap's Nominatim service to suggest a place name for a saved meeting.</p>
+<h2>How Tagg does not use your data</h2>
+<p>Tagg does not sell your personal information. Your data is shared only in the ways described in this policy.</p>
+<h2>Keeping and deleting your data</h2>
+<p>Your records stay with your account. You can delete your account yourself in Settings: tap Delete account and type DELETE to confirm (email accounts also enter their password, Google accounts confirm with Google again). This deletes the records linked to your account on Tagg's servers: your card, profile, saved people, notes, photos, locations, sign-in credentials, contact requests and connected-app tokens.</p>
+<p>Deleting in the app also clears Tagg's data from the browser you used to delete it. Tagg data cached in your other browsers or devices is not cleared by this; clear the site's data there to remove it.</p>
+<p>Deleting your account does not remove: copies of your card that other people already saved to their own accounts, or their own notes about you (those are their records); opt-out and suppression records, which exist only if you previously unsubscribed or your address was suppressed, and are kept so we do not email you again; your import-consent receipt and small operational markers that hold no content; and short-lived security counters, which expire on their own.</p>
+<p>Records created before you signed up sit under a random token stored on your device. They are deleted through the same Settings flow while that device still holds the token; if the device's data was cleared first, we can no longer link those records to you to delete them.</p>
+<p>Copies in Cloudflare's own short-lived backups and caches expire on their own schedule.</p>
+<p>You can also email prajval.2029@gmail.com and we will delete your account-linked records for you.</p>
+<h2>Services Tagg relies on</h2>
+<p>Cloudflare (database, storage and AI answers), Google (sign-in), Apify (LinkedIn link imports), GitHub (public profile imports) and OpenStreetMap Nominatim (place names). Each service has its own privacy policy.</p>
+<h2>Changes and contact</h2>
+<p>Changes to this policy are posted on this page with the date they take effect.</p>
+<p>Contact: prajval.2029@gmail.com</p>
+<p>Effective date: November 26, 2026.</p>
+<p class="footer-note"><a href="/">Back to Tagg</a> &middot; <a href="terms.html">Terms of Service</a></p>
+</div>
+</body>
+</html>
